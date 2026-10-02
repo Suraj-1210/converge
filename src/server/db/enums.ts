@@ -717,3 +717,123 @@ export function financialYearOf(date: Date): number {
 export function financialYearLabel(fy: number): string {
   return `FY ${fy}-${String((fy + 1) % 100).padStart(2, "0")}`;
 }
+
+// --- BDM CRM (bdm_prospect / bdm_activity / bdm_task) ----------------------
+// Codes mirror the inline comments in prisma/sql/schema.sql. Order follows the
+// cp-bdm-performance mock's dropdowns.
+
+export const ProspectSource = {
+  COLD_CALL: 0,
+  INBOUND_INQUIRY: 1,
+  REFERRAL: 2,
+  EVENT: 3,
+  LINKEDIN: 4,
+  OTHER: 5,
+} as const;
+export type ProspectSource = (typeof ProspectSource)[keyof typeof ProspectSource];
+
+export const ProspectSourceLabel: Record<ProspectSource, string> = {
+  [ProspectSource.COLD_CALL]: "Cold Call",
+  [ProspectSource.INBOUND_INQUIRY]: "Inbound Inquiry",
+  [ProspectSource.REFERRAL]: "Referral",
+  [ProspectSource.EVENT]: "Event / Exhibition",
+  [ProspectSource.LINKEDIN]: "LinkedIn",
+  [ProspectSource.OTHER]: "Other",
+};
+
+export const PROSPECT_SOURCE_CODES = Object.values(ProspectSource) as ProspectSource[];
+
+// Pipeline order. LOST is terminal but not last-in-funnel: a lost prospect can
+// be re-opened, which is why stage history records from/to.
+export const ProspectStage = {
+  LEAD: 0,
+  CONTACTED: 1,
+  MEETING_DONE: 2,
+  PROPOSAL_SENT: 3,
+  NEGOTIATION: 4,
+  ONBOARDING: 5,
+  LOST: 6,
+} as const;
+export type ProspectStage = (typeof ProspectStage)[keyof typeof ProspectStage];
+
+export const ProspectStageLabel: Record<ProspectStage, string> = {
+  [ProspectStage.LEAD]: "Lead",
+  [ProspectStage.CONTACTED]: "Contacted",
+  [ProspectStage.MEETING_DONE]: "Meeting Done",
+  [ProspectStage.PROPOSAL_SENT]: "Proposal Sent",
+  [ProspectStage.NEGOTIATION]: "Negotiation",
+  [ProspectStage.ONBOARDING]: "Onboarding",
+  [ProspectStage.LOST]: "Lost",
+};
+
+export const PROSPECT_STAGE_CODES = Object.values(ProspectStage) as ProspectStage[];
+
+export const ProspectTemperature = {
+  COLD: 0,
+  WARM: 1,
+  HOT: 2,
+} as const;
+export type ProspectTemperature = (typeof ProspectTemperature)[keyof typeof ProspectTemperature];
+
+export const ProspectTemperatureLabel: Record<ProspectTemperature, string> = {
+  [ProspectTemperature.COLD]: "Cold",
+  [ProspectTemperature.WARM]: "Warm",
+  [ProspectTemperature.HOT]: "Hot",
+};
+
+export const PROSPECT_TEMPERATURE_CODES = Object.values(ProspectTemperature) as ProspectTemperature[];
+
+export const BdmActivityType = {
+  CALL: 0,
+  EMAIL: 1,
+  MEETING: 2,
+  NOTE: 3,
+} as const;
+export type BdmActivityType = (typeof BdmActivityType)[keyof typeof BdmActivityType];
+
+export const BdmActivityTypeLabel: Record<BdmActivityType, string> = {
+  [BdmActivityType.CALL]: "Phone Call",
+  [BdmActivityType.EMAIL]: "Email",
+  [BdmActivityType.MEETING]: "Meeting (In-person / Virtual)",
+  [BdmActivityType.NOTE]: "Note / Update",
+};
+
+export const BDM_ACTIVITY_TYPE_CODES = Object.values(BdmActivityType) as BdmActivityType[];
+
+// Distinct from NotePriority (Low/Medium/High): the BDM mock uses Normal and
+// Urgent, and "Urgent" drives its own count on the tasks panel.
+export const BdmTaskPriority = {
+  LOW: 0,
+  NORMAL: 1,
+  URGENT: 2,
+} as const;
+export type BdmTaskPriority = (typeof BdmTaskPriority)[keyof typeof BdmTaskPriority];
+
+export const BdmTaskPriorityLabel: Record<BdmTaskPriority, string> = {
+  [BdmTaskPriority.LOW]: "Low",
+  [BdmTaskPriority.NORMAL]: "Normal",
+  [BdmTaskPriority.URGENT]: "Urgent",
+};
+
+export const BDM_TASK_PRIORITY_CODES = Object.values(BdmTaskPriority) as BdmTaskPriority[];
+
+export const BdmTaskCategory = {
+  FOLLOW_UP: 0,
+  MEETING_CALL: 1,
+  PROPOSAL_DOCUMENT: 2,
+  ONBOARDING: 3,
+  REVIEW_CHECK_IN: 4,
+  OTHER: 5,
+} as const;
+export type BdmTaskCategory = (typeof BdmTaskCategory)[keyof typeof BdmTaskCategory];
+
+export const BdmTaskCategoryLabel: Record<BdmTaskCategory, string> = {
+  [BdmTaskCategory.FOLLOW_UP]: "Follow-up",
+  [BdmTaskCategory.MEETING_CALL]: "Meeting / Call",
+  [BdmTaskCategory.PROPOSAL_DOCUMENT]: "Proposal / Document",
+  [BdmTaskCategory.ONBOARDING]: "Onboarding",
+  [BdmTaskCategory.REVIEW_CHECK_IN]: "Review / Check-in",
+  [BdmTaskCategory.OTHER]: "Other",
+};
+
+export const BDM_TASK_CATEGORY_CODES = Object.values(BdmTaskCategory) as BdmTaskCategory[];

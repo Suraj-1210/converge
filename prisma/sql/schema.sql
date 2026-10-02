@@ -1202,6 +1202,152 @@ CREATE TABLE IF NOT EXISTS `whatsapp_message` (
 ) ENGINE = InnoDB;
 
 
+-- =====================================================
+-- BDM CRM  (prospects, activities, tasks)
+-- -----------------------------------------------------
+-- Backs the Prospect Pipeline, Activity Log and My Tasks sections of the BDM
+-- Performance page (cp-bdm-performance.html mock). Until these existed, those
+-- sections were removed from the page rather than shipped on synthetic data.
+--
+-- Activities and tasks attach to EITHER a partner (organization) OR a prospect,
+-- never both and never neither, enforced by a CHECK on each table. Two nullable
+-- FKs rather than a polymorphic type+id pair, so referential integrity holds.
+--
+-- Enum codes are mirrored in src/server/db/enums.ts. Keep them in sync.
+-- =====================================================
+
+
+-- -----------------------------------------------------
+-- bdm_prospect  (FK -> cp_user, organization)
+-- An agency being courted before it becomes a partner. On onboarding the row
+-- is kept and linked to the new organization via converted_org_id, so the
+-- courtship history (activities, tasks, stage changes) survives.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `bdm_prospect` (
+  `id`               INT              NOT NULL AUTO_INCREMENT,
+  `agency_name`      VARCHAR(255)     NOT NULL,
+  `contact_name`     VARCHAR(255)     NULL DEFAULT NULL,
+  `email`            VARCHAR(255)     NULL DEFAULT NULL,
+  `phone`            VARCHAR(20)      NULL DEFAULT NULL,
+  `city`             VARCHAR(120)     NULL DEFAULT NULL,
+  `source`           TINYINT UNSIGNED NOT NULL,            -- 0 Cold Call, 1 Inbound Inquiry, 2 Referral, 3 Event / Exhibition, 4 LinkedIn, 5 Other
+  `stage`            TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Lost
+  `temperature`      TINYINT UNSIGNED NULL DEFAULT NULL,   -- 0 Cold, 1 Warm, 2 Hot
+  `stage_changed_at` TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- drives "Days in Stage"
+  `next_follow_up`   DATE             NULL DEFAULT NULL,
+  `notes`            VARCHAR(1000)    NULL DEFAULT NULL,
+  `bdm_id`           INT              NOT NULL,
+  `converted_org_id` INT              NULL DEFAULT NULL,
+  `created_at`       TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`       TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_bdm_prospect_bdm_stage` (`bdm_id` ASC, `stage` ASC) VISIBLE,
+  INDEX `fk_bdm_prospect_org_idx` (`converted_org_id` ASC) VISIBLE,
+  CONSTRAINT `fk_bdm_prospect_bdm`
+    FOREIGN KEY (`bdm_id`) REFERENCES `cp_user` (`id`),
+  CONSTRAINT `fk_bdm_prospect_org`
+    FOREIGN KEY (`converted_org_id`) REFERENCES `organization` (`id`)
+    ON DELETE SET NULL
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- bdm_prospect_stage_history  (FK -> bdm_prospect, cp_user)
+-- One row per stage change, with the note the "Advance Stage" modal collects.
+-- Parallels application_stage_history, but records from/to and a note because
+-- prospects can move backwards (e.g. Negotiation -> Lost -> Contacted).
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `bdm_prospect_stage_history` (
+  `id`          INT              NOT NULL AUTO_INCREMENT,
+  `prospect_id` INT              NOT NULL,
+  `from_stage`  TINYINT UNSIGNED NULL DEFAULT NULL,   -- NULL on creation
+  `to_stage`    TINYINT UNSIGNED NOT NULL,
+  `note`        VARCHAR(1000)    NULL DEFAULT NULL,
+  `changed_by`  INT              NULL DEFAULT NULL,
+  `changed_at`  TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_prospect_stage_history` (`prospect_id` ASC, `changed_at` ASC) VISIBLE,
+  INDEX `fk_prospect_stage_history_user_idx` (`changed_by` ASC) VISIBLE,
+  CONSTRAINT `fk_prospect_stage_history_prospect`
+    FOREIGN KEY (`prospect_id`) REFERENCES `bdm_prospect` (`id`)
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_prospect_stage_history_user`
+    FOREIGN KEY (`changed_by`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- bdm_activity  (FK -> cp_user, organization | bdm_prospect)
+-- The Activity Log: calls, emails, meetings and notes against a partner or a
+-- prospect.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `bdm_activity` (
+  `id`              INT               NOT NULL AUTO_INCREMENT,
+  `type`            TINYINT UNSIGNED  NOT NULL,   -- 0 Call, 1 Email, 2 Meeting, 3 Note
+  `organization_id` INT               NULL DEFAULT NULL,
+  `prospect_id`     INT               NULL DEFAULT NULL,
+  `occurred_on`     DATE              NOT NULL,
+  `duration_mins`   SMALLINT UNSIGNED NULL DEFAULT NULL,
+  `summary`         VARCHAR(1000)     NOT NULL,
+  `follow_up_date`  DATE              NULL DEFAULT NULL,
+  `bdm_id`          INT               NOT NULL,
+  `created_at`      TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_bdm_activity_bdm_date` (`bdm_id` ASC, `occurred_on` ASC) VISIBLE,
+  INDEX `fk_bdm_activity_org_idx` (`organization_id` ASC) VISIBLE,
+  INDEX `fk_bdm_activity_prospect_idx` (`prospect_id` ASC) VISIBLE,
+  CONSTRAINT `chk_bdm_activity_target`
+    CHECK ((`organization_id` IS NULL) <> (`prospect_id` IS NULL)),
+  CONSTRAINT `fk_bdm_activity_bdm`
+    FOREIGN KEY (`bdm_id`) REFERENCES `cp_user` (`id`),
+  CONSTRAINT `fk_bdm_activity_org`
+    FOREIGN KEY (`organization_id`) REFERENCES `organization` (`id`),
+  CONSTRAINT `fk_bdm_activity_prospect`
+    FOREIGN KEY (`prospect_id`) REFERENCES `bdm_prospect` (`id`)
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- bdm_task  (FK -> cp_user, organization | bdm_prospect)
+-- "My Tasks" = tasks where assigned_to is the viewer. Open / Due Today /
+-- Overdue are derived from due_date and is_done, not stored.
+-- Rescheduling overwrites due_date; there is no reschedule history.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `bdm_task` (
+  `id`              INT              NOT NULL AUTO_INCREMENT,
+  `title`           VARCHAR(255)     NOT NULL,
+  `description`     VARCHAR(1000)    NULL DEFAULT NULL,
+  `organization_id` INT              NULL DEFAULT NULL,
+  `prospect_id`     INT              NULL DEFAULT NULL,
+  `due_date`        DATE             NOT NULL,
+  `priority`        TINYINT UNSIGNED NOT NULL DEFAULT 1,  -- 0 Low, 1 Normal, 2 Urgent
+  `category`        TINYINT UNSIGNED NOT NULL,            -- 0 Follow-up, 1 Meeting / Call, 2 Proposal / Document, 3 Onboarding, 4 Review / Check-in, 5 Other
+  `is_done`         TINYINT          NOT NULL DEFAULT 0,
+  `completed_at`    TIMESTAMP        NULL DEFAULT NULL,
+  `assigned_to`     INT              NOT NULL,
+  `created_by`      INT              NULL DEFAULT NULL,
+  `created_at`      TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`      TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_bdm_task_assignee_due` (`assigned_to` ASC, `is_done` ASC, `due_date` ASC) VISIBLE,
+  INDEX `fk_bdm_task_org_idx` (`organization_id` ASC) VISIBLE,
+  INDEX `fk_bdm_task_prospect_idx` (`prospect_id` ASC) VISIBLE,
+  INDEX `fk_bdm_task_creator_idx` (`created_by` ASC) VISIBLE,
+  CONSTRAINT `chk_bdm_task_target`
+    CHECK ((`organization_id` IS NULL) <> (`prospect_id` IS NULL)),
+  CONSTRAINT `fk_bdm_task_assignee`
+    FOREIGN KEY (`assigned_to`) REFERENCES `cp_user` (`id`),
+  CONSTRAINT `fk_bdm_task_creator`
+    FOREIGN KEY (`created_by`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL,
+  CONSTRAINT `fk_bdm_task_org`
+    FOREIGN KEY (`organization_id`) REFERENCES `organization` (`id`),
+  CONSTRAINT `fk_bdm_task_prospect`
+    FOREIGN KEY (`prospect_id`) REFERENCES `bdm_prospect` (`id`)
+) ENGINE = InnoDB;
+
+
 SET SQL_MODE            = @OLD_SQL_MODE;
 SET FOREIGN_KEY_CHECKS  = @OLD_FOREIGN_KEY_CHECKS;
 SET UNIQUE_CHECKS       = @OLD_UNIQUE_CHECKS;
