@@ -388,6 +388,9 @@ model organization {
   partner_bank_account  partner_bank_account[]
   student               student[]
   user                  user[]
+  bdm_activity          bdm_activity[]
+  bdm_prospect          bdm_prospect[]
+  bdm_task              bdm_task[]
 }
 
 model session {
@@ -576,6 +579,11 @@ model collegepond_user {
   student                                                     student[]
   shortlist                                                   shortlist[]
   student_note                                                student_note[]
+  bdm_prospect                                                bdm_prospect[]
+  bdm_prospect_stage_history                                  bdm_prospect_stage_history[]
+  bdm_activity                                                bdm_activity[]
+  bdm_task_assigned                                           bdm_task[]            @relation("bdm_task_assignee")
+  bdm_task_created                                            bdm_task[]            @relation("bdm_task_creator")
 
   @@map("cp_user")
 }
@@ -1005,4 +1013,115 @@ model partner_payout {
 
   @@index([bank_account_id], map: "fk_partner_payout_bank_account_idx")
   @@index([status], map: "idx_partner_payout_status")
+}
+
+// --- BDM CRM ---------------------------------------------------------------
+// Tables come from prisma/sql/schema.sql (migration 20261002120000_bdm_crm).
+// Enum codes are in src/server/db/enums.ts. Activities and tasks attach to a
+// partner (organization) OR a prospect, never both and never neither. That is
+// enforced by DB CHECK constraints, which Prisma cannot model, so violations
+// surface as a database error on write rather than a type error.
+
+// An agency being courted before it becomes a partner. Kept after onboarding
+// (converted_org_id) so its history survives.
+model bdm_prospect {
+  id               Int                          @id @default(autoincrement())
+  agency_name      String                       @db.VarChar(255)
+  contact_name     String?                      @db.VarChar(255)
+  email            String?                      @db.VarChar(255)
+  phone            String?                      @db.VarChar(20)
+  city             String?                      @db.VarChar(120)
+  // ProspectSource: 0 Cold Call, 1 Inbound Inquiry, 2 Referral, 3 Event / Exhibition, 4 LinkedIn, 5 Other.
+  source           Int                          @db.UnsignedTinyInt
+  // ProspectStage: 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Lost.
+  stage            Int                          @default(0) @db.UnsignedTinyInt
+  // ProspectTemperature: 0 Cold, 1 Warm, 2 Hot.
+  temperature      Int?                         @db.UnsignedTinyInt
+  // Drives "Days in Stage". Update it whenever stage changes.
+  stage_changed_at DateTime                     @default(now()) @db.Timestamp(0)
+  next_follow_up   DateTime?                    @db.Date
+  notes            String?                      @db.VarChar(1000)
+  bdm_id           Int
+  converted_org_id Int?
+  created_at       DateTime                     @default(now()) @db.Timestamp(0)
+  updated_at       DateTime                     @default(now()) @updatedAt @db.Timestamp(0)
+  bdm              collegepond_user             @relation(fields: [bdm_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_prospect_bdm")
+  converted_org    organization?                @relation(fields: [converted_org_id], references: [id], onUpdate: NoAction, map: "fk_bdm_prospect_org")
+  activities       bdm_activity[]
+  stage_history    bdm_prospect_stage_history[]
+  tasks            bdm_task[]
+
+  @@index([converted_org_id], map: "fk_bdm_prospect_org_idx")
+  @@index([bdm_id, stage], map: "idx_bdm_prospect_bdm_stage")
+}
+
+// One row per stage change, with the note from the "Advance Stage" modal.
+// from_stage is null for the row written when the prospect is created.
+model bdm_prospect_stage_history {
+  id              Int               @id @default(autoincrement())
+  prospect_id     Int
+  from_stage      Int?              @db.UnsignedTinyInt
+  to_stage        Int               @db.UnsignedTinyInt
+  note            String?           @db.VarChar(1000)
+  changed_by      Int?
+  changed_at      DateTime          @default(now()) @db.Timestamp(0)
+  prospect        bdm_prospect      @relation(fields: [prospect_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_prospect_stage_history_prospect")
+  changed_by_user collegepond_user? @relation(fields: [changed_by], references: [id], onUpdate: NoAction, map: "fk_prospect_stage_history_user")
+
+  @@index([changed_by], map: "fk_prospect_stage_history_user_idx")
+  @@index([prospect_id, changed_at], map: "idx_prospect_stage_history")
+}
+
+// The Activity Log: calls, emails, meetings and notes against a partner or a
+// prospect.
+model bdm_activity {
+  id              Int              @id @default(autoincrement())
+  // BdmActivityType: 0 Call, 1 Email, 2 Meeting, 3 Note.
+  type            Int              @db.UnsignedTinyInt
+  organization_id Int?
+  prospect_id     Int?
+  occurred_on     DateTime         @db.Date
+  duration_mins   Int?             @db.UnsignedSmallInt
+  summary         String           @db.VarChar(1000)
+  follow_up_date  DateTime?        @db.Date
+  bdm_id          Int
+  created_at      DateTime         @default(now()) @db.Timestamp(0)
+  bdm             collegepond_user @relation(fields: [bdm_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_activity_bdm")
+  organization    organization?    @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_activity_org")
+  prospect        bdm_prospect?    @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_activity_prospect")
+
+  @@index([organization_id], map: "fk_bdm_activity_org_idx")
+  @@index([prospect_id], map: "fk_bdm_activity_prospect_idx")
+  @@index([bdm_id, occurred_on], map: "idx_bdm_activity_bdm_date")
+}
+
+// "My Tasks" = tasks whose assignee is the viewer. Open / Due Today / Overdue
+// are derived from due_date and is_done, not stored. Rescheduling overwrites
+// due_date.
+model bdm_task {
+  id              Int               @id @default(autoincrement())
+  title           String            @db.VarChar(255)
+  description     String?           @db.VarChar(1000)
+  organization_id Int?
+  prospect_id     Int?
+  due_date        DateTime          @db.Date
+  // BdmTaskPriority: 0 Low, 1 Normal, 2 Urgent.
+  priority        Int               @default(1) @db.UnsignedTinyInt
+  // BdmTaskCategory: 0 Follow-up, 1 Meeting / Call, 2 Proposal / Document, 3 Onboarding, 4 Review / Check-in, 5 Other.
+  category        Int               @db.UnsignedTinyInt
+  is_done         Int               @default(0) @db.TinyInt
+  completed_at    DateTime?         @db.Timestamp(0)
+  assigned_to     Int
+  created_by      Int?
+  created_at      DateTime          @default(now()) @db.Timestamp(0)
+  updated_at      DateTime          @default(now()) @updatedAt @db.Timestamp(0)
+  assignee        collegepond_user  @relation("bdm_task_assignee", fields: [assigned_to], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_task_assignee")
+  creator         collegepond_user? @relation("bdm_task_creator", fields: [created_by], references: [id], onUpdate: NoAction, map: "fk_bdm_task_creator")
+  organization    organization?     @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_task_org")
+  prospect        bdm_prospect?     @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bdm_task_prospect")
+
+  @@index([created_by], map: "fk_bdm_task_creator_idx")
+  @@index([organization_id], map: "fk_bdm_task_org_idx")
+  @@index([prospect_id], map: "fk_bdm_task_prospect_idx")
+  @@index([assigned_to, is_done, due_date], map: "idx_bdm_task_assignee_due")
 }
