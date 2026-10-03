@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
@@ -53,8 +54,17 @@ export const bdmRouter = createTRPCRouter({
 
   overview: protectedAdminProcedure
     .input(z.object({ bdmId: z.number().int().optional() }).optional())
-    .query(async ({ input }) => {
-      const bdmId = input?.bdmId;
+    .query(async ({ ctx, input }) => {
+      // A BDM sees only their own portfolio. The page hides the BDM selector
+      // for them, but that is presentation: the server enforces it. Asking for
+      // another BDM is refused, and asking for "all" narrows to themselves.
+      const isBdm = ctx.cpUser.role === AdminRole.BDM;
+      if (isBdm && input?.bdmId != null && input.bdmId !== ctx.cpUser.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You can only view your own portfolio." });
+      }
+      const bdmId = isBdm ? ctx.cpUser.id : input?.bdmId;
+      // The leaderboard ranks every BDM by revenue, so only Super Admin gets it.
+      const showLeaderboard = ctx.cpUser.role === AdminRole.SUPER_ADMIN;
 
       const orgs = await db.organization.findMany({ select: { id: true, name: true, city: true, country: true } });
       const orgIds = orgs.map((o) => o.id);
@@ -114,8 +124,11 @@ export const bdmRouter = createTRPCRouter({
         };
       });
 
-      // Leaderboard (all BDMs, active partners only) — computed before the BDM filter.
-      const staff = await db.collegepond_user.findMany({ where: { role: AdminRole.BDM }, select: { id: true, first_name: true, last_name: true } });
+      // Leaderboard (all BDMs, active partners only), Super Admin only. Computed
+      // before the BDM filter so it always ranks everyone.
+      const staff = showLeaderboard
+        ? await db.collegepond_user.findMany({ where: { role: AdminRole.BDM }, select: { id: true, first_name: true, last_name: true } })
+        : [];
       const leaderboard = staff
         .map((s) => {
           const mine = partners.filter((p) => p.bdmId === s.id && p.status === "Active");

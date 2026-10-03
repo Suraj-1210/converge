@@ -151,7 +151,7 @@ export default function BDMPerformancePage() {
       </div>
 
       {/* Leaderboard */}
-      {!isBdm && bdm === "all" && (
+      {isSuperAdmin && bdm === "all" && (
         <div className={`${CARD} mb-6`}>
           <div className="border-b border-[#E4E7EC] px-5 py-3.5"><h3 className="text-[15px] font-semibold text-[#101828]">BDM Leaderboard</h3></div>
           {leaderboard.length === 0 ? (
