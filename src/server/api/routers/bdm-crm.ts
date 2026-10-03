@@ -548,18 +548,30 @@ const activityRouter = createTRPCRouter({
       }
       const performer = await actorOrBdm(ctx.cpUser, input.bdmId);
       const t = await resolveTarget(ctx.cpUser, input.target);
-      const a = await db.bdm_activity.create({
-        data: {
-          type: input.type,
-          ...t,
-          occurred_on: input.occurredOn,
-          duration_mins: input.durationMins,
-          summary: input.summary,
-          follow_up_date: input.followUpDate,
-          bdm_id: performer,
-        },
+      // A follow-up logged on a prospect becomes its Next Follow-up, so the
+      // pipeline's due/overdue highlight tracks it. A follow-up already in the
+      // past (from a backdated activity) is kept on the activity only, so it
+      // can't overwrite a later date with a stale one.
+      const followUpProspect =
+        t.prospect_id != null && input.followUpDate != null && input.followUpDate >= businessToday() ? t.prospect_id : null;
+      const a = await db.$transaction(async (tx) => {
+        const created = await tx.bdm_activity.create({
+          data: {
+            type: input.type,
+            ...t,
+            occurred_on: input.occurredOn,
+            duration_mins: input.durationMins,
+            summary: input.summary,
+            follow_up_date: input.followUpDate,
+            bdm_id: performer,
+          },
+        });
+        if (followUpProspect != null) {
+          await tx.bdm_prospect.update({ where: { id: followUpProspect }, data: { next_follow_up: input.followUpDate } });
+        }
+        return created;
       });
-      return { id: a.id };
+      return { id: a.id, prospectFollowUpSet: followUpProspect != null };
     }),
 });
 

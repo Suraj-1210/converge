@@ -158,9 +158,9 @@ export function LogActivityModal({
   });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((s) => ({ ...s, [k]: e.target.value }));
   const log = api.bdmCrm.activity.log.useMutation({
-    onSuccess: () => {
+    onSuccess: (r) => {
       void utils.bdmCrm.invalidate();
-      notify("Activity logged");
+      notify(r.prospectFollowUpSet ? "Activity logged · prospect's next follow-up updated" : "Activity logged");
       onClose();
     },
     onError: (e) => notify(e.message),
