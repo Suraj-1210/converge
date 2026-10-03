@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS `bdm_prospect` (
   `phone`            VARCHAR(20)      NULL DEFAULT NULL,
   `city`             VARCHAR(120)     NULL DEFAULT NULL,
   `source`           TINYINT UNSIGNED NOT NULL,            -- 0 Cold Call, 1 Inbound Inquiry, 2 Referral, 3 Event / Exhibition, 4 LinkedIn, 5 Other
-  `stage`            TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Lost
-  `temperature`      TINYINT UNSIGNED NULL DEFAULT NULL,   -- 0 Cold, 1 Warm, 2 Hot
+  `stage`            TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Converted, 7 Lost
+  `temperature`      TINYINT UNSIGNED NULL DEFAULT NULL,   -- 0 Cold, 1 Lukewarm, 2 Warm, 3 Hot, 4 Signing Up
   `stage_changed_at` TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- drives "Days in Stage"
   `next_follow_up`   DATE             NULL DEFAULT NULL,
   `notes`            VARCHAR(1000)    NULL DEFAULT NULL,

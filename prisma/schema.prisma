@@ -1033,9 +1033,9 @@ model bdm_prospect {
   city             String?                      @db.VarChar(120)
   // ProspectSource: 0 Cold Call, 1 Inbound Inquiry, 2 Referral, 3 Event / Exhibition, 4 LinkedIn, 5 Other.
   source           Int                          @db.UnsignedTinyInt
-  // ProspectStage: 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Lost.
+  // ProspectStage: 0 Lead, 1 Contacted, 2 Meeting Done, 3 Proposal Sent, 4 Negotiation, 5 Onboarding, 6 Converted, 7 Lost.
   stage            Int                          @default(0) @db.UnsignedTinyInt
-  // ProspectTemperature: 0 Cold, 1 Warm, 2 Hot.
+  // ProspectTemperature: 0 Cold, 1 Lukewarm, 2 Warm, 3 Hot, 4 Signing Up.
   temperature      Int?                         @db.UnsignedTinyInt
   // Drives "Days in Stage". Update it whenever stage changes.
   stage_changed_at DateTime                     @default(now()) @db.Timestamp(0)

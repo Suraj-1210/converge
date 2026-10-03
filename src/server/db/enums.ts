@@ -743,8 +743,9 @@ export const ProspectSourceLabel: Record<ProspectSource, string> = {
 
 export const PROSPECT_SOURCE_CODES = Object.values(ProspectSource) as ProspectSource[];
 
-// Pipeline order. LOST is terminal but not last-in-funnel: a lost prospect can
-// be re-opened, which is why stage history records from/to.
+// Pipeline order, matching the mock. CONVERTED means linked to a partner
+// organization (set via convert, not a plain stage move). LOST is terminal but
+// can be re-opened, which is why stage history records from/to.
 export const ProspectStage = {
   LEAD: 0,
   CONTACTED: 1,
@@ -752,7 +753,8 @@ export const ProspectStage = {
   PROPOSAL_SENT: 3,
   NEGOTIATION: 4,
   ONBOARDING: 5,
-  LOST: 6,
+  CONVERTED: 6,
+  LOST: 7,
 } as const;
 export type ProspectStage = (typeof ProspectStage)[keyof typeof ProspectStage];
 
@@ -763,6 +765,7 @@ export const ProspectStageLabel: Record<ProspectStage, string> = {
   [ProspectStage.PROPOSAL_SENT]: "Proposal Sent",
   [ProspectStage.NEGOTIATION]: "Negotiation",
   [ProspectStage.ONBOARDING]: "Onboarding",
+  [ProspectStage.CONVERTED]: "Converted",
   [ProspectStage.LOST]: "Lost",
 };
 
@@ -770,15 +773,19 @@ export const PROSPECT_STAGE_CODES = Object.values(ProspectStage) as ProspectStag
 
 export const ProspectTemperature = {
   COLD: 0,
-  WARM: 1,
-  HOT: 2,
+  LUKEWARM: 1,
+  WARM: 2,
+  HOT: 3,
+  SIGNING_UP: 4,
 } as const;
 export type ProspectTemperature = (typeof ProspectTemperature)[keyof typeof ProspectTemperature];
 
 export const ProspectTemperatureLabel: Record<ProspectTemperature, string> = {
   [ProspectTemperature.COLD]: "Cold",
+  [ProspectTemperature.LUKEWARM]: "Lukewarm",
   [ProspectTemperature.WARM]: "Warm",
   [ProspectTemperature.HOT]: "Hot",
+  [ProspectTemperature.SIGNING_UP]: "Signing Up",
 };
 
 export const PROSPECT_TEMPERATURE_CODES = Object.values(ProspectTemperature) as ProspectTemperature[];

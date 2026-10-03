@@ -237,9 +237,25 @@ const prospectRouter = createTRPCRouter({
           _count: { select: { tasks: { where: { is_done: 0 } } } },
         },
       });
+      const lastG = rows.length
+        ? await db.bdm_activity.groupBy({
+            by: ["prospect_id"],
+            where: { prospect_id: { in: rows.map((p) => p.id) } },
+            _max: { occurred_on: true },
+          })
+        : [];
+      const lastActivity = new Map<number, Date>();
+      for (const g of lastG) if (g.prospect_id != null && g._max.occurred_on) lastActivity.set(g.prospect_id, g._max.occurred_on);
       const today = businessToday();
-      const closed: number[] = [ProspectStage.ONBOARDING, ProspectStage.LOST];
-      return rows.map((p) => ({
+      const closed: number[] = [ProspectStage.CONVERTED, ProspectStage.LOST];
+      return rows.map((p) => {
+        // "Touched" = latest logged activity or stage change. The mock flags an
+        // open prospect Stale after 14 untouched days and At Risk after 30.
+        const last = lastActivity.get(p.id) ?? null;
+        const touched = last && last > p.stage_changed_at ? last : p.stage_changed_at;
+        const daysSinceTouch = Math.max(0, Math.floor((Date.now() - touched.getTime()) / MS_DAY));
+        const open = !closed.includes(p.stage);
+        return {
         id: p.id,
         agencyName: p.agency_name,
         contactName: p.contact_name,
@@ -254,14 +270,18 @@ const prospectRouter = createTRPCRouter({
         temperatureLabel: p.temperature != null ? (ProspectTemperatureLabel[p.temperature as ProspectTemperature] ?? null) : null,
         daysInStage: Math.max(0, Math.floor((Date.now() - p.stage_changed_at.getTime()) / MS_DAY)),
         nextFollowUp: ymd(p.next_follow_up),
-        followUpDue: p.next_follow_up != null && p.next_follow_up <= today && !closed.includes(p.stage),
+        followUpDue: open && p.next_follow_up != null && p.next_follow_up <= today,
+        lastActivity: ymd(last),
+        daysSinceTouch,
+        flag: !open ? null : daysSinceTouch >= 30 ? ("atRisk" as const) : daysSinceTouch >= 14 ? ("stale" as const) : null,
         notes: p.notes,
         bdmId: p.bdm_id,
         bdmName: fullName(p.bdm),
         convertedOrg: p.converted_org,
         openTasks: p._count.tasks,
         createdAt: p.created_at.toISOString(),
-      }));
+        };
+      });
     }),
 
   create: bdmCrmProcedure
@@ -357,6 +377,9 @@ const prospectRouter = createTRPCRouter({
         if (p.stage === input.toStage) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "The prospect is already in that stage." });
         }
+        if (input.toStage === ProspectStage.CONVERTED) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Use Convert to link the partner organization." });
+        }
         const moved = await tx.bdm_prospect.updateMany({
           where: { id: input.id, stage: p.stage },
           data: {
@@ -375,9 +398,9 @@ const prospectRouter = createTRPCRouter({
       });
     }),
 
-  // Links a prospect to the partner organization it became. The prospect row
-  // is kept so its history survives; if it wasn't already at Onboarding, the
-  // move is recorded.
+  // Links a prospect to the partner organization it became and moves it to
+  // Converted, recording the move. The prospect row is kept so its history
+  // survives. This is the only way into Converted.
   convert: bdmCrmProcedure
     .input(z.object({ id, organizationId: id }))
     .mutation(async ({ ctx, input }) => {
@@ -393,19 +416,13 @@ const prospectRouter = createTRPCRouter({
         if (p.converted_org_id != null) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "This prospect is already linked to a partner." });
         }
-        const toOnboarding = p.stage !== ProspectStage.ONBOARDING;
         await tx.bdm_prospect.update({
           where: { id: input.id },
-          data: {
-            converted_org_id: input.organizationId,
-            ...(toOnboarding ? { stage: ProspectStage.ONBOARDING, stage_changed_at: new Date() } : {}),
-          },
+          data: { converted_org_id: input.organizationId, stage: ProspectStage.CONVERTED, stage_changed_at: new Date() },
         });
-        if (toOnboarding) {
-          await tx.bdm_prospect_stage_history.create({
-            data: { prospect_id: input.id, from_stage: p.stage, to_stage: ProspectStage.ONBOARDING, note: "Converted to partner", changed_by: ctx.cpUser.id },
-          });
-        }
+        await tx.bdm_prospect_stage_history.create({
+          data: { prospect_id: input.id, from_stage: p.stage, to_stage: ProspectStage.CONVERTED, note: "Converted to partner", changed_by: ctx.cpUser.id },
+        });
       });
       await audit("bdm_prospect.converted", "bdm_prospect", input.id, { byCpUserId: ctx.cpUser.id, organizationId: input.organizationId });
       return { id: input.id };
