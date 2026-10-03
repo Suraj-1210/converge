@@ -4,25 +4,22 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "~/trpc/react";
 import { Toast } from "~/components/ui/toast";
 import { StatCard, SkeletonTable } from "~/components/dashboard/widgets";
-import { AdminRole } from "~/server/db/enums";
-import { fmtMoney, initials, relDays, PIPE_SEGMENTS, TIER_BADGE, STATUS_BADGE } from "./data";
+import { AdminRole, ProspectStage } from "~/server/db/enums";
+import { fmtMoney, relDays, PIPE_SEGMENTS, TIER_BADGE, STATUS_BADGE } from "./data";
+import { Avatar, CARD, TD, TH } from "./crm-ui";
+import { ProspectPipeline } from "./prospect-pipeline";
+import { ActivityLog, activityListInput } from "./activity-log";
+import { MyTasks } from "./my-tasks";
 
 // Note: this page renders REAL partner data (organizations + their students/applications/
-// commissions, grouped by the owner user's bdm_id). The mock's CRM sub-sections —
-// prospects, activity log, tasks, scorecard, alerts, agenda — have no backend yet and
-// were removed (preserved in git history) rather than ship synthetic records to prod.
+// commissions, grouped by the owner user's bdm_id). The CRM tabs (Prospect Pipeline,
+// Activity Log, My Tasks) run on the bdmCrm router and are shown to Super Admin and
+// BDM only, matching its server-side access rule. The mock's scorecard, alerts and
+// agenda still have no backend and remain out.
 
-const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
-const TD = "px-3 py-3 text-[13px] text-[#344054]";
-const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
 const TIER_RANK: Record<string, number> = { Diamond: 5, Titanium: 4, Platinum: 3, Gold: 2, Silver: 1 };
 const STATUS_RANK: Record<string, number> = { Active: 3, Pending: 2, Deactivated: 1 };
-const AVATAR_GRADIENTS = ["from-[#1570EF] to-[#0BA5EC]", "from-[#7F56D9] to-[#9E77ED]", "from-[#12B76A] to-[#32D583]", "from-[#F79009] to-[#FDB022]", "from-[#F04438] to-[#FD853A]"];
-const avatarFor = (name: string) => AVATAR_GRADIENTS[name.length % AVATAR_GRADIENTS.length]!;
-
-function Avatar({ name }: { name: string }) {
-  return <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br ${avatarFor(name)} text-[11px] font-bold text-white`}>{initials(name)}</span>;
-}
+type ContentTab = "portfolio" | "prospects" | "activity" | "tasks";
 
 export default function BDMPerformancePage() {
   const meQ = api.authSession.me.useQuery();
@@ -30,6 +27,10 @@ export default function BDMPerformancePage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const isBdm = mounted && role === AdminRole.BDM;
+  const isSuperAdmin = mounted && role === AdminRole.SUPER_ADMIN;
+  const canCrm = isBdm || isSuperAdmin;
+  const meId = meQ.data?.id;
+  const [tab, setTab] = useState<ContentTab>("portfolio");
 
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
@@ -91,6 +92,32 @@ export default function BDMPerformancePage() {
   );
 
   const loading = !mounted || ov.isLoading;
+  // CRM scope: a BDM is pinned to themselves by the server, so they send none.
+  // Super Admin follows the BDM selector.
+  const crmScope = useMemo(() => (!isBdm && bdm !== "all" ? { bdmId: Number(bdm) } : {}), [isBdm, bdm]);
+  const defaultBdmId = !isBdm && bdm !== "all" ? Number(bdm) : undefined;
+  // Same inputs the tab components use, so these share their cache.
+  const prospectsQ = api.bdmCrm.prospect.list.useQuery(crmScope, { enabled: canCrm });
+  const activitiesQ = api.bdmCrm.activity.list.useQuery(activityListInput(crmScope), { enabled: canCrm });
+  const taskSummaryQ = api.bdmCrm.task.summary.useQuery(crmScope, { enabled: canCrm });
+  const bdmOptions = useMemo(() => (bdmsQ.data?.bdms ?? []).map((b) => ({ id: b.id, name: b.name })), [bdmsQ.data]);
+  // A BDM may only attach activities and tasks to their own partners.
+  const partnerOptions = useMemo(
+    () => partners.filter((p) => !isBdm || p.bdmId === meId).map((p) => ({ id: p.id, name: p.name, city: p.city })),
+    [partners, isBdm, meId],
+  );
+  const prospectOptions = useMemo(
+    () => (prospectsQ.data ?? []).filter((p) => p.stage !== ProspectStage.CONVERTED).map((p) => ({ id: p.id, name: p.agencyName })),
+    [prospectsQ.data],
+  );
+  const contentTabs: { id: ContentTab; label: string; count: number }[] = [
+    { id: "portfolio", label: "Partner Portfolio", count: portfolioRows.length },
+    { id: "prospects", label: "Prospect Pipeline", count: (prospectsQ.data ?? []).filter((p) => p.stage !== ProspectStage.CONVERTED && p.stage !== ProspectStage.LOST).length },
+    { id: "activity", label: "Activity Log", count: activitiesQ.data?.length ?? 0 },
+    { id: "tasks", label: isSuperAdmin ? "Tasks" : "My Tasks", count: taskSummaryQ.data?.open ?? 0 },
+  ];
+  const crmProps = { scope: crmScope, isSuperAdmin, defaultBdmId, bdms: bdmOptions, partners: partnerOptions, notify: toast };
+
   const selectorTabs = [{ id: "all", label: "All BDMs", count: bdmsQ.data?.total ?? 0 }, ...(bdmsQ.data?.bdms ?? []).map((b) => ({ id: String(b.id), label: b.name, count: b.partnerCount }))];
 
   return (
@@ -146,6 +173,26 @@ export default function BDMPerformancePage() {
         </div>
       )}
 
+      {/* Content tabs (CRM users only) */}
+      {canCrm && (
+        <div className="mb-5 flex flex-wrap gap-1 border-b border-[#E4E7EC]">
+          {contentTabs.map((t) => {
+            const on = tab === t.id;
+            return (
+              <button key={t.id} onClick={() => setTab(t.id)} className={`-mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-semibold ${on ? "border-[#1570EF] text-[#1570EF]" : "border-transparent text-[#667085] hover:text-[#344054]"}`}>
+                {t.label}<span className={`rounded-full px-1.5 py-0.5 text-[11px] ${on ? "bg-[#EFF8FF] text-[#1570EF]" : "bg-[#F2F4F7] text-[#344054]"}`}>{t.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {canCrm && tab === "prospects" && <ProspectPipeline {...crmProps} />}
+      {canCrm && tab === "activity" && <ActivityLog {...crmProps} prospects={prospectOptions} />}
+      {canCrm && tab === "tasks" && <MyTasks {...crmProps} prospects={prospectOptions} />}
+
+      {(!canCrm || tab === "portfolio") && (
+      <>
       {/* Filter bar */}
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <select value={fType} onChange={(e) => setFType(e.target.value)} className="h-9 rounded-lg border border-[#D0D5DD] px-3 text-sm text-[#344054] outline-none focus:border-[#1570EF]"><option value="">All Partner Types</option><option value="Active">Active</option><option value="Pending">Pending</option><option value="Deactivated">Deactivated</option></select>
@@ -216,6 +263,9 @@ export default function BDMPerformancePage() {
           </div>
         )}
       </div>
+
+      </>
+      )}
 
       <Toast message={toastMsg} open={toastOpen} onClose={() => setToastOpen(false)} />
     </div>
