@@ -20,6 +20,7 @@ import { reconciliationRouter } from "~/server/api/routers/reconciliation";
 import { settingsRouter } from "~/server/api/routers/settings";
 import { auditRouter } from "~/server/api/routers/audit";
 import { bdmRouter } from "~/server/api/routers/bdm";
+import { bdmCrmRouter } from "~/server/api/routers/bdm-crm";
 import { fxRouter } from "~/server/api/routers/fx";
 import { notificationsRouter } from "~/server/api/routers/notifications";
 import { partnerNotificationsRouter } from "~/server/api/routers/partner-notifications";
@@ -50,6 +51,7 @@ export const appRouter = createTRPCRouter({
   settings: settingsRouter,
   audit: auditRouter,
   bdm: bdmRouter,
+  bdmCrm: bdmCrmRouter,
   fx: fxRouter,
   notifications: notificationsRouter,
   partnerNotifications: partnerNotificationsRouter,

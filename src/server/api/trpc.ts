@@ -186,6 +186,22 @@ export const operationsProcedure = protectedAdminProcedure.use(({ ctx, next }) =
   return next();
 });
 
+// BDM CRM access (prospects, activities, tasks). A BDM sees and edits only
+// their own records; that per-record scoping is enforced in the bdm-crm router,
+// not here. Super Admin sees everyone's. Every other role is refused: these
+// rows hold agency contact details and sales notes, so access starts narrow.
+// To open the CRM to another role, add it here.
+const BDM_CRM_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.BDM];
+export const bdmCrmProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
+  if (!BDM_CRM_ROLES.includes(ctx.cpUser.role)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "BDM access is required for this action.",
+    });
+  }
+  return next();
+});
+
 // Requires a valid partner (user table) session cookie.
 export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next }) => {
   if (!ctx.cpPartner) {
