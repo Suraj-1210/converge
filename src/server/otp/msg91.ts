@@ -7,6 +7,7 @@ const OTP_EXPIRY_MINUTES = 5;
 interface Msg91Response {
   type?: string;
   message?: string;
+  request_id?: string;
 }
 
 function authkey(): string {
@@ -38,12 +39,16 @@ export async function sendPhoneOtp(phoneE164: string): Promise<void> {
   if (!env.MSG91_SMS_TEMPLATE_ID) {
     throw new Error("MSG91_SMS_TEMPLATE_ID not configured");
   }
-  await msg91Fetch("https://control.msg91.com/api/v5/otp", {
+  const data = await msg91Fetch("https://control.msg91.com/api/v5/otp", {
     template_id: env.MSG91_SMS_TEMPLATE_ID,
     mobile: phoneE164,
     otp_length: OTP_LENGTH,
     otp_expiry: OTP_EXPIRY_MINUTES,
   });
+  // MSG91 accepts the request before the SMS is delivered, so "accepted" is not
+  // "delivered". Log its request id (never the phone number) so a code that
+  // doesn't arrive can be looked up in MSG91's delivery reports.
+  console.log(`[otp] MSG91 accepted SMS OTP request ${data.request_id ?? data.message ?? "(no request id)"}`);
 }
 
 export async function verifyPhoneOtp(phoneE164: string, code: string): Promise<boolean> {
