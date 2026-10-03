@@ -265,8 +265,15 @@ function ProspectFormModal({
     temperature: prospect?.temperature != null ? String(prospect.temperature) : "",
     nextFollowUp: prospect?.nextFollowUp ?? "",
     notes: prospect?.notes ?? "",
-    bdmId: defaultBdmId != null ? String(defaultBdmId) : "",
+    bdmId: prospect
+      ? bdms.some((b) => b.id === prospect.bdmId)
+        ? String(prospect.bdmId)
+        : ""
+      : defaultBdmId != null
+        ? String(defaultBdmId)
+        : "",
   });
+  const reassigning = editing && isSuperAdmin && f.bdmId !== "" && Number(f.bdmId) !== prospect.bdmId;
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((s) => ({ ...s, [k]: e.target.value }));
   const done = (msg: string) => {
     void utils.bdmCrm.invalidate();
@@ -274,9 +281,17 @@ function ProspectFormModal({
     onClose();
   };
   const create = api.bdmCrm.prospect.create.useMutation({ onSuccess: () => done("Prospect created"), onError: (e) => notify(e.message) });
-  const update = api.bdmCrm.prospect.update.useMutation({ onSuccess: () => done("Prospect updated"), onError: (e) => notify(e.message) });
+  const update = api.bdmCrm.prospect.update.useMutation({
+    onSuccess: (r) =>
+      done(
+        r.reassigned
+          ? `Prospect reassigned${r.movedOpenTasks ? ` · ${r.movedOpenTasks} open task${r.movedOpenTasks === 1 ? "" : "s"} moved` : ""}`
+          : "Prospect updated",
+      ),
+    onError: (e) => notify(e.message),
+  });
   const busy = create.isPending || update.isPending;
-  const missing = !f.agencyName.trim() || f.source === "" || (isSuperAdmin && !editing && f.bdmId === "");
+  const missing = !f.agencyName.trim() || f.source === "" || (isSuperAdmin && f.bdmId === "");
 
   const submit = () => {
     if (missing) return;
@@ -295,6 +310,7 @@ function ProspectFormModal({
         ...common,
         temperature: f.temperature === "" ? null : Number(f.temperature),
         nextFollowUp: f.nextFollowUp === "" ? null : f.nextFollowUp,
+        bdmId: reassigning ? Number(f.bdmId) : undefined,
       });
     } else {
       create.mutate({
@@ -334,12 +350,20 @@ function ProspectFormModal({
       </div>
       <div className="flex gap-3">
         <FormInput label="Next Follow-up" type="date" value={f.nextFollowUp} onChange={set("nextFollowUp")} />
-        {isSuperAdmin && !editing ? (
+        {isSuperAdmin ? (
           <PersonSelect label="BDM" required includeMe={false} value={f.bdmId} onChange={(v) => setF((s) => ({ ...s, bdmId: v }))} bdms={bdms} />
         ) : (
           <div className="flex-1" />
         )}
       </div>
+      {reassigning && (
+        <p className="rounded-lg bg-[#EFF8FF] px-3 py-2 text-[13px] text-[#175CD3]">
+          Reassigning moves this prospect and its open tasks to {bdms.find((b) => String(b.id) === f.bdmId)?.name ?? "the new BDM"}. Completed tasks and logged activities stay as history.
+        </p>
+      )}
+      {editing && isSuperAdmin && f.bdmId === "" && (
+        <p className="rounded-lg bg-[#FFFAEB] px-3 py-2 text-[13px] text-[#B54708]">{prospect.bdmName} is no longer an active BDM. Choose who takes over this prospect.</p>
+      )}
       <FormTextarea label="Notes" value={f.notes} onChange={set("notes")} rows={3} maxLength={1000} />
     </Modal>
   );

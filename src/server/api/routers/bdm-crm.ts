@@ -327,6 +327,10 @@ const prospectRouter = createTRPCRouter({
     }),
 
   // Edit details. Stage changes go through advanceStage so they are recorded.
+  // bdmId reassigns the prospect to another BDM (Super Admin only). The
+  // prospect's open tasks follow it to the new BDM, or they would sit with
+  // someone who can no longer see the prospect; completed tasks and logged
+  // activities stay with whoever did them, as history. The move is audited.
   update: bdmCrmProcedure
     .input(
       z.object({
@@ -340,27 +344,52 @@ const prospectRouter = createTRPCRouter({
         temperature: temperatureCode.nullable().optional(),
         nextFollowUp: dateOnly.nullable().optional(),
         notes: text(1000),
+        bdmId: id.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const p = await db.bdm_prospect.findUnique({ where: { id: input.id }, select: { bdm_id: true } });
       if (!p) throw notFound("Prospect");
       assertOwns(ctx.cpUser, p.bdm_id, "Prospect");
-      await db.bdm_prospect.update({
-        where: { id: input.id },
-        data: {
-          agency_name: input.agencyName,
-          contact_name: input.contactName,
-          email: input.email,
-          phone: input.phone,
-          city: input.city,
-          source: input.source,
-          temperature: input.temperature,
-          next_follow_up: input.nextFollowUp,
-          notes: input.notes,
-        },
+      const reassignTo = input.bdmId != null && input.bdmId !== p.bdm_id ? input.bdmId : null;
+      if (reassignTo != null) {
+        if (ctx.cpUser.role !== AdminRole.SUPER_ADMIN) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only a Super Admin can reassign a prospect." });
+        }
+        await assertActiveBdm(reassignTo);
+      }
+      const movedOpenTasks = await db.$transaction(async (tx) => {
+        await tx.bdm_prospect.update({
+          where: { id: input.id },
+          data: {
+            agency_name: input.agencyName,
+            contact_name: input.contactName,
+            email: input.email,
+            phone: input.phone,
+            city: input.city,
+            source: input.source,
+            temperature: input.temperature,
+            next_follow_up: input.nextFollowUp,
+            notes: input.notes,
+            ...(reassignTo != null ? { bdm_id: reassignTo } : {}),
+          },
+        });
+        if (reassignTo == null) return 0;
+        const moved = await tx.bdm_task.updateMany({
+          where: { prospect_id: input.id, is_done: 0, assigned_to: p.bdm_id },
+          data: { assigned_to: reassignTo },
+        });
+        return moved.count;
       });
-      return { id: input.id };
+      if (reassignTo != null) {
+        await audit("bdm_prospect.reassigned", "bdm_prospect", input.id, {
+          byCpUserId: ctx.cpUser.id,
+          fromBdmId: p.bdm_id,
+          toBdmId: reassignTo,
+          movedOpenTasks,
+        });
+      }
+      return { id: input.id, reassigned: reassignTo != null, movedOpenTasks };
     }),
 
   // Moves a prospect to another stage (forwards, backwards, or to Lost) and
