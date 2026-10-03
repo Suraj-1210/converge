@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
+import { bdmPerformanceProcedure, createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
 
@@ -52,7 +52,7 @@ export const bdmRouter = createTRPCRouter({
     };
   }),
 
-  overview: protectedAdminProcedure
+  overview: bdmPerformanceProcedure
     .input(z.object({ bdmId: z.number().int().optional() }).optional())
     .query(async ({ ctx, input }) => {
       // A BDM sees only their own portfolio. The page hides the BDM selector

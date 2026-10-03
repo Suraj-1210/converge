@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { bdmCrmProcedure, createTRPCRouter } from "~/server/api/trpc";
+import { bdmPerformanceProcedure, createTRPCRouter } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
   AdminRole,
@@ -28,7 +28,7 @@ import {
 // Backs the Prospect Pipeline / Activity Log / My Tasks sections of BDM
 // Performance. Tables: prisma/sql/migrations/20261002120000_bdm_crm.sql.
 //
-// Access: bdmCrmProcedure admits Super Admin and BDM only. On top of that, a
+// Access: bdmPerformanceProcedure admits Super Admin and BDM only. On top of that, a
 // BDM is pinned to their own records here: lists are filtered to them, and any
 // read or write of someone else's record answers NOT_FOUND (not FORBIDDEN) so
 // ids can't be probed. Super Admin sees and edits everyone's.
@@ -208,7 +208,7 @@ async function audit(action: string, entityType: string, entityId: number, metad
 
 const prospectRouter = createTRPCRouter({
   // Pipeline rows, grouped by stage and stalest-first within each stage.
-  list: bdmCrmProcedure
+  list: bdmPerformanceProcedure
     .input(
       z
         .object({
@@ -284,7 +284,7 @@ const prospectRouter = createTRPCRouter({
       });
     }),
 
-  create: bdmCrmProcedure
+  create: bdmPerformanceProcedure
     .input(
       z.object({
         agencyName: z.string().trim().min(1).max(255),
@@ -331,7 +331,7 @@ const prospectRouter = createTRPCRouter({
   // prospect's open tasks follow it to the new BDM, or they would sit with
   // someone who can no longer see the prospect; completed tasks and logged
   // activities stay with whoever did them, as history. The move is audited.
-  update: bdmCrmProcedure
+  update: bdmPerformanceProcedure
     .input(
       z.object({
         id,
@@ -396,7 +396,7 @@ const prospectRouter = createTRPCRouter({
   // records the change with its note. The update is conditional on the stage
   // it read, so two people advancing the same prospect at once can't both
   // succeed against a stale stage.
-  advanceStage: bdmCrmProcedure
+  advanceStage: bdmPerformanceProcedure
     .input(z.object({ id, toStage: stageCode, note: text(1000), temperature: temperatureCode.optional() }))
     .mutation(async ({ ctx, input }) => {
       return db.$transaction(async (tx) => {
@@ -430,7 +430,7 @@ const prospectRouter = createTRPCRouter({
   // Links a prospect to the partner organization it became and moves it to
   // Converted, recording the move. The prospect row is kept so its history
   // survives. This is the only way into Converted.
-  convert: bdmCrmProcedure
+  convert: bdmPerformanceProcedure
     .input(z.object({ id, organizationId: id }))
     .mutation(async ({ ctx, input }) => {
       const org = await db.organization.findUnique({ where: { id: input.organizationId }, select: { id: true } });
@@ -457,7 +457,7 @@ const prospectRouter = createTRPCRouter({
       return { id: input.id };
     }),
 
-  history: bdmCrmProcedure.input(z.object({ id })).query(async ({ ctx, input }) => {
+  history: bdmPerformanceProcedure.input(z.object({ id })).query(async ({ ctx, input }) => {
     const p = await db.bdm_prospect.findUnique({ where: { id: input.id }, select: { bdm_id: true } });
     if (!p) throw notFound("Prospect");
     assertOwns(ctx.cpUser, p.bdm_id, "Prospect");
@@ -483,7 +483,7 @@ const prospectRouter = createTRPCRouter({
 
 const activityRouter = createTRPCRouter({
   // The log of what each person did. Scoped by who performed the activity.
-  list: bdmCrmProcedure
+  list: bdmPerformanceProcedure
     .input(
       z
         .object({
@@ -527,7 +527,7 @@ const activityRouter = createTRPCRouter({
       }));
     }),
 
-  log: bdmCrmProcedure
+  log: bdmPerformanceProcedure
     .input(
       z.object({
         type: activityTypeCode,
@@ -569,7 +569,7 @@ const taskStatus = z.enum(["open", "dueToday", "overdue", "upcoming", "completed
 
 const taskRouter = createTRPCRouter({
   // Counts behind the Open Tasks / Due Today / Overdue cards.
-  summary: bdmCrmProcedure
+  summary: bdmPerformanceProcedure
     .input(z.object({ bdmId: id.optional() }).optional())
     .query(async ({ ctx, input }) => {
       const who = listScope(ctx.cpUser, input?.bdmId);
@@ -585,7 +585,7 @@ const taskRouter = createTRPCRouter({
       return { open, dueToday, overdue, urgent, completed };
     }),
 
-  list: bdmCrmProcedure
+  list: bdmPerformanceProcedure
     .input(
       z
         .object({
@@ -646,7 +646,7 @@ const taskRouter = createTRPCRouter({
       });
     }),
 
-  create: bdmCrmProcedure
+  create: bdmPerformanceProcedure
     .input(
       z.object({
         title: z.string().trim().min(1).max(255),
@@ -679,7 +679,7 @@ const taskRouter = createTRPCRouter({
       return { id: task.id };
     }),
 
-  complete: bdmCrmProcedure.input(z.object({ id })).mutation(async ({ ctx, input }) => {
+  complete: bdmPerformanceProcedure.input(z.object({ id })).mutation(async ({ ctx, input }) => {
     const t = await db.bdm_task.findUnique({ where: { id: input.id }, select: { assigned_to: true } });
     if (!t) throw notFound("Task");
     assertOwns(ctx.cpUser, t.assigned_to, "Task");
@@ -687,7 +687,7 @@ const taskRouter = createTRPCRouter({
     return { id: input.id };
   }),
 
-  reopen: bdmCrmProcedure.input(z.object({ id })).mutation(async ({ ctx, input }) => {
+  reopen: bdmPerformanceProcedure.input(z.object({ id })).mutation(async ({ ctx, input }) => {
     const t = await db.bdm_task.findUnique({ where: { id: input.id }, select: { assigned_to: true } });
     if (!t) throw notFound("Task");
     assertOwns(ctx.cpUser, t.assigned_to, "Task");
@@ -697,7 +697,7 @@ const taskRouter = createTRPCRouter({
 
   // bdm_task keeps no reschedule history, so the old date and the reason go to
   // audit_log.
-  reschedule: bdmCrmProcedure
+  reschedule: bdmPerformanceProcedure
     .input(z.object({ id, dueDate: dateOnly, reason: text(500) }))
     .mutation(async ({ ctx, input }) => {
       if (input.dueDate < businessToday()) {

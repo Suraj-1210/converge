@@ -12,10 +12,10 @@ import { ActivityLog, activityListInput } from "./activity-log";
 import { MyTasks } from "./my-tasks";
 
 // Note: this page renders REAL partner data (organizations + their students/applications/
-// commissions, grouped by the owner user's bdm_id). The CRM tabs (Prospect Pipeline,
-// Activity Log, My Tasks) run on the bdmCrm router and are shown to Super Admin and
-// BDM only, matching its server-side access rule. The mock's scorecard, alerts and
-// agenda still have no backend and remain out.
+// commissions, grouped by the owner user's bdm_id). The whole page is for Super Admin
+// and BDM only, matching the server's bdmPerformanceProcedure; other roles get a
+// plain message. The CRM tabs (Prospect Pipeline, Activity Log, My Tasks) run on the
+// bdmCrm router. The mock's scorecard, alerts and agenda still have no backend.
 
 const TIER_RANK: Record<string, number> = { Diamond: 5, Titanium: 4, Platinum: 3, Gold: 2, Silver: 1 };
 const STATUS_RANK: Record<string, number> = { Active: 3, Pending: 2, Deactivated: 1 };
@@ -43,8 +43,8 @@ export default function BDMPerformancePage() {
   const [sortKey, setSortKey] = useState("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const bdmsQ = api.bdm.bdms.useQuery();
-  const ov = api.bdm.overview.useQuery(bdm === "all" ? undefined : { bdmId: Number(bdm) });
+  const bdmsQ = api.bdm.bdms.useQuery(undefined, { enabled: canCrm });
+  const ov = api.bdm.overview.useQuery(bdm === "all" ? undefined : { bdmId: Number(bdm) }, { enabled: canCrm });
 
   const partners = useMemo(() => ov.data?.partners ?? [], [ov.data]);
   const leaderboard = ov.data?.leaderboard ?? [];
@@ -91,7 +91,7 @@ export default function BDMPerformancePage() {
     </th>
   );
 
-  const loading = !mounted || ov.isLoading;
+  const loading = !mounted || meQ.isLoading || ov.isLoading;
   // CRM scope: a BDM is pinned to themselves by the server, so they send none.
   // Super Admin follows the BDM selector.
   const crmScope = useMemo(() => (!isBdm && bdm !== "all" ? { bdmId: Number(bdm) } : {}), [isBdm, bdm]);
@@ -119,6 +119,15 @@ export default function BDMPerformancePage() {
   const crmProps = { scope: crmScope, isSuperAdmin, defaultBdmId, bdms: bdmOptions, partners: partnerOptions, notify: toast };
 
   const selectorTabs = [{ id: "all", label: "All BDMs", count: bdmsQ.data?.total ?? 0 }, ...(bdmsQ.data?.bdms ?? []).map((b) => ({ id: String(b.id), label: b.name, count: b.partnerCount }))];
+
+  if (mounted && meQ.isSuccess && !canCrm) {
+    return (
+      <div className="mx-auto mt-16 max-w-md rounded-xl border border-[#E4E7EC] bg-white p-8 text-center">
+        <h1 className="text-lg font-bold text-[#101828]">BDM Performance</h1>
+        <p className="mt-2 text-sm text-[#667085]">This page is available to BDMs and Super Admins only.</p>
+      </div>
+    );
+  }
 
   return (
     <div>

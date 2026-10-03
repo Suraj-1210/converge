@@ -68,6 +68,9 @@ const FINANCE_NAV_ROLES: AdminRole[] = [
   "finance_exec",
 ];
 
+// BDM Performance: BDMs and Super Admin only (the server also blocks the calls).
+const BDM_NAV_ROLES: AdminRole[] = ["super_admin", "bdm"];
+
 // Maps the numeric AdminRole code (src/server/db/enums.ts) to the sidebar's
 // string role. Ops/counsellor variants collapse to the nearest sidebar bucket;
 // only the finance/admin gate is exercised today.
@@ -145,6 +148,7 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "BDM Performance",
         href: "/admin/bdm-performance",
         icon: <BarChartIcon />,
+        roles: BDM_NAV_ROLES,
       },
     ],
   },
