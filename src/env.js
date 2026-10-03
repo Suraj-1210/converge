@@ -16,6 +16,9 @@ export const env = createEnv({
     MSG91_EMAIL_TEMPLATE_ID: z.string().optional(),
     MSG91_EMAIL_FROM: z.string().optional(),
     MSG91_EMAIL_DOMAIN: z.string().optional(),
+    // How the admin login code is delivered: "sms" (default) or "email". Staging
+    // uses "email" so testers can sign in while MSG91 SMS delivery is unreliable.
+    ADMIN_LOGIN_OTP_CHANNEL: z.enum(["sms", "email"]).optional(),
     // MSG91 email templates for transactional (non-OTP) mail. Optional — the
     // sender degrades to a minimal log until the template exists.
     MSG91_ADMIN_NOTIFY_TEMPLATE_ID: z.string().optional(),
@@ -79,6 +82,7 @@ export const env = createEnv({
     MSG91_EMAIL_TEMPLATE_ID: process.env.MSG91_EMAIL_TEMPLATE_ID,
     MSG91_EMAIL_FROM: process.env.MSG91_EMAIL_FROM,
     MSG91_EMAIL_DOMAIN: process.env.MSG91_EMAIL_DOMAIN,
+    ADMIN_LOGIN_OTP_CHANNEL: process.env.ADMIN_LOGIN_OTP_CHANNEL,
     MSG91_ADMIN_NOTIFY_TEMPLATE_ID: process.env.MSG91_ADMIN_NOTIFY_TEMPLATE_ID,
     MSG91_MOREINFO_TEMPLATE_ID: process.env.MSG91_MOREINFO_TEMPLATE_ID,
     MSG91_PARTNER_APPROVED_TEMPLATE_ID:

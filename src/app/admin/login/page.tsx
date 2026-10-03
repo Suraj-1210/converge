@@ -9,7 +9,7 @@ import { PhoneInput } from "~/components/ui/phone-input";
 import { OtpInput } from "~/components/ui/otp-input";
 import { Button } from "~/components/ui/button";
 import { isValidEmail, isValidPhone, getExpectedPhoneDigits } from "~/lib/utils/validation";
-import { maskPhone } from "~/lib/utils/masking";
+import { maskEmail, maskPhone } from "~/lib/utils/masking";
 import { api } from "~/trpc/react";
 import {
   DevAutopilotBadge,
@@ -115,6 +115,8 @@ export default function AdminLoginPage() {
 
   // Dev autopilot: sandbox code returned by sendLoginOtp (null in prod).
   const [devOtp, setDevOtp] = useState<string | null>(null);
+  // Where the server sent the code (SMS unless ADMIN_LOGIN_OTP_CHANNEL=email).
+  const [otpChannel, setOtpChannel] = useState<"sms" | "email">("sms");
 
   // tRPC mutations
   const sendOtp = api.adminAuth.sendLoginOtp.useMutation();
@@ -173,6 +175,7 @@ export default function AdminLoginPage() {
           setOtp(["", "", "", "", ""]);
           setOtpError("");
           setDevOtp(data.devOtp ?? null);
+          setOtpChannel(data.channel);
           setScreen("otp");
           startResendTimer();
         },
@@ -216,7 +219,12 @@ export default function AdminLoginPage() {
     startResendTimer();
     sendOtp.mutate(
       { email, phone: phone.replace(/\s/g, ""), countryCode },
-      { onSuccess: (data) => setDevOtp(data.devOtp ?? null) },
+      {
+        onSuccess: (data) => {
+          setDevOtp(data.devOtp ?? null);
+          setOtpChannel(data.channel);
+        },
+      },
     );
   };
 
@@ -235,6 +243,7 @@ export default function AdminLoginPage() {
           setOtp(["", "", "", "", ""]);
           setOtpError("");
           setDevOtp(data.devOtp ?? null);
+          setOtpChannel(data.channel);
           setScreen("otp");
           startResendTimer();
         },
@@ -353,9 +362,11 @@ export default function AdminLoginPage() {
                   Verify your identity
                 </h1>
                 <div className="mb-6 text-sm leading-relaxed text-[#667085]">
-                  Code sent to your phone
+                  Code sent to your {otpChannel === "email" ? "email" : "phone"}
                   <br />
-                  <strong className="text-[#344054]">{maskPhone(phone, countryCode)}</strong>
+                  <strong className="text-[#344054]">
+                    {otpChannel === "email" ? maskEmail(email) : maskPhone(phone, countryCode)}
+                  </strong>
                 </div>
 
                 <DevAutopilotBadge visible={autopilotRunning} />

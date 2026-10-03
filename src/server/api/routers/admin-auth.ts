@@ -1,11 +1,15 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { env } from "~/env";
 import { createTRPCRouter, publicProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
+  devPeekEmailOtp,
   devPeekPhoneOtp,
+  sendEmailOtp,
   sendPhoneOtp,
   toE164,
+  verifyEmailOtp,
   verifyPhoneOtp,
 } from "~/server/otp";
 import { SESSION_COOKIE_NAME, signSessionJwt } from "~/server/auth/jwt";
@@ -35,8 +39,16 @@ function splitPhone(stored: string): { phone: string; countryCode: string } {
   return { countryCode: "", phone: stored };
 }
 
+// Where the login code goes. SMS to the registered phone by default;
+// ADMIN_LOGIN_OTP_CHANNEL=email mails it to the registered address instead.
+// Either way the email AND phone must both match the account first.
+function loginOtpChannel(): "sms" | "email" {
+  return env.ADMIN_LOGIN_OTP_CHANNEL === "email" ? "email" : "sms";
+}
+
 // Admin login: identifies the user by email against `collegepond_user`,
-// requires the registered phone to match, and uses phone OTP only.
+// requires the registered phone to match, then verifies a one-time code sent
+// over the channel above.
 export const adminAuthRouter = createTRPCRouter({
   sendLoginOtp: publicProcedure
     .input(
@@ -68,8 +80,10 @@ export const adminAuthRouter = createTRPCRouter({
       const storedE164 = toE164(stored.phone, stored.countryCode);
       if (providedE164 !== storedE164) throw mismatchError;
 
+      const channel = loginOtpChannel();
       try {
-        await sendPhoneOtp(providedE164);
+        if (channel === "email") await sendEmailOtp(user.email);
+        else await sendPhoneOtp(providedE164);
       } catch {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -78,7 +92,8 @@ export const adminAuthRouter = createTRPCRouter({
       }
 
       // Dev autopilot fuel — always null outside dev/sandbox.
-      return { success: true as const, devOtp: devPeekPhoneOtp(providedE164) };
+      const devOtp = channel === "email" ? devPeekEmailOtp(user.email) : devPeekPhoneOtp(providedE164);
+      return { success: true as const, channel, devOtp };
     }),
 
   verifyLoginOtp: publicProcedure
@@ -114,7 +129,10 @@ export const adminAuthRouter = createTRPCRouter({
         });
       }
 
-      const ok = await verifyPhoneOtp(providedE164, input.otp);
+      const ok =
+        loginOtpChannel() === "email"
+          ? await verifyEmailOtp(user.email, input.otp)
+          : await verifyPhoneOtp(providedE164, input.otp);
       if (!ok) {
         throw new TRPCError({
           code: "BAD_REQUEST",
