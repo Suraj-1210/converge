@@ -122,8 +122,8 @@ services:
       - key: MSG91_EMAIL_DOMAIN
         scope: RUN_TIME
         value: mail.convergeapp.co
-      # Admin login codes go by email on staging (MSG91 SMS reports "delivered"
-      # but doesn't reach handsets). Production leaves this unset = SMS.
+      # Admin login code channel: "sms" (same as production) or "email". Email
+      # was the stopgap while MSG91_AUTH_KEY still held the placeholder.
       - key: ADMIN_LOGIN_OTP_CHANNEL
         scope: RUN_TIME
-        value: email
+        value: sms
