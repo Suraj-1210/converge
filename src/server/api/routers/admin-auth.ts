@@ -84,7 +84,18 @@ export const adminAuthRouter = createTRPCRouter({
       try {
         if (channel === "email") await sendEmailOtp(user.email);
         else await sendPhoneOtp(providedE164);
-      } catch {
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        // Resend within the email cooldown: the code already sent stays valid.
+        if (reason.startsWith("An OTP was just sent")) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "A code was just sent. Check your inbox, or wait 30 seconds and try again.",
+          });
+        }
+        // The provider's reason (never the code, email or phone) so a failed
+        // send can be diagnosed from the logs.
+        console.error(`[otp] admin login ${channel} send failed for cp_user ${user.id}: ${reason}`);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to send OTP",

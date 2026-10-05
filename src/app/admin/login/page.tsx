@@ -179,6 +179,7 @@ export default function AdminLoginPage() {
           setScreen("otp");
           startResendTimer();
         },
+        onError: (e) => setPhoneError(e.message === "Failed to send OTP" ? "Couldn't send the code. Please try again in a minute." : e.message),
       },
     );
   };
@@ -224,6 +225,7 @@ export default function AdminLoginPage() {
           setDevOtp(data.devOtp ?? null);
           setOtpChannel(data.channel);
         },
+        onError: (e) => setOtpError(e.message === "Failed to send OTP" ? "Couldn't resend the code. Please try again in a minute." : e.message),
       },
     );
   };
