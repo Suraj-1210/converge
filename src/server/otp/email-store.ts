@@ -47,6 +47,16 @@ export async function issueEmailOtp(email: string): Promise<string | null> {
   return code;
 }
 
+/**
+ * Withdraws a code that never reached the user (the send failed), so the
+ * resend cooldown does not block an immediate retry.
+ */
+export async function discardEmailOtp(email: string): Promise<void> {
+  await db.otp_code
+    .delete({ where: { identifier: email.toLowerCase() } })
+    .catch(() => undefined);
+}
+
 /** Verifies a code, enforcing expiry and the attempt cap. Consumes on success. */
 export async function checkEmailOtp(email: string, code: string): Promise<boolean> {
   const identifier = email.toLowerCase();

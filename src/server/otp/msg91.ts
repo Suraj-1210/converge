@@ -1,5 +1,5 @@
 import { env } from "~/env";
-import { checkEmailOtp, issueEmailOtp } from "./email-store";
+import { checkEmailOtp, discardEmailOtp, issueEmailOtp } from "./email-store";
 
 const OTP_LENGTH = 5;
 const OTP_EXPIRY_MINUTES = 5;
@@ -80,12 +80,18 @@ export async function sendEmailOtp(email: string): Promise<void> {
     throw new Error("An OTP was just sent. Please wait before requesting another.");
   }
 
-  await msg91Fetch("https://control.msg91.com/api/v5/email/send", {
-    recipients: [{ to: [{ email }], variables: { otp: code } }],
-    from: { email: env.MSG91_EMAIL_FROM },
-    domain: env.MSG91_EMAIL_DOMAIN,
-    template_id: env.MSG91_EMAIL_TEMPLATE_ID,
-  });
+  try {
+    await msg91Fetch("https://control.msg91.com/api/v5/email/send", {
+      recipients: [{ to: [{ email }], variables: { otp: code } }],
+      from: { email: env.MSG91_EMAIL_FROM },
+      domain: env.MSG91_EMAIL_DOMAIN,
+      template_id: env.MSG91_EMAIL_TEMPLATE_ID,
+    });
+  } catch (e) {
+    // Nothing was sent, so don't let this code hold the resend cooldown.
+    await discardEmailOtp(email);
+    throw e;
+  }
 }
 
 export function verifyEmailOtp(email: string, code: string): Promise<boolean> {
