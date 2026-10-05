@@ -8,6 +8,8 @@ interface Msg91Response {
   type?: string;
   message?: string;
   request_id?: string;
+  status?: string;
+  errors?: unknown;
 }
 
 function authkey(): string {
@@ -27,8 +29,11 @@ async function msg91Fetch(url: string, body: unknown): Promise<Msg91Response> {
     body: JSON.stringify(body),
   });
   const data = (await res.json().catch(() => ({}))) as Msg91Response;
-  if (!res.ok || data.type === "error") {
-    throw new Error(data.message ?? `MSG91 request failed (${res.status})`);
+  if (!res.ok || data.type === "error" || data.status === "fail") {
+    // MSG91 puts the reason in `message` (OTP API) or `errors` (email API).
+    // Neither echoes the authkey, so the detail is safe to surface in logs.
+    const detail = data.message ?? (data.errors ? JSON.stringify(data.errors).slice(0, 300) : "");
+    throw new Error(`MSG91 request failed (${res.status})${detail ? `: ${detail}` : ""}`);
   }
   return data;
 }
