@@ -88,11 +88,12 @@ export const ENG_TESTS: Array<{
   placeholder: string;
 }> = [
   { value: "IELTS", label: "IELTS", min: 0, max: 9, step: 0.5, placeholder: "7.0" },
-  { value: "TOEFL", label: "TOEFL iBT", min: 0, max: 120, step: 1, placeholder: "100" },
+  { value: "TOEFL", label: "TOEFL iBT (0–120)", min: 0, max: 120, step: 1, placeholder: "100" },
+  { value: "TOEFL2026", label: "TOEFL iBT 2026 (1–6)", min: 1, max: 6, step: 0.5, placeholder: "4.5" },
   { value: "DET", label: "DET", min: 10, max: 160, step: 1, placeholder: "120" },
 ];
 
-export type EngTest = "IELTS" | "TOEFL" | "DET";
+export type EngTest = "IELTS" | "TOEFL" | "TOEFL2026" | "DET";
 
 // Static USD-pivot rates for the tuition-range filter and tuition sorting —
 // same table the design mock ships. Good enough for filtering; not a source
@@ -234,9 +235,17 @@ export function applyFilters(rows: Program[], f: FilterState): Program[] {
     if (!passTri(f.open, p.isOpen)) return false;
     if (engScore !== null && !Number.isNaN(engScore)) {
       // Pass when the program states no requirement, or the student's score
-      // meets it.
+      // meets it. TOEFL is compared on the scale the student's score is on:
+      // the two scales aren't convertible point for point, so a program that
+      // only states the other scale counts as stating no requirement.
       const req =
-        f.engTest === "IELTS" ? p.ielts : f.engTest === "TOEFL" ? p.toefl : p.det;
+        f.engTest === "IELTS"
+          ? p.ielts
+          : f.engTest === "TOEFL"
+            ? p.toefl
+            : f.engTest === "TOEFL2026"
+              ? p.toefl2026
+              : p.det;
       if (req !== null && req > engScore) return false;
     }
     if (tuitionActive) {

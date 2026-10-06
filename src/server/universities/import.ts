@@ -34,6 +34,7 @@ const COURSE_HEADERS = {
   code: "code",
   url: "url",
   toefl: "toefl",
+  toefl_2026: "toefl_2026",
   ielts: "ielts",
   det: "det",
   pte: "pte",
@@ -107,6 +108,8 @@ export interface PreviewCourseRow {
     isOpen: boolean;
     url: string | null;
     toefl: number | null;
+    /** TOEFL iBT 2026 band scale, 1-6. */
+    toefl2026: number | null;
     ielts: number | null;
     det: number | null;
     pte: number | null;
@@ -501,6 +504,9 @@ export async function parseAndValidate(
       if (!asString(r[COURSE_HEADERS.currency], 3))
         errors.push("currency is required");
       if (!asString(r[COURSE_HEADERS.url], 255)) errors.push("url is required");
+      const toefl2026 = asDecimal(r[COURSE_HEADERS.toefl_2026]);
+      if (toefl2026 !== null && (toefl2026 < 1 || toefl2026 > 6 || (toefl2026 * 2) % 1 !== 0))
+        errors.push("toefl_2026 must be a band from 1 to 6 in steps of 0.5 (use toefl for 0-120 scores)");
       const deadline = asDate(r[COURSE_HEADERS.application_deadline]);
       if (deadline.invalid)
         errors.push("application_deadline must be a date such as 2027-06-30, or left blank");
@@ -539,6 +545,7 @@ export async function parseAndValidate(
           isOpen: asBool(r[COURSE_HEADERS.is_open], true),
           url: asString(r[COURSE_HEADERS.url], 255),
           toefl: asDecimal(r[COURSE_HEADERS.toefl]),
+          toefl2026,
           ielts: asDecimal(r[COURSE_HEADERS.ielts]),
           det: asInt(r[COURSE_HEADERS.det]),
           pte: asDecimal(r[COURSE_HEADERS.pte]),
@@ -705,6 +712,7 @@ export async function commitImport(
       is_open: row.data.isOpen ? 1 : 0,
       url: url,
       toefl: row.data.toefl,
+      toefl_2026: row.data.toefl2026,
       ielts: row.data.ielts,
       det: row.data.det,
       pte: row.data.pte,

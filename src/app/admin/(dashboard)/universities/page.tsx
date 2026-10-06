@@ -144,6 +144,7 @@ interface CourseFormState {
   isOpen: boolean;
   url: string;
   toefl: string;
+  toefl2026: string;
   ielts: string;
   det: string;
   pte: string;
@@ -175,6 +176,7 @@ const emptyCourseForm = (): CourseFormState => ({
   isOpen: true,
   url: "",
   toefl: "",
+  toefl2026: "",
   ielts: "",
   det: "",
   pte: "",
@@ -489,6 +491,7 @@ export default function AdminUniversitiesPage() {
       isOpen: courseForm.isOpen,
       url: url,
       toefl: numOrNull(courseForm.toefl),
+      toefl2026: numOrNull(courseForm.toefl2026),
       ielts: numOrNull(courseForm.ielts),
       det: intOrNull(courseForm.det),
       pte: numOrNull(courseForm.pte),
@@ -531,6 +534,7 @@ export default function AdminUniversitiesPage() {
       isOpen: c.isOpen,
       url: c.url ?? "",
       toefl: c.toefl == null ? "" : String(c.toefl),
+      toefl2026: c.toefl2026 == null ? "" : String(c.toefl2026),
       ielts: c.ielts == null ? "" : String(c.ielts),
       det: c.det == null ? "" : String(c.det),
       pte: c.pte == null ? "" : String(c.pte),
@@ -1075,11 +1079,21 @@ export default function AdminUniversitiesPage() {
         <SectionDivider label="Test Requirements (minimum)" />
         <div className="grid grid-cols-3 gap-3">
           <FormInput
-            label="TOEFL"
+            label="TOEFL iBT (0–120)"
             type="number"
             placeholder="0–120"
             value={courseForm.toefl}
             onChange={(e) => setCourseForm({ ...courseForm, toefl: e.target.value })}
+          />
+          <FormInput
+            label="TOEFL iBT 2026 (1–6)"
+            type="number"
+            step={0.5}
+            min={1}
+            max={6}
+            placeholder="1–6"
+            value={courseForm.toefl2026}
+            onChange={(e) => setCourseForm({ ...courseForm, toefl2026: e.target.value })}
           />
           <FormInput
             label="IELTS"
@@ -1496,6 +1510,7 @@ function ProgramRequirements({ c }: { c: CourseRow }) {
   const reqs: string[] = [];
   if (c.ielts !== null) reqs.push(`IELTS ${c.ielts}`);
   if (c.toefl !== null) reqs.push(`TOEFL ${c.toefl}`);
+  if (c.toefl2026 !== null) reqs.push(`TOEFL 2026 ${c.toefl2026}`);
   if (c.pte !== null) reqs.push(`PTE ${c.pte}`);
   if (c.det !== null) reqs.push(`DET ${c.det}`);
   if (c.gre !== null) reqs.push(`GRE ${c.gre}`);

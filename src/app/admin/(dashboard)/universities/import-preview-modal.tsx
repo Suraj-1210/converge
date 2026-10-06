@@ -46,6 +46,7 @@ interface PreviewCourseRow {
     isOpen: boolean;
     url: string | null;
     toefl: number | null;
+    toefl2026: number | null;
     ielts: number | null;
     det: number | null;
     pte: number | null;
