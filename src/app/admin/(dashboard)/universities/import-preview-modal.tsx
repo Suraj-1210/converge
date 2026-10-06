@@ -48,6 +48,10 @@ interface PreviewCourseRow {
     toefl: number | null;
     ielts: number | null;
     det: number | null;
+    pte: number | null;
+    gre: number | null;
+    gmat: number | null;
+    applicationDeadline: string | null;
     isStem: boolean;
     intakeMonth: string | null;
     intakeYear: number | null;

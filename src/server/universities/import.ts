@@ -36,6 +36,10 @@ const COURSE_HEADERS = {
   toefl: "toefl",
   ielts: "ielts",
   det: "det",
+  pte: "pte",
+  gre: "gre",
+  gmat: "gmat",
+  application_deadline: "application_deadline",
   is_stem: "is_stem",
   intake_month: "intake_month",
   intake_year: "intake_year",
@@ -105,6 +109,11 @@ export interface PreviewCourseRow {
     toefl: number | null;
     ielts: number | null;
     det: number | null;
+    pte: number | null;
+    gre: number | null;
+    gmat: number | null;
+    /** YYYY-MM-DD. */
+    applicationDeadline: string | null;
     isStem: boolean;
     intakeMonth: string | null;
     intakeYear: number | null;
@@ -209,6 +218,45 @@ function asDecimal(v: CellValue): number | null {
       : Number(String(v).trim().replace(/[^0-9.\-]/g, ""));
   if (!Number.isFinite(n)) return null;
   return n;
+}
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+function isoDate(y: number, m: number, d: number): string | null {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return dt.toISOString().slice(0, 10);
+}
+
+/**
+ * A date cell: an Excel date, 2027-06-30, 30/06/2027 (day first), 30 June 2027
+ * or June 30, 2027. A trailing "*" is ignored. `invalid` is true for text that
+ * isn't a date (e.g. "Check programme-specific deadline").
+ */
+function asDate(v: CellValue): { value: string | null; invalid: boolean } {
+  if (v === null || v === undefined || v === "") return { value: null, invalid: false };
+  if (typeof v === "number") {
+    // Excel stores dates as days since 1899-12-30.
+    if (v < 1 || v > 2958465) return { value: null, invalid: true };
+    const dt = new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * 86_400_000);
+    return { value: dt.toISOString().slice(0, 10), invalid: false };
+  }
+  const s = String(v).replace(/\*+/g, "").replace(/\s+/g, " ").trim();
+  if (!s) return { value: null, invalid: false };
+  let m: RegExpMatchArray | null;
+  let value: string | null = null;
+  if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))) {
+    value = isoDate(+m[1]!, +m[2]!, +m[3]!);
+  } else if ((m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s))) {
+    value = isoDate(+m[3]!, +m[2]!, +m[1]!);
+  } else if ((m = /^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\.?,?\s+(\d{4})$/i.exec(s))) {
+    const mon = MONTHS.indexOf(m[2]!.slice(0, 3).toLowerCase());
+    if (mon >= 0) value = isoDate(+m[3]!, mon + 1, +m[1]!);
+  } else if ((m = /^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/i.exec(s))) {
+    const mon = MONTHS.indexOf(m[1]!.slice(0, 3).toLowerCase());
+    if (mon >= 0) value = isoDate(+m[3]!, mon + 1, +m[2]!);
+  }
+  return { value, invalid: value === null };
 }
 
 function asCountry(v: CellValue): string | null {
@@ -453,6 +501,9 @@ export async function parseAndValidate(
       if (!asString(r[COURSE_HEADERS.currency], 3))
         errors.push("currency is required");
       if (!asString(r[COURSE_HEADERS.url], 255)) errors.push("url is required");
+      const deadline = asDate(r[COURSE_HEADERS.application_deadline]);
+      if (deadline.invalid)
+        errors.push("application_deadline must be a date such as 2027-06-30, or left blank");
 
       if (code) {
         const codeKey = code.toLowerCase();
@@ -490,6 +541,10 @@ export async function parseAndValidate(
           toefl: asDecimal(r[COURSE_HEADERS.toefl]),
           ielts: asDecimal(r[COURSE_HEADERS.ielts]),
           det: asInt(r[COURSE_HEADERS.det]),
+          pte: asDecimal(r[COURSE_HEADERS.pte]),
+          gre: asInt(r[COURSE_HEADERS.gre]),
+          gmat: asInt(r[COURSE_HEADERS.gmat]),
+          applicationDeadline: deadline.value,
           isStem: asBool(r[COURSE_HEADERS.is_stem]),
           intakeMonth: asString(r[COURSE_HEADERS.intake_month], 50),
           intakeYear: asInt(r[COURSE_HEADERS.intake_year]),
@@ -499,7 +554,7 @@ export async function parseAndValidate(
           hasTuitionDeposit: asBool(r[COURSE_HEADERS.has_tuition_deposit]),
           hasScholarship: asBool(r[COURSE_HEADERS.has_scholarship]),
           scholarshipAmount: asDecimal(r[COURSE_HEADERS.scholarship_amount]),
-          minEntryRequirements: asString(r[COURSE_HEADERS.min_entry_requirements], 50),
+          minEntryRequirements: asString(r[COURSE_HEADERS.min_entry_requirements], 2000),
           minEntryRequirementsScale: asString(
             r[COURSE_HEADERS.min_entry_requirements_scale],
             20,
@@ -652,6 +707,12 @@ export async function commitImport(
       toefl: row.data.toefl,
       ielts: row.data.ielts,
       det: row.data.det,
+      pte: row.data.pte,
+      gre: row.data.gre,
+      gmat: row.data.gmat,
+      application_deadline: row.data.applicationDeadline
+        ? new Date(`${row.data.applicationDeadline}T00:00:00Z`)
+        : null,
       is_stem: row.data.isStem ? 1 : 0,
       intake_month: row.data.intakeMonth,
       intake_year: row.data.intakeYear,

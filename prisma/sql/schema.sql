@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS `course` (
   `has_tuition_deposit`           TINYINT(1) NOT NULL DEFAULT 0,
   `has_scholarship`               TINYINT(1) NOT NULL DEFAULT 0,
   `scholarship_amount`            DECIMAL(12,2) UNSIGNED NULL DEFAULT NULL,
-  `min_entry_req`                 VARCHAR(50)   NULL DEFAULT NULL,  -- renamed from min_entry_requirements
+  `min_entry_req`                 VARCHAR(2000) NULL DEFAULT NULL,  -- renamed from min_entry_requirements; full requirement text
   `min_entry_requirements_scale`  VARCHAR(20)   NULL DEFAULT NULL,
   `has_faster_tat`                TINYINT(1) NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
