@@ -68,7 +68,7 @@ const courseInput = z.object({
   hasTuitionDeposit: z.boolean().default(false),
   hasScholarship: z.boolean().default(false),
   scholarshipAmount: z.number().nonnegative().nullable().optional(),
-  minEntryRequirements: z.string().trim().max(50).nullable().optional(),
+  minEntryRequirements: z.string().trim().max(2000).nullable().optional(),
   minEntryRequirementsScale: z.string().trim().max(20).nullable().optional(),
   hasFasterTat: z.boolean().default(false),
 });

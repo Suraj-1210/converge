@@ -162,7 +162,7 @@ model course {
   has_scholarship              Int               @default(0) @db.TinyInt
   scholarship_amount           Decimal?          @db.Decimal(12, 2)
   // DB column renamed to `min_entry_req`; Prisma field kept via @map.
-  min_entry_requirements       String?           @map("min_entry_req") @db.VarChar(50)
+  min_entry_requirements       String?           @map("min_entry_req") @db.VarChar(2000)
   min_entry_requirements_scale String?           @db.VarChar(20)
   has_faster_tat               Int?              @db.TinyInt
   application                  application[]

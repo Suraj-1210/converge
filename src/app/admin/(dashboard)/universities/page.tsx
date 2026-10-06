@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Button } from "~/components/ui/button";
-import { FormInput } from "~/components/ui/form-input";
+import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Modal } from "~/components/ui/modal";
 import { StatCard } from "~/components/ui/stat-card";
@@ -1117,17 +1117,20 @@ export default function AdminUniversitiesPage() {
             onChange={(e) => setCourseForm({ ...courseForm, gmat: e.target.value })}
           />
         </div>
+        <FormTextarea
+          label="Min. Entry Requirement"
+          placeholder="e.g. 3.0, 65%, or the full requirement text from the program page"
+          rows={3}
+          maxLength={2000}
+          value={courseForm.minEntryRequirements}
+          onChange={(e) =>
+            setCourseForm({ ...courseForm, minEntryRequirements: e.target.value })
+          }
+        />
         <div className="grid grid-cols-2 gap-3">
           <FormInput
-            label="Min. Entry Requirement"
-            placeholder="e.g. 3.0, 65%"
-            value={courseForm.minEntryRequirements}
-            onChange={(e) =>
-              setCourseForm({ ...courseForm, minEntryRequirements: e.target.value })
-            }
-          />
-          <FormInput
             label="Scale"
+            maxLength={20}
             placeholder="e.g. GPA, Percentage, CGPA"
             value={courseForm.minEntryRequirementsScale}
             onChange={(e) =>
