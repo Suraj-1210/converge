@@ -292,7 +292,8 @@ CREATE TABLE IF NOT EXISTS `course` (
   `code`                          VARCHAR(50) NULL DEFAULT NULL,
   -- Catalog enrichment fields populated from the Master_B2B import.
   `url`                           VARCHAR(255)  NOT NULL,
-  `toefl`                         DECIMAL(5,2) UNSIGNED NULL DEFAULT NULL,
+  `toefl`                         DECIMAL(5,2) UNSIGNED NULL DEFAULT NULL,  -- TOEFL iBT on the 0-120 scale
+  `toefl_2026`                    DECIMAL(2,1) UNSIGNED NULL DEFAULT NULL,  -- TOEFL iBT on the 1-6 band scale (from Jan 2026)
   `ielts`                         DECIMAL(3,1) UNSIGNED NULL DEFAULT NULL,
   `duolingo`                      SMALLINT UNSIGNED NULL DEFAULT NULL,  -- renamed from det
   `pte`                           DECIMAL(4,1) NULL DEFAULT NULL,

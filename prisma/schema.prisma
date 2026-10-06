@@ -145,6 +145,8 @@ model course {
   // unsigned-decimal attribute, so the DB enforces non-negativity and Prisma
   // reads them as plain Decimal (intentional, documented drift).
   toefl                        Decimal?          @db.Decimal(5, 2)
+  // TOEFL iBT 2026 band scale (1-6); `toefl` above is the 0-120 scale.
+  toefl_2026                   Decimal?          @db.Decimal(2, 1)
   ielts                        Decimal?          @db.Decimal(3, 1)
   // DB column renamed to `duolingo`; Prisma field kept as `det` via @map.
   det                          Int?              @map("duolingo") @db.UnsignedSmallInt

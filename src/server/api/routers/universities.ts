@@ -53,6 +53,7 @@ const courseInput = z.object({
   isOpen: z.boolean().default(true),
   url: z.string().trim().min(1).max(255),
   toefl: z.number().nonnegative().nullable().optional(),
+  toefl2026: z.number().min(1).max(6).multipleOf(0.5).nullable().optional(),
   ielts: z.number().nonnegative().nullable().optional(),
   det: z.number().int().nonnegative().nullable().optional(),
   pte: z.number().nonnegative().nullable().optional(),
@@ -143,6 +144,7 @@ function toCourseApi(c: {
   is_open: number;
   url: string | null;
   toefl: { toNumber: () => number } | null;
+  toefl_2026: { toNumber: () => number } | null;
   ielts: { toNumber: () => number } | null;
   det: number | null;
   pte: { toNumber: () => number } | null;
@@ -181,6 +183,7 @@ function toCourseApi(c: {
     isOpen: c.is_open === 1,
     url: c.url,
     toefl: c.toefl?.toNumber() ?? null,
+    toefl2026: c.toefl_2026?.toNumber() ?? null,
     ielts: c.ielts?.toNumber() ?? null,
     det: c.det,
     pte: c.pte?.toNumber() ?? null,
@@ -357,6 +360,7 @@ export const universitiesRouter = createTRPCRouter({
           is_open: bool(input.isOpen),
           url: input.url,
           toefl: input.toefl ?? null,
+          toefl_2026: input.toefl2026 ?? null,
           ielts: input.ielts ?? null,
           det: input.det ?? null,
           pte: input.pte ?? null,
@@ -414,6 +418,7 @@ export const universitiesRouter = createTRPCRouter({
           is_open: bool(input.isOpen),
           url: input.url,
           toefl: input.toefl ?? null,
+          toefl_2026: input.toefl2026 ?? null,
           ielts: input.ielts ?? null,
           det: input.det ?? null,
           pte: input.pte ?? null,
