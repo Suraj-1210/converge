@@ -11,7 +11,6 @@ import {
   volumeRangeToCode,
   type ApplicationStatus,
 } from "~/server/db/enums";
-import { toISO2 } from "~/lib/constants/location-data";
 
 export type { ApplicationStatus } from "~/server/db/enums";
 
@@ -45,7 +44,9 @@ type ApplicationInput = Omit<
   Application,
   "applicationId" | "status" | "submittedAt" | "updatedAt"
 > & {
-  bdmId?: number | null;
+  // Normalised and validated by the signup router (~/lib/utils/pan). Stored on
+  // the organization for an agency, on the user for an independent.
+  pan?: string;
 };
 
 function generateTrackingId(): string {
@@ -131,10 +132,12 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
             address: input.companyAddress ?? null,
             city: input.city ?? null,
             state: input.state ?? null,
-            country: toISO2(input.country),
+            country: input.country ?? null,
             num_counsellors: counsellorRangeToCode(input.numCounselors),
             annual_student_volume: volumeRangeToCode(input.annualVolume),
             gst_registered: boolToTinyint(input.gstRegistered),
+            // Re-applying without a PAN keeps the one already on file.
+            ...(input.pan ? { pan: input.pan } : {}),
           },
         });
         orgId = existing.org_id;
@@ -156,10 +159,11 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
             address: input.companyAddress ?? null,
             city: input.city ?? null,
             state: input.state ?? null,
-            country: toISO2(input.country),
+            country: input.country ?? null,
             num_counsellors: counsellorRangeToCode(input.numCounselors),
             annual_student_volume: volumeRangeToCode(input.annualVolume),
             gst_registered: boolToTinyint(input.gstRegistered) ?? null,
+            pan: input.pan ?? null,
             is_verified: 0,
           },
         });
@@ -183,11 +187,13 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
       // the company step; the independent signup flow does NOT capture an address
       // yet, so those fall back to "" to satisfy the constraint. TODO: add an
       // address step to the independent flow to store real values.
-      country: toISO2(input.country) ?? "",
+      country: input.country ?? "",
       state: input.state ?? "",
       city: input.city ?? "",
       address: input.companyAddress ?? "",
-      bdm_id: input.bdmId ?? null,
+      // BDMs are assigned internally after signup, never by the applicant, so
+      // a re-application leaves any existing assignment alone.
+      ...(input.role === "independent" && input.pan ? { pan: input.pan } : {}),
     };
 
     const user = existing
@@ -447,7 +453,10 @@ export async function listApplications(): Promise<PartnerListing[]> {
       tier: user.tier,
       bdmId: user.bdm_id,
       bdmName: bdm ? `${bdm.first_name} ${bdm.last_name}`.trim() : null,
-      pan: user.organization?.pan ?? null,
+      pan:
+        role === "agency"
+          ? (user.organization?.pan ?? null)
+          : blankToNull(user.pan),
       gstNumber: user.organization?.gst_number ?? null,
       gstRegistered:
         user.organization?.gst_registered == null
@@ -529,20 +538,39 @@ export async function setPartnerBdm(
   });
 }
 
-// Update the agency's PAN on the linked organization (independents have no org).
+// The partner's PAN holder rule: an agency owner enters the company / firm /
+// proprietor PAN, an independent counsellor their personal one.
+export async function partnerPanHolder(
+  email: string,
+): Promise<"agency" | "individual" | null> {
+  const user = await db.user.findUnique({
+    where: { email: email.toLowerCase() },
+    select: { type: true },
+  });
+  if (!user) return null;
+  return user.type === UserType.AGENCY_OWNER ? "agency" : "individual";
+}
+
+// Update a partner's PAN: on the linked organization for an agency, on the
+// user row for an independent. `pan` must already be validated (~/lib/utils/pan).
 export async function setPartnerPan(
   email: string,
   pan: string | null,
 ): Promise<boolean> {
   const user = await db.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { org_id: true },
+    select: { id: true, type: true, org_id: true },
   });
-  if (!user?.org_id) return false;
-  await db.organization.update({
-    where: { id: user.org_id },
-    data: { pan: blankToNull(pan) },
-  });
+  if (!user) return false;
+  if (user.type === UserType.AGENCY_OWNER) {
+    if (!user.org_id) return false;
+    await db.organization.update({
+      where: { id: user.org_id },
+      data: { pan: blankToNull(pan) },
+    });
+  } else {
+    await db.user.update({ where: { id: user.id }, data: { pan: blankToNull(pan) } });
+  }
   return true;
 }
 

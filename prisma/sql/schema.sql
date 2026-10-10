@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS `user` (
   `city`                            VARCHAR(100) NOT NULL,
   `state`                           VARCHAR(100) NOT NULL,
   `country`                         VARCHAR(2)   NOT NULL,
+  -- Personal PAN of an independent counsellor. An agency's PAN lives on
+  -- organization.pan instead.
+  `pan`                             VARCHAR(15)  NULL DEFAULT NULL,
   `approved_by_cp_user_id`          INT NULL DEFAULT NULL,
   `lead_counsellor_id`              INT NULL DEFAULT NULL,
   `counsellor_id`                   INT NULL DEFAULT NULL,
@@ -1346,6 +1349,48 @@ CREATE TABLE IF NOT EXISTS `bdm_task` (
     FOREIGN KEY (`organization_id`) REFERENCES `organization` (`id`),
   CONSTRAINT `fk_bdm_task_prospect`
     FOREIGN KEY (`prospect_id`) REFERENCES `bdm_prospect` (`id`)
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- geo_country / geo_state / geo_city — location master list
+-- -----------------------------------------------------
+-- Reference data for the country / state / city pickers (partner signup).
+-- Loaded from GeoNames (CC BY 4.0) by the *_geo_master_data.sql migration,
+-- which scripts/geo-build.mjs generates. Ids are GeoNames ids.
+-- organization / user keep storing the picked names (and ISO2 country), not
+-- these ids, so a city typed in by hand ("not listed") still fits.
+CREATE TABLE IF NOT EXISTS `geo_country` (
+  `iso2`  CHAR(2)      NOT NULL,
+  `name`  VARCHAR(100) NOT NULL,
+  PRIMARY KEY (`iso2`)
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `geo_state` (
+  `id`           INT UNSIGNED NOT NULL,
+  `country_iso2` CHAR(2)      NOT NULL,
+  `code`         VARCHAR(20)  NOT NULL,  -- GeoNames admin1 code, e.g. IN.16 -> "16"
+  `name`         VARCHAR(100) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_geo_state_country_code` (`country_iso2` ASC, `code` ASC) VISIBLE,
+  INDEX `idx_geo_state_country_name` (`country_iso2` ASC, `name` ASC) VISIBLE,
+  CONSTRAINT `fk_geo_state_country`
+    FOREIGN KEY (`country_iso2`) REFERENCES `geo_country` (`iso2`)
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `geo_city` (
+  `id`           INT UNSIGNED NOT NULL,
+  `country_iso2` CHAR(2)      NOT NULL,
+  `state_id`     INT UNSIGNED NULL DEFAULT NULL,  -- NULL when GeoNames has no admin1 for it
+  `name`         VARCHAR(100) NOT NULL,
+  `population`   INT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  INDEX `idx_geo_city_state_name` (`state_id` ASC, `name` ASC) VISIBLE,
+  INDEX `idx_geo_city_country_name` (`country_iso2` ASC, `name` ASC) VISIBLE,
+  CONSTRAINT `fk_geo_city_country`
+    FOREIGN KEY (`country_iso2`) REFERENCES `geo_country` (`iso2`),
+  CONSTRAINT `fk_geo_city_state`
+    FOREIGN KEY (`state_id`) REFERENCES `geo_state` (`id`)
 ) ENGINE = InnoDB;
 
 

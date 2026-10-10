@@ -5,6 +5,7 @@ import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { AdminRole } from "~/server/db/enums";
+import { normalizePan, panError } from "~/lib/utils/pan";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 
@@ -1260,9 +1261,7 @@ function PartnerDetailSlideOver({
   savingBdm: boolean;
   savingPan: boolean;
 }) {
-  const [panDraft, setPanDraft] = useState(p.pan ?? "");
   const isAgency = p.role === "agency";
-  const panDirty = (panDraft.trim() || null) !== (p.pan ?? null);
 
   return (
     <div className="fixed inset-0 z-[200]">
@@ -1343,28 +1342,28 @@ function PartnerDetailSlideOver({
                   }
                 />
                 <DetailItem label="GSTIN" value={p.gstNumber ?? "—"} />
-                {/* PAN — editable */}
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[#98A2B3]">
-                    PAN
-                  </div>
-                  <div className="mt-1 flex items-center gap-1.5">
-                    <input
-                      value={panDraft}
-                      onChange={(e) => setPanDraft(e.target.value.toUpperCase())}
-                      placeholder="ABCDE1234F"
-                      maxLength={15}
-                      className="h-[34px] w-full rounded-lg border border-[#D0D5DD] px-2.5 text-sm text-[#344054] uppercase outline-none focus:border-[#1570EF]"
-                    />
-                    <button
-                      onClick={() => onSavePan(panDraft.trim() || null)}
-                      disabled={!panDirty || savingPan}
-                      className="h-[34px] shrink-0 cursor-pointer rounded-lg bg-[#1570EF] px-3 text-xs font-semibold text-white hover:bg-[#0B4EA2] disabled:opacity-40"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
+                <PanEditor
+                  label="Company PAN"
+                  pan={p.pan}
+                  holder="agency"
+                  saving={savingPan}
+                  onSave={onSavePan}
+                />
+              </div>
+            </Section>
+          )}
+
+          {/* Independents: personal PAN on the user row */}
+          {!isAgency && (
+            <Section title="Tax">
+              <div className="grid grid-cols-2 gap-4">
+                <PanEditor
+                  label="PAN"
+                  pan={p.pan}
+                  holder="individual"
+                  saving={savingPan}
+                  onSave={onSavePan}
+                />
               </div>
             </Section>
           )}
@@ -1472,6 +1471,54 @@ function PartnerDetailSlideOver({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Inline PAN edit. Uses the same validator as signup and the setPan API, so an
+// invalid or wrong-holder-type PAN is caught before it is sent.
+function PanEditor({
+  label,
+  pan,
+  holder,
+  saving,
+  onSave,
+}: {
+  label: string;
+  pan: string | null;
+  holder: "agency" | "individual";
+  saving: boolean;
+  onSave: (pan: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(pan ?? "");
+  const normalized = normalizePan(draft);
+  const dirty = (normalized || null) !== (pan ?? null);
+  const error = normalized ? panError(normalized, holder) : null;
+
+  return (
+    <div className="col-span-2">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#98A2B3]">
+        {label}
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(normalizePan(e.target.value))}
+          placeholder={holder === "agency" ? "ABCDE1234F" : "ABCPE1234F"}
+          maxLength={10}
+          className={`h-[34px] w-full rounded-lg border px-2.5 text-sm text-[#344054] uppercase outline-none focus:border-[#1570EF] ${
+            dirty && error ? "border-[#F04438]" : "border-[#D0D5DD]"
+          }`}
+        />
+        <button
+          onClick={() => onSave(normalized || null)}
+          disabled={!dirty || !!error || saving}
+          className="h-[34px] shrink-0 cursor-pointer rounded-lg bg-[#1570EF] px-3 text-xs font-semibold text-white hover:bg-[#0B4EA2] disabled:opacity-40"
+        >
+          Save
+        </button>
+      </div>
+      {dirty && error && <div className="mt-1 text-xs text-[#F04438]">{error}</div>}
     </div>
   );
 }

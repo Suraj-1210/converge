@@ -5,11 +5,14 @@
 // Brings an EMPTY database up to the current schema:
 //   1. applies prisma/sql/schema.sql   (the full structure — source of truth)
 //   2. applies prisma/sql/seed.sql     (dev/staging accounts; --no-seed to skip)
-//   3. records every file in prisma/sql/migrations/ as already applied
+//   3. records every file in prisma/sql/migrations/ as already applied —
+//      except reference-data files (*_data.sql), which it runs first
 //
 // Step 3 matters: schema.sql already contains every delta but does not populate
 // schema_migrations, so without it db-apply.mjs would later try to re-apply
 // migrations onto columns that already exist. See its baseline note.
+// *_data.sql files load rows (e.g. the geo_* location master list) that
+// schema.sql cannot carry; they are idempotent, so running them is safe.
 //
 // Like db-apply.mjs this talks to MySQL through mysql2, so it runs inside the
 // App Platform container where no `mysql` client exists.
@@ -108,10 +111,17 @@ try {
   const files = existsSync(MIG_DIR)
     ? readdirSync(MIG_DIR).filter((f) => f.endsWith(".sql")).sort()
     : [];
+  const dataFiles = files.filter((f) => f.endsWith("_data.sql"));
+  for (const f of dataFiles) {
+    console.log(`Loading reference data ${f}...`);
+    await conn.query(readFileSync(join(MIG_DIR, f), "utf8"));
+  }
   for (const f of files) {
     await conn.query("INSERT IGNORE INTO schema_migrations (version) VALUES (?)", [f]);
   }
-  console.log(`Baselined ${files.length} migration(s) — none were executed.`);
+  console.log(
+    `Baselined ${files.length} migration(s) — only the ${dataFiles.length} *_data.sql file(s) were executed.`,
+  );
 
   const [[{ n: tables }]] = await conn.query(
     "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = ?",

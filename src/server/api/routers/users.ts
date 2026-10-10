@@ -90,8 +90,7 @@ export const usersRouter = createTRPCRouter({
   }),
 
   // Used by the partner-approval modal to pick a counsellor lead / counsellor.
-  // (Partner signup uses signup.listBdms instead — that path is public-facing
-  // and intentionally narrow.)
+  // Admin-only: team names must never reach the public signup form.
   listByRole: protectedAdminProcedure
     .input(z.object({ role: z.number().int() }))
     .query(async ({ input }) => {

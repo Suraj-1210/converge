@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AuthLayout } from "~/components/ui/auth-layout";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
+import { FormCombobox } from "~/components/ui/form-combobox";
 import { PhoneInput } from "~/components/ui/phone-input";
 import { OtpInput } from "~/components/ui/otp-input";
 import { Button } from "~/components/ui/button";
@@ -19,13 +20,8 @@ import {
   getExpectedPhoneDigits,
 } from "~/lib/utils/validation";
 import { maskEmail, maskPhone } from "~/lib/utils/masking";
-import {
-  countries,
-  getStates,
-  getCities,
-  counselorRanges,
-  volumeRanges,
-} from "~/lib/constants/location-data";
+import { counselorRanges, volumeRanges } from "~/lib/constants/location-data";
+import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
 import { api } from "~/trpc/react";
 
 type Role = "agency" | "independent";
@@ -138,6 +134,7 @@ interface FormErrors {
   numCounselors?: string;
   annualVolume?: string;
   gstRegistered?: string;
+  pan?: string;
   consent?: string;
   documents?: string;
 }
@@ -175,8 +172,8 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
-  const [bdmId, setBdmId] = useState<string>("");
-  const bdmsQuery = api.signup.listBdms.useQuery();
+  // Company PAN for an agency, personal PAN for an independent.
+  const [pan, setPan] = useState("");
 
   // Company data
   const [companyName, setCompanyName] = useState("");
@@ -184,6 +181,8 @@ export default function SignupPage() {
   const [country, setCountry] = useState("");
   const [state, setState] = useState("");
   const [city, setCity] = useState("");
+  // The applicant chose "My city isn't listed" and is typing it instead.
+  const [cityManual, setCityManual] = useState(false);
   const [companyAddress, setCompanyAddress] = useState("");
   const [numCounselors, setNumCounselors] = useState("");
   const [annualVolume, setAnnualVolume] = useState("");
@@ -235,6 +234,31 @@ export default function SignupPage() {
   const submitApp = api.signup.submitApplication.useMutation();
 
   const rightContentRef = useRef<HTMLDivElement>(null);
+
+  // Location master list (geo_* tables). Reference data — fetch once.
+  const geoOpts = { staleTime: Infinity, refetchOnWindowFocus: false } as const;
+  const countriesQuery = api.geo.countries.useQuery(undefined, geoOpts);
+  const statesQuery = api.geo.states.useQuery(
+    { country },
+    { ...geoOpts, enabled: country.length === 2 },
+  );
+  const stateNames = statesQuery.data ?? [];
+  const hasStates = stateNames.length > 0;
+  const citiesQuery = api.geo.cities.useQuery(
+    { country, state: state || undefined },
+    {
+      ...geoOpts,
+      // A country without states lists its cities directly.
+      enabled: statesQuery.isSuccess && (hasStates ? !!state : true),
+    },
+  );
+  // India first — most partners are India-based — then alphabetical.
+  const countryOptions = (countriesQuery.data ?? [])
+    .map((c) => ({ value: c.iso2, label: c.name }))
+    .sort((a, b) => Number(b.value === "IN") - Number(a.value === "IN"));
+  const countryName =
+    countryOptions.find((c) => c.value === country)?.label ?? country;
+  const panRequired = isPanRequired(role, { country, countryCode });
 
   // Computed values
   const steps = role === "agency" ? agencySteps : independentSteps;
@@ -370,8 +394,13 @@ export default function SignupPage() {
     if (!companyName.trim()) newErrors.companyName = "Company name is required";
     if (!companyWebsite.trim()) newErrors.companyWebsite = "Website or LinkedIn is required";
     if (!country) newErrors.country = "Country is required";
-    if (getStates(country).length > 0 && !state) newErrors.state = "State is required";
-    if (state && getCities(country, state).length > 0 && !city) newErrors.city = "City is required";
+    else if (statesQuery.isLoading) newErrors.state = "Loading states…";
+    else if (hasStates && !state) newErrors.state = "State is required";
+    if (!city.trim()) newErrors.city = "City is required";
+    if (pan.trim() || panRequired) {
+      const msg = panError(pan, "agency");
+      if (msg) newErrors.pan = msg;
+    }
     if (!companyAddress.trim()) newErrors.companyAddress = "Address is required";
     if (!numCounselors) newErrors.numCounselors = "Number of counselors is required";
     if (!annualVolume) newErrors.annualVolume = "Student volume is required";
@@ -391,6 +420,13 @@ export default function SignupPage() {
         return false;
       }
     } else {
+      if (pan.trim() || panRequired) {
+        const msg = panError(pan, "individual");
+        if (msg) {
+          setErrors({ pan: msg });
+          return false;
+        }
+      }
       const required = ["pan", "aadhaar", "cancelledCheque"];
       const missing = required.some((k) => !independentDocs[k]?.name);
       if (missing) {
@@ -484,14 +520,14 @@ export default function SignupPage() {
         companyName: role === "agency" ? companyName : undefined,
         companyWebsite: role === "agency" ? companyWebsite : undefined,
         country: role === "agency" ? country : undefined,
-        state: role === "agency" ? state : undefined,
-        city: role === "agency" ? city : undefined,
+        state: role === "agency" && hasStates ? state : undefined,
+        city: role === "agency" ? city.trim() : undefined,
         companyAddress: role === "agency" ? companyAddress : undefined,
         numCounselors: role === "agency" ? numCounselors : undefined,
         annualVolume: role === "agency" ? annualVolume : undefined,
         gstRegistered: role === "agency" ? gstRegistered === "yes" : undefined,
         documents,
-        bdmId: bdmId ? Number(bdmId) : null,
+        pan: pan.trim() ? normalizePan(pan) : undefined,
       },
       {
         onSuccess: (data) => {
@@ -712,21 +748,6 @@ export default function SignupPage() {
               />
             </div>
 
-            <div className="mb-4">
-              <FormSelect
-                label="BDM Partner"
-                value={bdmId}
-                onChange={(e) => setBdmId(e.target.value)}
-                options={[
-                  { value: "", label: "— Select your BDM —" },
-                  ...(bdmsQuery.data ?? []).map((b) => ({
-                    value: String(b.id),
-                    label: b.name,
-                  })),
-                ]}
-              />
-            </div>
-
             <div className="mt-auto flex items-center justify-between pt-6">
               <div />
               <Button onClick={nextStep} iconRight loading={sendSignupOtp.isPending}>
@@ -898,50 +919,98 @@ export default function SignupPage() {
             </div>
 
             <div className="mb-4 flex gap-4">
-              <FormSelect
+              <FormCombobox
                 label="Country"
                 required
-                placeholder="Select country"
-                options={countries.map((c) => ({ value: c, label: c }))}
+                placeholder="Search country"
+                loading={countriesQuery.isLoading}
+                options={countryOptions}
                 value={country}
-                onChange={(e) => {
-                  setCountry(e.target.value);
+                onChange={(v) => {
+                  setCountry(v);
                   setState("");
                   setCity("");
-                  setErrors((p) => ({ ...p, country: undefined }));
+                  setCityManual(false);
+                  setErrors((p) => ({ ...p, country: undefined, pan: undefined }));
                 }}
                 error={!!errors.country}
                 errorMessage={errors.country}
               />
-              <FormSelect
+              <FormCombobox
                 label="State / Province"
-                required
-                placeholder="Select state"
-                options={getStates(country).map((s) => ({ value: s, label: s }))}
+                required={hasStates}
+                placeholder={country && statesQuery.isSuccess && !hasStates ? "Not applicable" : "Search state"}
+                loading={statesQuery.isFetching}
+                options={stateNames.map((s) => ({ value: s, label: s }))}
                 value={state}
-                onChange={(e) => {
-                  setState(e.target.value);
-                  setCity("");
+                onChange={(v) => {
+                  setState(v);
+                  if (!cityManual) setCity("");
                   setErrors((p) => ({ ...p, state: undefined }));
                 }}
-                disabled={!country || getStates(country).length === 0}
+                disabled={!country || (statesQuery.isSuccess && !hasStates)}
                 error={!!errors.state}
                 errorMessage={errors.state}
               />
-              <FormSelect
-                label="City"
-                required
-                placeholder="Select city"
-                options={getCities(country, state).map((c) => ({ value: c, label: c }))}
-                value={city}
-                onChange={(e) => {
-                  setCity(e.target.value);
-                  setErrors((p) => ({ ...p, city: undefined }));
-                }}
-                disabled={!state || getCities(country, state).length === 0}
-                error={!!errors.city}
-                errorMessage={errors.city}
-              />
+            </div>
+            <div className="mb-1 flex gap-4">
+              {cityManual ? (
+                <div className="flex flex-1 flex-col">
+                  <FormInput
+                    label="City"
+                    required
+                    placeholder="Type your city"
+                    maxLength={100}
+                    value={city}
+                    onChange={(e) => { setCity(e.target.value); setErrors((p) => ({ ...p, city: undefined })); }}
+                    error={!!errors.city}
+                    errorMessage={errors.city}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { setCityManual(false); setCity(""); }}
+                    className="mt-1 cursor-pointer self-start border-none bg-transparent p-0 text-xs font-medium text-[#1570EF] hover:underline"
+                  >
+                    Choose from the list instead
+                  </button>
+                </div>
+              ) : (
+                <FormCombobox
+                  label="City"
+                  required
+                  placeholder="Search city"
+                  loading={citiesQuery.isFetching}
+                  options={(citiesQuery.data ?? []).map((c) => ({ value: c, label: c }))}
+                  value={city}
+                  onChange={(v) => {
+                    setCity(v);
+                    setErrors((p) => ({ ...p, city: undefined }));
+                  }}
+                  disabled={!country || (hasStates && !state)}
+                  error={!!errors.city}
+                  errorMessage={errors.city}
+                  extraAction={{
+                    label: "My city isn't listed",
+                    onSelect: () => {
+                      setCityManual(true);
+                      setCity("");
+                    },
+                  }}
+                />
+              )}
+              {/* Keeps the city at half-width, matching the rows above. */}
+              <div className="flex-1" />
+            </div>
+            {/* GeoNames data is CC BY 4.0 — this attribution is required. */}
+            <div className="mb-4 text-[11px] text-[#98A2B3]">
+              Location data ©{" "}
+              <a href="https://www.geonames.org" target="_blank" rel="noopener noreferrer" className="hover:underline">
+                GeoNames
+              </a>
+              , licensed under{" "}
+              <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer" className="hover:underline">
+                CC BY 4.0
+              </a>
             </div>
 
             <div className="mb-4">
@@ -996,8 +1065,21 @@ export default function SignupPage() {
                 error={!!errors.gstRegistered}
                 errorMessage={errors.gstRegistered}
               />
-              {/* Keeps the select at half-width, matching the rows above. */}
-              <div className="flex-1" />
+              <FormInput
+                label="Company PAN"
+                required={panRequired}
+                placeholder="ABCDE1234F"
+                maxLength={10}
+                autoComplete="off"
+                value={pan}
+                onChange={(e) => { setPan(normalizePan(e.target.value)); setErrors((p) => ({ ...p, pan: undefined })); }}
+                error={!!errors.pan}
+                errorMessage={errors.pan}
+              />
+            </div>
+            <div className="-mt-2 mb-4 text-xs text-[#667085]">
+              PAN of the company or firm/LLP — or, for a sole proprietorship, the proprietor&apos;s PAN.
+              Required for agencies based in India.
             </div>
 
             {gstRegistered === "yes" && (
@@ -1134,6 +1216,22 @@ export default function SignupPage() {
               Upload the required documents to verify your identity.
             </div>
 
+            <div className="mb-6 flex gap-4">
+              <FormInput
+                label="PAN Number"
+                required={panRequired}
+                placeholder="ABCPE1234F"
+                maxLength={10}
+                autoComplete="off"
+                value={pan}
+                onChange={(e) => { setPan(normalizePan(e.target.value)); setErrors((p) => ({ ...p, pan: undefined })); }}
+                error={!!errors.pan}
+                errorMessage={errors.pan}
+              />
+              {/* Keeps the input at half-width, matching the upload grid. */}
+              <div className="flex-1" />
+            </div>
+
             <div className="mb-3.5 text-[13px] font-semibold tracking-wide text-[#344054] uppercase">
               Required Documents
             </div>
@@ -1252,7 +1350,8 @@ export default function SignupPage() {
               items={[
                 { label: "Company Name", value: companyName },
                 { label: "Website", value: companyWebsite },
-                { label: "Location", value: [city, state, country].filter(Boolean).join(", ") },
+                { label: "Location", value: [city, state, countryName].filter(Boolean).join(", ") },
+                { label: "Company PAN", value: pan || "—" },
                 { label: "Team Size", value: `${numCounselors} counselors` },
                 { label: "GST Registered", value: gstRegistered === "yes" ? "Yes" : "No" },
               ]}
@@ -1275,6 +1374,14 @@ export default function SignupPage() {
               error={!!errors.consent}
               errorMessage={errors.consent}
             />
+
+            {submitApp.error && (
+              <div className="mt-3 text-[13px] text-[#F04438]">
+                {submitApp.error.data?.zodError?.fieldErrors.pan?.[0] ??
+                  submitApp.error.data?.zodError?.formErrors[0] ??
+                  submitApp.error.message}
+              </div>
+            )}
 
             <div className="mt-auto flex items-center justify-between pt-6">
               <Button variant="secondary" onClick={prevStep} iconLeft>
@@ -1335,6 +1442,7 @@ export default function SignupPage() {
             <ReviewCard
               title="Additional Information"
               onEdit={() => goToStepByName("documents")}
+              items={[{ label: "PAN", value: pan || "—" }]}
             >
               <div className="flex flex-wrap gap-2">
                 {getIndependentDocStatus().map((d) => (
@@ -1349,6 +1457,14 @@ export default function SignupPage() {
               error={!!errors.consent}
               errorMessage={errors.consent}
             />
+
+            {submitApp.error && (
+              <div className="mt-3 text-[13px] text-[#F04438]">
+                {submitApp.error.data?.zodError?.fieldErrors.pan?.[0] ??
+                  submitApp.error.data?.zodError?.formErrors[0] ??
+                  submitApp.error.message}
+              </div>
+            )}
 
             <div className="mt-auto flex items-center justify-between pt-6">
               <Button variant="secondary" onClick={prevStep} iconLeft>

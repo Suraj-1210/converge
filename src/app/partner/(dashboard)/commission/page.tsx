@@ -9,6 +9,7 @@ import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
+import { normalizePan, panError } from "~/lib/utils/pan";
 import {
   DashboardCard,
   StatCard,
@@ -612,6 +613,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   useEffect(() => {
     if (!bank) return;
     setGstin((v) => v || (bank.gstin ?? ""));
+    setPan((v) => v || (bank.pan ?? ""));
     setAccountHolder((v) => v || (bank.accountHolder ?? ""));
     setIfsc((v) => v || (bank.ifsc ?? ""));
     setSwift((v) => v || (bank.swift ?? ""));
@@ -637,6 +639,10 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
     if (step === 2) {
       if (!invoiceNumber.trim()) return setErr("Invoice number is required");
       if (!signatory.trim()) return setErr("Signatory name is required");
+      if (pan.trim()) {
+        const panMsg = panError(pan, "agency");
+        if (panMsg) return setErr(panMsg);
+      }
       if (!signed) return setErr("Please apply your digital signature");
     }
     setStep((s) => Math.min(3, s + 1));
@@ -751,7 +757,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
           </div>
           <div className="flex gap-3">
             <FormInput label="Your GSTIN (blank if unregistered → TDS)" value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="27ABCDE1234F1Z5" />
-            <FormInput label="PAN (auto from GSTIN chars 3–12)" value={pan} onChange={(e) => setPan(e.target.value)} placeholder="ABCDE1234F" />
+            <FormInput label="PAN (auto from GSTIN chars 3–12)" value={pan} onChange={(e) => setPan(normalizePan(e.target.value))} maxLength={10} placeholder="ABCDE1234F" />
           </div>
           <div className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#667085]">Recipient: <b className="text-[#344054]">Collegepond Counsellors Pvt Ltd</b> · GSTIN 27AADCK1234F1Z5 · SAC 998399</div>
           <div className="rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] p-3">

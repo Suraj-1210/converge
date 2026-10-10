@@ -10,24 +10,10 @@ import {
 } from "~/server/otp";
 import { saveApplication } from "~/server/applications/store";
 import { notifyAdminOfSignup } from "~/server/notifications";
-import { db } from "~/server/db";
-import { AdminRole } from "~/server/db/enums";
+import { checkLocation } from "~/server/geo";
+import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
 
 export const signupRouter = createTRPCRouter({
-  // Public BDM list for the signup form. Returns only id + display name —
-  // narrow on purpose since this endpoint is reachable without auth.
-  listBdms: publicProcedure.query(async () => {
-    const rows = await db.collegepond_user.findMany({
-      where: { role: AdminRole.BDM, status: 1 },
-      orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
-      select: { id: true, first_name: true, last_name: true },
-    });
-    return rows.map((r) => ({
-      id: r.id,
-      name: `${r.first_name} ${r.last_name}`.trim(),
-    }));
-  }),
-
   sendSignupOtp: publicProcedure
     .input(
       z.object({
@@ -111,16 +97,37 @@ export const signupRouter = createTRPCRouter({
         gstRegistered: z.boolean().optional(),
         // Map of document key -> stored file URL (e.g. "/uploads/...")
         documents: z.record(z.string(), z.string()).optional(),
-        bdmId: z.number().int().positive().nullable().optional(),
+        // Company PAN for an agency, personal PAN for an independent. Required
+        // for India-based partners; see ~/lib/utils/pan for the rule.
+        pan: z.string().max(20).optional(),
+        // No bdmId: BDMs are assigned internally after signup. Team names are
+        // not exposed on the public form, and an unknown key is stripped.
       })
       // A GST-registered agency must supply its certificate. The client enforces
       // this too, but the rule lives here as well so the API can't be bypassed.
       .refine((v) => !(v.gstRegistered === true) || !!v.documents?.gst, {
         message: "GST certificate is required for a GST-registered agency",
         path: ["documents"],
+      })
+      .superRefine((v, ctx) => {
+        const pan = v.pan ? normalizePan(v.pan) : "";
+        if (!pan && !isPanRequired(v.role, v)) return;
+        const msg = panError(pan, v.role === "agency" ? "agency" : "individual");
+        if (msg) ctx.addIssue({ code: z.ZodIssueCode.custom, message: msg, path: ["pan"] });
       }),
     )
     .mutation(async ({ input }) => {
+      // Agencies pick their location from the master list; the server checks
+      // it against the same list (independents don't give a location yet).
+      let location: { country?: string; state?: string; city?: string } = {};
+      if (input.role === "agency") {
+        const loc = await checkLocation(input);
+        if (!loc.ok) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: loc.message });
+        }
+        location = { country: loc.country, state: loc.state ?? undefined, city: loc.city };
+      }
+
       const app = await saveApplication({
         email: input.email,
         role: input.role,
@@ -130,15 +137,13 @@ export const signupRouter = createTRPCRouter({
         countryCode: input.countryCode,
         companyName: input.companyName,
         companyWebsite: input.companyWebsite,
-        country: input.country,
-        state: input.state,
-        city: input.city,
+        ...location,
         companyAddress: input.companyAddress,
         numCounselors: input.numCounselors,
         annualVolume: input.annualVolume,
         gstRegistered: input.gstRegistered,
         documents: input.documents,
-        bdmId: input.bdmId ?? null,
+        pan: input.pan ? normalizePan(input.pan) : undefined,
       });
 
       notifyAdminOfSignup(app).catch((err) => {

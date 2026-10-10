@@ -136,6 +136,14 @@ if [[ -f "$SEED_FILE" ]]; then
   run_file "$SEED_FILE"
 fi
 
+# Reference data (e.g. the geo_* location master list) lives in idempotent
+# *_data.sql migrations because schema.sql only carries structure.
+for f in "$ROOT_DIR"/prisma/sql/migrations/*_data.sql; do
+  [[ -f "$f" ]] || continue
+  echo "Loading reference data $(basename "$f")..."
+  run_file "$f"
+done
+
 echo "Regenerating Prisma client..."
 ( cd "$ROOT_DIR" && npx prisma generate )
 

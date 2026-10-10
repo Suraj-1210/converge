@@ -529,7 +529,9 @@ model user {
   city                                                                    String                    @db.VarChar(100)
   state                                                                   String                    @db.VarChar(100)
   country                                                                 String                    @db.VarChar(2)
-  approved_by_collegepond_user_id                                         Int?                      @map("approved_by_cp_user_id")
+  // Personal PAN of an independent counsellor (an agency's is organization.pan).
+  pan                                                                     String?                   @db.VarChar(15)
+  approved_by_collegepond_user_id                                        Int?                      @map("approved_by_cp_user_id")
   lead_counsellor_id                                                      Int?
   counsellor_id                                                           Int?
   bdm_id                                                                  Int?
@@ -1126,4 +1128,40 @@ model bdm_task {
   @@index([organization_id], map: "fk_bdm_task_org_idx")
   @@index([prospect_id], map: "fk_bdm_task_prospect_idx")
   @@index([assigned_to, is_done, due_date], map: "idx_bdm_task_assignee_due")
+}
+
+// Location master list (GeoNames, CC BY 4.0) for the signup pickers. Ids are
+// GeoNames ids. Partners store the picked names, not these ids.
+model geo_country {
+  iso2      String      @id @db.Char(2)
+  name      String      @db.VarChar(100)
+  geo_state geo_state[]
+  geo_city  geo_city[]
+}
+
+model geo_state {
+  id           Int         @id @db.UnsignedInt
+  country_iso2 String      @db.Char(2)
+  // GeoNames admin1 code, e.g. IN.16 -> "16".
+  code         String      @db.VarChar(20)
+  name         String      @db.VarChar(100)
+  country      geo_country @relation(fields: [country_iso2], references: [iso2], onDelete: NoAction, onUpdate: NoAction, map: "fk_geo_state_country")
+  geo_city     geo_city[]
+
+  @@unique([country_iso2, code], map: "uq_geo_state_country_code")
+  @@index([country_iso2, name], map: "idx_geo_state_country_name")
+}
+
+model geo_city {
+  id           Int         @id @db.UnsignedInt
+  country_iso2 String      @db.Char(2)
+  // NULL when GeoNames has no first-level division for the place.
+  state_id     Int?        @db.UnsignedInt
+  name         String      @db.VarChar(100)
+  population   Int         @default(0) @db.UnsignedInt
+  country      geo_country @relation(fields: [country_iso2], references: [iso2], onDelete: NoAction, onUpdate: NoAction, map: "fk_geo_city_country")
+  state        geo_state?  @relation(fields: [state_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_geo_city_state")
+
+  @@index([state_id, name], map: "idx_geo_city_state_name")
+  @@index([country_iso2, name], map: "idx_geo_city_country_name")
 }

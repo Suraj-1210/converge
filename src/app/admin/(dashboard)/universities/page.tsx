@@ -22,8 +22,8 @@ type CourseRow = RouterOutputs["universities"]["listCourses"][number];
 
 // ----- Constants -----------------------------------------------------------
 
-// ISO2 → display name. Bigger list lives in `~/lib/constants/location-data`
-// for signup; this is the catalog admin's whitelist.
+// ISO2 → display name. The catalog admin's whitelist of study destinations;
+// the full country list (for partner locations) is the geo_country table.
 const COUNTRIES: Array<{ code: string; name: string }> = [
   { code: "US", name: "United States" },
   { code: "GB", name: "United Kingdom" },

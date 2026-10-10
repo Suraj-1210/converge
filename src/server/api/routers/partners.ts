@@ -8,11 +8,13 @@ import {
   listApplications,
   setApplicationStatus,
   setDocumentStatus,
+  partnerPanHolder,
   setPartnerBdm,
   setPartnerPan,
   setPartnerTier,
   type Application,
 } from "~/server/applications/store";
+import { normalizePan, panError } from "~/lib/utils/pan";
 
 const partnerStatus = z.enum([
   "under_review",
@@ -139,7 +141,16 @@ export const partnersRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
-      const ok = await setPartnerPan(input.email, input.pan);
+      // Clearing is allowed (partners that predate the PAN rule have none);
+      // anything entered must pass the same check as signup.
+      const pan = input.pan ? normalizePan(input.pan) : "";
+      if (pan) {
+        const holder = await partnerPanHolder(input.email);
+        if (!holder) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found." });
+        const msg = panError(pan, holder);
+        if (msg) throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+      }
+      const ok = await setPartnerPan(input.email, pan || null);
       if (!ok) {
         throw new TRPCError({
           code: "BAD_REQUEST",

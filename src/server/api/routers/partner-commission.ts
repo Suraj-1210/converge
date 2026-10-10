@@ -6,6 +6,7 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { encryptSecret } from "~/server/crypto";
+import { optionalPanSchema } from "~/lib/utils/pan";
 import {
   PartnerInvoiceStatus,
   TrancheStatus,
@@ -204,7 +205,7 @@ export const partnerCommissionRouter = createTRPCRouter({
     const orgId = await requireOrgId(ctx.cpPartner.id);
     const [acct, org] = await Promise.all([
       db.partner_bank_account.findFirst({ where: { org_id: orgId }, orderBy: { id: "desc" } }),
-      db.organization.findUnique({ where: { id: orgId }, select: { gst_number: true, name: true } }),
+      db.organization.findUnique({ where: { id: orgId }, select: { gst_number: true, pan: true, name: true } }),
     ]);
     return {
       hasAccount: acct != null,
@@ -219,6 +220,8 @@ export const partnerCommissionRouter = createTRPCRouter({
       // org's gst_number is the non-encrypted source; the encrypted copy on the
       // account is for the payout side.)
       gstin: org?.gst_number ?? null,
+      // PAN captured at signup, to prefill the invoice.
+      pan: org?.pan ?? null,
       orgName: org?.name ?? null,
     };
   }),
@@ -234,7 +237,8 @@ export const partnerCommissionRouter = createTRPCRouter({
         branch: z.string().trim().max(150).optional(),
         accountType: z.string().trim().max(30).optional(),
         gstin: z.string().trim().max(20).optional(),
-        pan: z.string().trim().max(15).optional(),
+        // Validated like signup; the org PAN rule (company / firm / proprietor).
+        pan: optionalPanSchema("agency"),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -250,7 +254,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         branch: orNull(input.branch),
         account_type: orNull(input.accountType),
         gstin_enc: input.gstin?.trim() ? encryptSecret(input.gstin.trim()) : null,
-        pan_enc: input.pan?.trim() ? encryptSecret(input.pan.trim()) : null,
+        pan_enc: input.pan ? encryptSecret(input.pan) : null,
       };
       const existing = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
@@ -272,7 +276,8 @@ export const partnerCommissionRouter = createTRPCRouter({
         invoiceNumber: z.string().trim().min(1).max(30),
         invoiceDate: z.string(),
         gstin: z.string().trim().max(20).optional(),
-        pan: z.string().trim().max(15).optional(),
+        // Validated like signup; the org PAN rule (company / firm / proprietor).
+        pan: optionalPanSchema("agency"),
         signatoryName: z.string().trim().min(1).max(100),
         signatoryDesignation: z.string().trim().max(100).optional(),
         notes: z.string().trim().max(1000).optional(),

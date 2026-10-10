@@ -22,6 +22,7 @@ import { auditRouter } from "~/server/api/routers/audit";
 import { bdmRouter } from "~/server/api/routers/bdm";
 import { bdmCrmRouter } from "~/server/api/routers/bdm-crm";
 import { fxRouter } from "~/server/api/routers/fx";
+import { geoRouter } from "~/server/api/routers/geo";
 import { notificationsRouter } from "~/server/api/routers/notifications";
 import { partnerNotificationsRouter } from "~/server/api/routers/partner-notifications";
 import { chatRouter } from "~/server/api/routers/chat";
@@ -53,6 +54,7 @@ export const appRouter = createTRPCRouter({
   bdm: bdmRouter,
   bdmCrm: bdmCrmRouter,
   fx: fxRouter,
+  geo: geoRouter,
   notifications: notificationsRouter,
   partnerNotifications: partnerNotificationsRouter,
   chat: chatRouter,
