@@ -53,7 +53,7 @@ launch. The repo is public, so no GitHub account or sign-in is needed.
 4. `npm run db:apply` — applies pending deltas in order, tracked in `schema_migrations`; idempotent, localhost-guarded, TLS for remote hosts (`MYSQL_SSL_CA`). Fresh DBs: load full `schema.sql` first (`npm run db:reset` in dev; one-time TLS load for the prod bootstrap).
 
 ### New env vars (see `.env.example`)
-`SPACES_*` (storage), `DATABASE_CA_CERT` (Managed MySQL TLS), `MSG91_ADMIN_NOTIFY_TEMPLATE_ID` / `MSG91_MOREINFO_TEMPLATE_ID` (transactional email). **Email provider = MSG91** for OTP *and* transactional mail (not AWS SES). In production the app fails loud if `MSG91_*` or `SPACES_*` are missing (no silent fallback).
+`SPACES_*` (storage), `DATABASE_CA_CERT` (Managed MySQL TLS), `SES_*` / `EMAIL_FROM` / `APP_URL` (email). **Email = Amazon SES** for OTP *and* transactional mail, with templates in `src/server/email/templates.ts`; **SMS = MSG91**. In production the app fails loud if `MSG91_*`, `SES_*` or `SPACES_*` are missing (no silent fallback).
 
 ### Still TODO before prod testing
 - **B4** — Managed MySQL TLS (`?sslaccept` + CA) in `DATABASE_URL` + `src/server/db.ts`.
@@ -195,12 +195,13 @@ converge/
 ```bash
 DATABASE_URL="mysql://root:password@localhost:3306/converge"
 
-# MSG91 (OTP provider — leave empty for sandbox: OTPs print to server log)
+# MSG91 (SMS OTP — leave empty for sandbox: OTPs print to server log)
 MSG91_AUTH_KEY=""
 MSG91_SMS_TEMPLATE_ID=""
-MSG91_EMAIL_TEMPLATE_ID=""
-MSG91_EMAIL_FROM=""
-MSG91_EMAIL_DOMAIN=""
+
+# Amazon SES (email — leave empty in dev: emails print to server log)
+SES_ACCESS_KEY_ID=""
+SES_SECRET_ACCESS_KEY=""
 
 ADMIN_EMAIL=""
 ```

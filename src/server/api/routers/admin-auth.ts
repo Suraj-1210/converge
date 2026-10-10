@@ -82,7 +82,7 @@ export const adminAuthRouter = createTRPCRouter({
 
       const channel = loginOtpChannel();
       try {
-        if (channel === "email") await sendEmailOtp(user.email);
+        if (channel === "email") await sendEmailOtp(user.email, "admin_login");
         else await sendPhoneOtp(providedE164);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

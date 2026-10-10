@@ -91,7 +91,7 @@ export const authRouter = createTRPCRouter({
       // OTP is a signup-time concern (phone verification); firing a second SMS
       // code at login just produced a non-verifiable code that read as "invalid".
       try {
-        await sendEmailOtp(input.email);
+        await sendEmailOtp(input.email, "partner_login");
       } catch {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",

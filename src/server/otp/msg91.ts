@@ -1,5 +1,4 @@
 import { env } from "~/env";
-import { checkEmailOtp, discardEmailOtp, issueEmailOtp } from "./email-store";
 
 const OTP_LENGTH = 5;
 const OTP_EXPIRY_MINUTES = 5;
@@ -30,8 +29,8 @@ async function msg91Fetch(url: string, body: unknown): Promise<Msg91Response> {
   });
   const data = (await res.json().catch(() => ({}))) as Msg91Response;
   if (!res.ok || data.type === "error" || data.status === "fail") {
-    // MSG91 puts the reason in `message` (OTP API) or `errors` (email API).
-    // Neither echoes the authkey, so the detail is safe to surface in logs.
+    // MSG91 puts the reason in `message` (or `errors`). Neither echoes the
+    // authkey, so the detail is safe to surface in logs.
     const detail = data.message ?? (data.errors ? JSON.stringify(data.errors).slice(0, 300) : "");
     throw new Error(`MSG91 request failed (${res.status})${detail ? `: ${detail}` : ""}`);
   }
@@ -63,37 +62,4 @@ export async function verifyPhoneOtp(phoneE164: string, code: string): Promise<b
   );
   const data = (await res.json().catch(() => ({}))) as Msg91Response;
   return res.ok && data.type === "success";
-}
-
-// ─── Email (we own the code; MSG91 just delivers the mail) ──────────────────
-// Code state lives in the DB (./email-store) so it survives restarts / runs
-// across instances and enforces the verify attempt cap (brute-force guard).
-
-export async function sendEmailOtp(email: string): Promise<void> {
-  if (!env.MSG91_EMAIL_TEMPLATE_ID || !env.MSG91_EMAIL_FROM || !env.MSG91_EMAIL_DOMAIN) {
-    throw new Error("MSG91 email config incomplete");
-  }
-
-  const code = await issueEmailOtp(email);
-  if (code === null) {
-    // Resend within the cooldown — the previously sent code is still valid.
-    throw new Error("An OTP was just sent. Please wait before requesting another.");
-  }
-
-  try {
-    await msg91Fetch("https://control.msg91.com/api/v5/email/send", {
-      recipients: [{ to: [{ email }], variables: { otp: code } }],
-      from: { email: env.MSG91_EMAIL_FROM },
-      domain: env.MSG91_EMAIL_DOMAIN,
-      template_id: env.MSG91_EMAIL_TEMPLATE_ID,
-    });
-  } catch (e) {
-    // Nothing was sent, so don't let this code hold the resend cooldown.
-    await discardEmailOtp(email);
-    throw e;
-  }
-}
-
-export function verifyEmailOtp(email: string, code: string): Promise<boolean> {
-  return checkEmailOtp(email, code);
 }

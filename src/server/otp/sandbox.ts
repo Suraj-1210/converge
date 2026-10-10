@@ -43,10 +43,10 @@ export async function verifyPhoneOtp(phoneE164: string, code: string): Promise<b
   return take(`sms:${phoneE164}`, code);
 }
 
-export async function sendEmailOtp(email: string): Promise<void> {
+export async function sendEmailOtp(email: string, purpose: string): Promise<void> {
   const code = generate();
   put(`email:${email.toLowerCase()}`, code);
-  logCode(`[OTP:sandbox] email to ${email} => ${code}`);
+  logCode(`[OTP:sandbox] ${purpose} email to ${email} => ${code}`);
 }
 
 export async function verifyEmailOtp(email: string, code: string): Promise<boolean> {

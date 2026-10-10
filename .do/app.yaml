@@ -133,19 +133,29 @@ services:
       - key: MSG91_SMS_TEMPLATE_ID
         scope: RUN_TIME
         value: ""
-      - key: MSG91_EMAIL_TEMPLATE_ID
+      # --- Amazon SES — all email (OTP codes + notifications). Templates are in
+      # src/server/email/templates.ts. Set the keys BEFORE deploying code that
+      # uses SES: production refuses to send email without them.
+      - key: SES_ACCESS_KEY_ID
         scope: RUN_TIME
-        value: ""
-      - key: MSG91_EMAIL_FROM
+        type: SECRET
+        value: REPLACE_IN_DASHBOARD
+      - key: SES_SECRET_ACCESS_KEY
         scope: RUN_TIME
-        value: ""
-      - key: MSG91_EMAIL_DOMAIN
+        type: SECRET
+        value: REPLACE_IN_DASHBOARD
+      - key: SES_REGION
         scope: RUN_TIME
-        value: ""
-      # - key: MSG91_ADMIN_NOTIFY_TEMPLATE_ID  # transactional: admin signup notify
-      #   value: ""
-      # - key: MSG91_MOREINFO_TEMPLATE_ID      # transactional: partner more-info
-      #   value: ""
+        value: ap-south-1
+      - key: EMAIL_FROM
+        scope: RUN_TIME
+        value: "Collegepond <noreply@collegepond.com>"
+      - key: EMAIL_REPLY_TO
+        scope: RUN_TIME
+        value: support@collegepond.com
+      - key: APP_URL
+        scope: RUN_TIME
+        value: https://portal.convergeapp.co
 
       # --- Periskope (WhatsApp) — application status updates + inbound webhook.
       # Present on the LIVE app but previously undocumented here; without these

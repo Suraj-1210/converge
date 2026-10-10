@@ -113,15 +113,29 @@ services:
       - key: MSG91_SMS_TEMPLATE_ID
         scope: RUN_TIME
         value: "69f9bff2dd5666570400c984"
-      - key: MSG91_EMAIL_TEMPLATE_ID
+      # --- Amazon SES — all email (OTP codes + notifications). Templates are in
+      # src/server/email/templates.ts. Set the keys BEFORE deploying code that
+      # uses SES: production refuses to send email without them.
+      - key: SES_ACCESS_KEY_ID
         scope: RUN_TIME
-        value: scholarship_email_otp
-      - key: MSG91_EMAIL_FROM
+        type: SECRET
+        value: REPLACE_IN_DASHBOARD
+      - key: SES_SECRET_ACCESS_KEY
         scope: RUN_TIME
-        value: no-reply@mail.convergeapp.co
-      - key: MSG91_EMAIL_DOMAIN
+        type: SECRET
+        value: REPLACE_IN_DASHBOARD
+      - key: SES_REGION
         scope: RUN_TIME
-        value: mail.convergeapp.co
+        value: ap-south-1
+      - key: EMAIL_FROM
+        scope: RUN_TIME
+        value: "Collegepond <noreply@collegepond.com>"
+      - key: EMAIL_REPLY_TO
+        scope: RUN_TIME
+        value: support@collegepond.com
+      - key: APP_URL
+        scope: RUN_TIME
+        value: https://converge-staging-obovi.ondigitalocean.app
       # Admin login code channel: "sms" (same as production) or "email". Email
       # was the stopgap while MSG91_AUTH_KEY still held the placeholder.
       - key: ADMIN_LOGIN_OTP_CHANNEL

@@ -25,7 +25,7 @@ export const signupRouter = createTRPCRouter({
     .mutation(async ({ input }) => {
       const phoneE164 = toE164(input.phone, input.countryCode);
       const results = await Promise.allSettled([
-        sendEmailOtp(input.email),
+        sendEmailOtp(input.email, "signup"),
         sendPhoneOtp(phoneE164),
       ]);
 

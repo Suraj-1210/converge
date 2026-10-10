@@ -118,7 +118,8 @@ look identical to working ones:
 
 | Unset | Dev | Production |
 |---|---|---|
-| `MSG91_*` | OTP logged to console | Fails loudly — login breaks |
+| `MSG91_*` | SMS OTP logged to console | Fails loudly — login breaks |
+| `SES_*` | Emails (incl. email OTP) printed to console | Fails loudly — partner login + all email break |
 | `SPACES_*` | Uploads to `./public/uploads` | Throws (ephemeral disk) |
 | `PERISKOPE_*` | WhatsApp sends skipped silently | **Also silent** |
 

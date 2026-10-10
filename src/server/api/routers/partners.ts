@@ -2,9 +2,18 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { env } from "~/env";
-import { emailConfigured, sendTemplatedEmail } from "~/server/email";
 import {
+  appUrl,
+  moreInfoRequestEmail,
+  partnerApprovedEmail,
+  partnerDeactivatedEmail,
+  partnerDeclinedEmail,
+  partnerReactivatedEmail,
+  sendEmail,
+  type EmailMessage,
+} from "~/server/email";
+import {
+  getApplicationByEmail,
   listApplications,
   setApplicationStatus,
   setDocumentStatus,
@@ -25,50 +34,45 @@ const partnerStatus = z.enum([
 
 const docStatus = z.enum(["pending", "approved", "rejected"]);
 
-// Account-lifecycle email per target status. Optional templates — when the id
-// isn't configured we log a minimal event and never block the status change.
-function statusEmailTemplateId(status: string): string | undefined {
+// The partner email for an account-status change, or null when the change
+// doesn't warrant one (e.g. back to under review).
+function statusEmail(
+  app: Application,
+  status: string,
+  reason: string | null,
+  isReactivation: boolean,
+): EmailMessage | null {
+  const p = { name: `${app.firstName} ${app.lastName}`.trim(), company: app.companyName };
+  if (isReactivation) return partnerReactivatedEmail(p, appUrl());
   switch (status) {
     case "approved":
-      return env.MSG91_PARTNER_APPROVED_TEMPLATE_ID;
+      return partnerApprovedEmail(p, appUrl());
     case "rejected":
-      return env.MSG91_PARTNER_REJECTED_TEMPLATE_ID;
+      return partnerDeclinedEmail(p, reason);
     case "inactive":
-      return env.MSG91_PARTNER_DEACTIVATED_TEMPLATE_ID;
+      return partnerDeactivatedEmail(p, reason);
     default:
-      return undefined;
+      return null;
   }
 }
 
 // Notify the partner of an account-status change. Best-effort: a mail failure
-// must not roll back the (already-committed) status change, so we swallow it.
+// must not roll back the (already-committed) status change, so it is reported
+// back to the admin as emailSent: false instead of thrown.
 async function sendStatusEmail(
   app: Application,
   status: string,
   reason: string | null,
   isReactivation: boolean,
-): Promise<void> {
-  const templateId = isReactivation
-    ? env.MSG91_PARTNER_REACTIVATED_TEMPLATE_ID
-    : statusEmailTemplateId(status);
-  if (!templateId || !emailConfigured()) {
-    console.log(
-      `[Partners] Status "${isReactivation ? "reactivated" : status}" email skipped (no template / email off).`,
-    );
-    return;
-  }
+): Promise<boolean | null> {
+  const msg = statusEmail(app, status, reason, isReactivation);
+  if (!msg) return null;
   try {
-    await sendTemplatedEmail({
-      to: app.email,
-      templateId,
-      variables: {
-        name: `${app.firstName} ${app.lastName}`.trim(),
-        company: app.companyName ?? "",
-        reason: reason ?? "",
-      },
-    });
+    await sendEmail(app.email, msg);
+    return true;
   } catch (e) {
-    console.error("[Partners] Status email failed:", e);
+    console.error("[Partners] Status email failed:", e instanceof Error ? e.message : e);
+    return false;
   }
 }
 
@@ -100,13 +104,14 @@ export const partnersRouter = createTRPCRouter({
           message: "Partner application not found",
         });
       }
-      await sendStatusEmail(
+      const emailSent = await sendStatusEmail(
         app,
         input.status,
         input.reason ?? null,
         input.isReactivation ?? false,
       );
-      return app;
+      // null = no email for this change; false = it failed (status still saved).
+      return { ...app, emailSent };
     }),
 
   setTier: protectedAdminProcedure
@@ -204,9 +209,8 @@ export const partnersRouter = createTRPCRouter({
       return { success: true as const };
     }),
 
-  // Email delivery is intentionally not wired yet — the admin UI lets you
-  // compose the request; we log it server-side until the email provider is
-  // hooked up. Partner status is left unchanged.
+  // Emails the partner a list of what is missing. Partner status is left
+  // unchanged; the partner replies to the email (Reply-To: support).
   requestMoreInfo: protectedAdminProcedure
     .input(
       z
@@ -225,30 +229,25 @@ export const partnersRouter = createTRPCRouter({
         ),
     )
     .mutation(async ({ input }) => {
-      // Email the partner via MSG91 when a template is configured; otherwise log
-      // a MINIMAL, non-PII event (never the email/message body).
-      if (env.MSG91_MOREINFO_TEMPLATE_ID && emailConfigured()) {
-        try {
-          await sendTemplatedEmail({
-            to: input.email,
-            templateId: env.MSG91_MOREINFO_TEMPLATE_ID,
-            variables: {
-              items: input.items.join(", "),
-              other: input.otherText?.trim() ?? "",
-              message: input.additionalMessage?.trim() ?? "",
-            },
-          });
-          return { success: true as const };
-        } catch {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Failed to send the request email.",
-          });
-        }
+      const app = await getApplicationByEmail(input.email);
+      if (!app) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Partner application not found" });
       }
-      console.log(
-        `[Partners] More-info request queued (${input.items.length} item(s)); set MSG91_MOREINFO_TEMPLATE_ID to email partners.`,
-      );
+      try {
+        await sendEmail(
+          app.email,
+          moreInfoRequestEmail(
+            { name: `${app.firstName} ${app.lastName}`.trim(), company: app.companyName },
+            { items: input.items, other: input.otherText, message: input.additionalMessage },
+          ),
+        );
+      } catch (e) {
+        console.error("[Partners] More-info email failed:", e instanceof Error ? e.message : e);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to send the request email.",
+        });
+      }
       return { success: true as const };
     }),
 });

@@ -13,22 +13,21 @@ export const env = createEnv({
       .default("development"),
     MSG91_AUTH_KEY: z.string().optional(),
     MSG91_SMS_TEMPLATE_ID: z.string().optional(),
-    MSG91_EMAIL_TEMPLATE_ID: z.string().optional(),
-    MSG91_EMAIL_FROM: z.string().optional(),
-    MSG91_EMAIL_DOMAIN: z.string().optional(),
     // How the admin login code is delivered: "sms" (default) or "email". Staging
     // uses "email" so testers can sign in while MSG91 SMS delivery is unreliable.
     ADMIN_LOGIN_OTP_CHANNEL: z.enum(["sms", "email"]).optional(),
-    // MSG91 email templates for transactional (non-OTP) mail. Optional — the
-    // sender degrades to a minimal log until the template exists.
-    MSG91_ADMIN_NOTIFY_TEMPLATE_ID: z.string().optional(),
-    MSG91_MOREINFO_TEMPLATE_ID: z.string().optional(),
-    // Partner account-lifecycle emails (approve / reject / deactivate /
-    // reactivate). Optional — each degrades to a minimal log until set.
-    MSG91_PARTNER_APPROVED_TEMPLATE_ID: z.string().optional(),
-    MSG91_PARTNER_REJECTED_TEMPLATE_ID: z.string().optional(),
-    MSG91_PARTNER_DEACTIVATED_TEMPLATE_ID: z.string().optional(),
-    MSG91_PARTNER_REACTIVATED_TEMPLATE_ID: z.string().optional(),
+    // Email (OTP codes + partner notifications) via Amazon SES. Templates are in
+    // src/server/email/templates.ts. Unset in dev → emails print to the log;
+    // unset in production → sending throws. Use an IAM user limited to
+    // ses:SendEmail on the verified collegepond.com identity.
+    SES_ACCESS_KEY_ID: z.string().optional(),
+    SES_SECRET_ACCESS_KEY: z.string().optional(),
+    SES_REGION: z.string().optional(), // default ap-south-1 (Mumbai)
+    SES_CONFIGURATION_SET: z.string().optional(),
+    EMAIL_FROM: z.string().optional(), // default "Collegepond <noreply@collegepond.com>"
+    EMAIL_REPLY_TO: z.string().email().optional(), // default support@collegepond.com
+    // Public base URL used for links in emails, e.g. https://portal.convergeapp.co
+    APP_URL: z.string().url().optional(),
     ADMIN_EMAIL: z.string().email().optional(),
     AUTH_SECRET: z.string().min(32),
     // Encrypts portal credentials at rest; falls back to AUTH_SECRET when
@@ -79,20 +78,14 @@ export const env = createEnv({
     NODE_ENV: process.env.NODE_ENV,
     MSG91_AUTH_KEY: process.env.MSG91_AUTH_KEY,
     MSG91_SMS_TEMPLATE_ID: process.env.MSG91_SMS_TEMPLATE_ID,
-    MSG91_EMAIL_TEMPLATE_ID: process.env.MSG91_EMAIL_TEMPLATE_ID,
-    MSG91_EMAIL_FROM: process.env.MSG91_EMAIL_FROM,
-    MSG91_EMAIL_DOMAIN: process.env.MSG91_EMAIL_DOMAIN,
     ADMIN_LOGIN_OTP_CHANNEL: process.env.ADMIN_LOGIN_OTP_CHANNEL,
-    MSG91_ADMIN_NOTIFY_TEMPLATE_ID: process.env.MSG91_ADMIN_NOTIFY_TEMPLATE_ID,
-    MSG91_MOREINFO_TEMPLATE_ID: process.env.MSG91_MOREINFO_TEMPLATE_ID,
-    MSG91_PARTNER_APPROVED_TEMPLATE_ID:
-      process.env.MSG91_PARTNER_APPROVED_TEMPLATE_ID,
-    MSG91_PARTNER_REJECTED_TEMPLATE_ID:
-      process.env.MSG91_PARTNER_REJECTED_TEMPLATE_ID,
-    MSG91_PARTNER_DEACTIVATED_TEMPLATE_ID:
-      process.env.MSG91_PARTNER_DEACTIVATED_TEMPLATE_ID,
-    MSG91_PARTNER_REACTIVATED_TEMPLATE_ID:
-      process.env.MSG91_PARTNER_REACTIVATED_TEMPLATE_ID,
+    SES_ACCESS_KEY_ID: process.env.SES_ACCESS_KEY_ID,
+    SES_SECRET_ACCESS_KEY: process.env.SES_SECRET_ACCESS_KEY,
+    SES_REGION: process.env.SES_REGION,
+    SES_CONFIGURATION_SET: process.env.SES_CONFIGURATION_SET,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO,
+    APP_URL: process.env.APP_URL,
     ADMIN_EMAIL: process.env.ADMIN_EMAIL,
     AUTH_SECRET: process.env.AUTH_SECRET,
     CREDENTIAL_ENCRYPTION_KEY: process.env.CREDENTIAL_ENCRYPTION_KEY,

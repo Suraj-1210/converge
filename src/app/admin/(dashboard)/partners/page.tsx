@@ -222,9 +222,11 @@ export default function PartnersPage() {
             : vars.status === "inactive"
               ? "deactivated"
               : "updated";
-      showToast(
-        vars.isReactivation ? `${displayName(data)} reactivated` : `${displayName(data)} ${action}`,
-      );
+      const done = vars.isReactivation
+        ? `${displayName(data)} reactivated`
+        : `${displayName(data)} ${action}`;
+      // The status is saved either way; say so if the partner wasn't told.
+      showToast(data.emailSent === false ? `${done}, but the email to the partner failed` : done);
       // First approval is driven FROM the assign-counsellors modal, so close it
       // once the approve lands. Reactivations keep their existing lead — no
       // modal.
