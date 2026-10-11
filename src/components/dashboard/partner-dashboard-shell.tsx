@@ -6,11 +6,14 @@ import { Topbar } from "./topbar";
 import { MobileGate } from "./mobile-gate";
 import { PARTNER_NAV_SECTIONS } from "./partner-nav-config";
 import { api } from "~/trpc/react";
+import { ImpersonationBanner, bannerOffsetStyle, useImpersonation } from "./impersonation";
 
 export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const me = api.auth.me.useQuery(undefined, { retry: false });
   const utils = api.useUtils();
   const logout = api.auth.logout.useMutation();
+  // Non-null while a Super Admin is impersonating this partner.
+  const impersonating = useImpersonation("partner");
 
   // Persistent partner notification feed (counsellor decisions, etc.).
   const feed = api.partnerNotifications.list.useQuery(undefined, {
@@ -42,12 +45,15 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       // middleware re-checks auth on a fresh request (a soft replace would stay
       // in the still-authenticated SPA); the reload also discards the cache.
     }
-    window.location.href = "/login";
+    // Logging out of an impersonated partner session ends the impersonation;
+    // the admin's own session is intact, so return to the admin portal.
+    window.location.href = impersonating ? "/admin/dashboard" : "/login";
   }
 
   return (
     <MobileGate>
-    <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]">
+    <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]" style={bannerOffsetStyle(!!impersonating)}>
+      <ImpersonationBanner side="partner" />
       <Sidebar
         sections={PARTNER_NAV_SECTIONS}
         logoSubtitle="Partner Portal"
@@ -67,7 +73,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         }}
         onLogout={handleLogout}
       />
-      <main className="ml-16 min-h-screen pt-[60px]">
+      <main className="ml-16 min-h-screen pt-[calc(60px+var(--banner-h,0px))]">
         <div className="p-6">{children}</div>
       </main>
     </div>

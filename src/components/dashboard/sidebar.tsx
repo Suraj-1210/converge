@@ -37,7 +37,7 @@ export function Sidebar({ sections, logoSubtitle, badges = {}, role = null, foot
   return (
     <nav
       aria-label="Primary"
-      className="group fixed top-0 bottom-0 left-0 z-50 flex w-16 flex-col overflow-hidden border-r border-[#E4E7EC] bg-white transition-[width,box-shadow] duration-300 ease-[cubic-bezier(0.34,1.15,0.64,1)] hover:w-60 hover:shadow-[0_16px_48px_rgba(16,24,40,0.16)] focus-within:w-60 focus-within:shadow-[0_16px_48px_rgba(16,24,40,0.16)]"
+      className="group fixed top-[var(--banner-h,0px)] bottom-0 left-0 z-50 flex w-16 flex-col overflow-hidden border-r border-[#E4E7EC] bg-white transition-[width,box-shadow] duration-300 ease-[cubic-bezier(0.34,1.15,0.64,1)] hover:w-60 hover:shadow-[0_16px_48px_rgba(16,24,40,0.16)] focus-within:w-60 focus-within:shadow-[0_16px_48px_rgba(16,24,40,0.16)]"
     >
       <div className="flex h-full w-60 flex-col">
         {/* Logo */}

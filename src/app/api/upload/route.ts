@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import {
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
-  verifyPartnerSessionJwt,
+  resolvePartnerSession,
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { saveUpload } from "~/server/storage";
@@ -114,8 +114,9 @@ export async function POST(req: Request) {
     const ok =
       policy === "admin"
         ? await verifySessionJwt(jar.get(SESSION_COOKIE_NAME)?.value ?? "")
-        : await verifyPartnerSessionJwt(
-            jar.get(PARTNER_SESSION_COOKIE_NAME)?.value ?? "",
+        : await resolvePartnerSession(
+            jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
+            jar.get(SESSION_COOKIE_NAME)?.value,
           );
     if (!ok) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

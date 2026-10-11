@@ -16,42 +16,12 @@ import {
   markMouSigned,
   recordPartnerLogin,
 } from "~/server/applications/store";
-import {
-  PARTNER_SESSION_COOKIE_NAME,
-  signPartnerSessionJwt,
-} from "~/server/auth/jwt";
+import { signPartnerSessionJwt } from "~/server/auth/jwt";
+import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/auth/cookies";
+import { endImpersonationFromLogout } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { resolveStorageUrl } from "~/server/storage";
-
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
-
-function buildPartnerSessionCookie(token: string): string {
-  const attrs = [
-    `${PARTNER_SESSION_COOKIE_NAME}=${token}`,
-    "HttpOnly",
-    "Path=/",
-    `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
-    "SameSite=Lax",
-  ];
-  if (process.env.NODE_ENV === "production") attrs.push("Secure");
-  return attrs.join("; ");
-}
-
-// Expire the partner session cookie (same name + Path as the login cookie).
-// Emitted via ctx.resHeaders — next/headers cookies().delete() is dropped by the
-// tRPC fetch handler and never reaches the browser, so the session would survive.
-function clearPartnerSessionCookie(): string {
-  const attrs = [
-    `${PARTNER_SESSION_COOKIE_NAME}=`,
-    "HttpOnly",
-    "Path=/",
-    "Max-Age=0",
-    "SameSite=Lax",
-  ];
-  if (process.env.NODE_ENV === "production") attrs.push("Secure");
-  return attrs.join("; ");
-}
 
 // Decides where to send the partner after login (and on revisits).
 //   under_review / rejected / inactive → /pending-verification
@@ -59,7 +29,7 @@ function clearPartnerSessionCookie(): string {
 //   approved + MOU signed               → /partner/dashboard
 // Agency counsellors never sign the MOU — only the account owner does — so
 // they skip straight to the dashboard once approved.
-function partnerRedirectFor(
+export function partnerRedirectFor(
   status: "under_review" | "approved" | "rejected" | "inactive",
   mouSignedAt: string | null | undefined,
   mouExempt = false,
@@ -292,15 +262,18 @@ export const authRouter = createTRPCRouter({
     }),
 
   // Touched by /partner/dashboard on every mount.
+  // Skipped while a Super Admin is impersonating, so it isn't counted as the
+  // partner's own login.
   recordDashboardVisit: protectedPartnerProcedure.mutation(async ({ ctx }) => {
-    await recordPartnerLogin(ctx.cpPartner.id);
+    if (!ctx.cpPartner.impersonatorId) await recordPartnerLogin(ctx.cpPartner.id);
     return { success: true as const };
   }),
 
   // Clears the partner session cookie. Public on purpose so a stale/missing
   // cookie doesn't 401 the logout itself. Uses ctx.resHeaders so the Set-Cookie
   // actually reaches the browser.
-  logout: publicProcedure.mutation(({ ctx }) => {
+  logout: publicProcedure.mutation(async ({ ctx }) => {
+    if (ctx.cpPartner?.impersonatorId) await endImpersonationFromLogout(ctx);
     ctx.resHeaders.append("Set-Cookie", clearPartnerSessionCookie());
     return { success: true as const };
   }),

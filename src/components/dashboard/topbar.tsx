@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   BellIcon,
@@ -40,6 +40,8 @@ interface TopbarProps {
   onTasksClick?: () => void;
   onMarkAllRead?: () => void;
   onLogout?: () => void;
+  /** Extra controls rendered before the Tasks button (e.g. Impersonate). */
+  actions?: ReactNode;
 }
 
 const DOT_TONES: Record<NotificationItem["tone"], string> = {
@@ -63,6 +65,7 @@ export function Topbar({
   onTasksClick,
   onMarkAllRead,
   onLogout,
+  actions,
 }: TopbarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -89,7 +92,7 @@ export function Topbar({
 
   return (
     <header
-      className="fixed top-0 right-0 left-16 z-40 flex h-[60px] items-center gap-3 border-b border-[#E4E7EC] bg-white px-6"
+      className="fixed top-[var(--banner-h,0px)] right-0 left-16 z-40 flex h-[60px] items-center gap-3 border-b border-[#E4E7EC] bg-white px-6"
     >
       <div className="flex-1" />
 
@@ -106,6 +109,8 @@ export function Topbar({
           ⌘K
         </span>
       </div>
+
+      {actions}
 
       {/* Tasks */}
       <button

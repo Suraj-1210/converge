@@ -13,21 +13,23 @@ import { ZodError } from "zod";
 
 import { db } from "~/server/db";
 import {
+  type AdminSessionClaims,
+  type PartnerSessionClaims,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
-  verifyPartnerSessionJwt,
+  resolvePartnerSession,
   verifySessionJwt,
 } from "~/server/auth/jwt";
+import { runWithImpersonation } from "~/server/auth/impersonation-context";
 import { AdminRole, UserStatus } from "~/server/db/enums";
 
-interface CpUser {
-  id: number;
-  role: number;
-}
+// `id`/`role` are the EFFECTIVE user: while a Super Admin impersonates a staff
+// user they are the impersonated user's, and `realId` is the admin's. Use
+// `realId ?? id` wherever the real person matters (attribution, exports).
+type CpUser = AdminSessionClaims;
 
-interface CpPartner {
-  id: number;
-}
+// `impersonatorId` is set while a Super Admin is impersonating this partner.
+type CpPartner = PartnerSessionClaims;
 
 function readCookie(headers: Headers, name: string): string | null {
   const raw = headers.get("cookie");
@@ -49,11 +51,10 @@ export const createTRPCContext = async (opts: {
     cpUser = await verifySessionJwt(adminToken);
   }
 
-  let cpPartner: CpPartner | null = null;
-  const partnerToken = readCookie(opts.headers, PARTNER_SESSION_COOKIE_NAME);
-  if (partnerToken) {
-    cpPartner = await verifyPartnerSessionJwt(partnerToken);
-  }
+  const cpPartner: CpPartner | null = await resolvePartnerSession(
+    readCookie(opts.headers, PARTNER_SESSION_COOKIE_NAME),
+    adminToken,
+  );
 
   return {
     db,
@@ -110,7 +111,7 @@ export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next })
   // immediately, not at JWT expiry (8h).
   const row = await ctx.db.collegepond_user.findUnique({
     where: { id: ctx.cpUser.id },
-    select: { status: true },
+    select: { status: true, first_name: true, last_name: true },
   });
   if (row?.status !== 1) {
     throw new TRPCError({
@@ -118,8 +119,37 @@ export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next })
       message: "This account is no longer active.",
     });
   }
-  return next({ ctx: { ...ctx, cpUser: ctx.cpUser } });
+  const cpUser = ctx.cpUser;
+  if (!cpUser.realId) return next({ ctx: { ...ctx, cpUser } });
+
+  // Impersonating: the real admin must still be an active Super Admin.
+  await assertActiveImpersonator(ctx.db, cpUser.realId);
+  return runWithImpersonation(
+    {
+      realCpUserId: cpUser.realId,
+      as: { kind: "staff", id: cpUser.id, name: `${row.first_name} ${row.last_name}`.trim() },
+    },
+    () => next({ ctx: { ...ctx, cpUser } }),
+  );
 });
+
+// An impersonation session is only valid while the real admin behind it is
+// still an active Super Admin (checked per request, like account status).
+async function assertActiveImpersonator(
+  database: typeof db,
+  realCpUserId: number,
+): Promise<void> {
+  const real = await database.collegepond_user.findUnique({
+    where: { id: realCpUserId },
+    select: { status: true, role: true },
+  });
+  if (real?.status !== 1 || real.role !== AdminRole.SUPER_ADMIN) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "Impersonation is no longer permitted. Exit and sign in again.",
+    });
+  }
+}
 
 // Further requires the admin to have role = SUPER_ADMIN.
 export const superAdminProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
@@ -210,7 +240,22 @@ export const partnerSelfProcedure = publicProcedure.use(async ({ ctx, next }) =>
   if (!ctx.cpPartner) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
-  return next({ ctx: { ...ctx, cpPartner: ctx.cpPartner } });
+  const cpPartner = ctx.cpPartner;
+  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
+
+  const row = await ctx.db.user.findUnique({
+    where: { id: cpPartner.id },
+    select: { first_name: true, last_name: true },
+  });
+  if (!row) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
+  await assertActiveImpersonator(ctx.db, cpPartner.impersonatorId);
+  return runWithImpersonation(
+    {
+      realCpUserId: cpPartner.impersonatorId,
+      as: { kind: "partner", id: cpPartner.id, name: `${row.first_name} ${row.last_name}`.trim() },
+    },
+    () => next({ ctx: { ...ctx, cpPartner } }),
+  );
 });
 
 export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next }) => {
@@ -220,16 +265,27 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
   // Block immediately if the partner was deactivated/rejected mid-session.
   const row = await ctx.db.user.findUnique({
     where: { id: ctx.cpPartner.id },
-    select: { status: true },
+    select: { status: true, first_name: true, last_name: true },
   });
   if (
-    row?.status === UserStatus.REJECTED ||
-    row?.status === UserStatus.INACTIVE
+    !row ||
+    row.status === UserStatus.REJECTED ||
+    row.status === UserStatus.INACTIVE
   ) {
     throw new TRPCError({
       code: "UNAUTHORIZED",
       message: "This account is no longer active.",
     });
   }
-  return next({ ctx: { ...ctx, cpPartner: ctx.cpPartner } });
+  const cpPartner = ctx.cpPartner;
+  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
+
+  await assertActiveImpersonator(ctx.db, cpPartner.impersonatorId);
+  return runWithImpersonation(
+    {
+      realCpUserId: cpPartner.impersonatorId,
+      as: { kind: "partner", id: cpPartner.id, name: `${row.first_name} ${row.last_name}`.trim() },
+    },
+    () => next({ ctx: { ...ctx, cpPartner } }),
+  );
 });

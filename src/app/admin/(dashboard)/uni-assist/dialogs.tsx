@@ -1,5 +1,6 @@
 "use client";
 
+import { useExportLog } from "~/lib/export-log";
 import { useEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
@@ -33,6 +34,7 @@ export function DownloadDialog({
     () => new Set(DOWNLOAD_FIELDS.map((f) => f.key)),
   );
   const [format, setFormat] = useState<DownloadFormat>("csv");
+  const logExport = useExportLog();
 
   const allSelected = selected.size === DOWNLOAD_FIELDS.length;
 
@@ -69,6 +71,7 @@ export function DownloadDialog({
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Uni Assist Results");
       XLSX.writeFile(wb, "uni-assist-results.xlsx");
+      logExport("Uni Assist results XLSX", rows.length);
     } else {
       const escape = (v: string) =>
         /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
@@ -87,6 +90,7 @@ export function DownloadDialog({
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logExport("Uni Assist results CSV", rows.length);
     }
     onClose();
     onDone(

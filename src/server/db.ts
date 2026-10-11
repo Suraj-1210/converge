@@ -1,8 +1,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PrismaClient } from "../../generated/prisma";
+import { type Prisma, PrismaClient } from "../../generated/prisma";
 import { env } from "~/env";
+import { attributeAuditMetadata, currentImpersonation } from "~/server/auth/impersonation-context";
 
 // DigitalOcean Managed MySQL requires TLS. Prisma's MySQL connector uses the
 // `sslaccept` / `sslcert` query params — NOT the `?ssl-mode=REQUIRED` that DO
@@ -53,21 +54,52 @@ function resolveDatabaseUrl(): string {
   return url.toString();
 }
 
+// While a Super Admin is impersonating someone, every audit_log row is
+// attributed to the real admin (see ~/server/auth/impersonation-context).
+function withAuditAttribution(client: PrismaClient) {
+  return client.$extends({
+    query: {
+      audit_log: {
+        create({ args, query }) {
+          const imp = currentImpersonation();
+          if (imp) {
+            args.data.metadata = attributeAuditMetadata(args.data.metadata, imp) as Prisma.InputJsonObject;
+          }
+          return query(args);
+        },
+        createMany({ args, query }) {
+          const imp = currentImpersonation();
+          if (imp) {
+            const rows = Array.isArray(args.data) ? args.data : [args.data];
+            args.data = rows.map((r) => ({
+              ...r,
+              metadata: attributeAuditMetadata(r.metadata, imp) as Prisma.InputJsonObject,
+            }));
+          }
+          return query(args);
+        },
+      },
+    },
+  });
+}
+
 const createPrismaClient = () => {
   try {
-    return new PrismaClient({
-      datasources: { db: { url: resolveDatabaseUrl() } },
-      log:
-        process.env.NODE_ENV === "development"
-          ? ["query", "error", "warn"]
-          : ["error"],
-    });
+    return withAuditAttribution(
+      new PrismaClient({
+        datasources: { db: { url: resolveDatabaseUrl() } },
+        log:
+          process.env.NODE_ENV === "development"
+            ? ["query", "error", "warn"]
+            : ["error"],
+      }),
+    );
   } catch (e) {
     // In dev, allow the app to boot without a DB; in prod, fail loudly rather
     // than hand back a null client that throws cryptically later.
     if (process.env.NODE_ENV === "production") throw e;
     console.error("[db] PrismaClient init failed (dev):", e);
-    return null as unknown as PrismaClient;
+    return null as unknown as ReturnType<typeof withAuditAttribution>;
   }
 };
 

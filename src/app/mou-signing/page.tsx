@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "~/components/ui/button";
 import { Toast } from "~/components/ui/toast";
 import { api } from "~/trpc/react";
+import { ImpersonationBanner } from "~/components/dashboard/impersonation";
 
 type Step = 0 | 1 | 2 | 3;
 type SignatureMode = "draw" | "type";
@@ -189,6 +190,7 @@ export default function MouSigningPage() {
 
   return (
     <>
+      <ImpersonationBanner side="partner" fixed={false} />
       <div className="flex min-h-screen bg-[#F5F6FA] font-[family-name:var(--font-inter)]">
         {/* ===== LEFT BRAND PANEL ===== */}
         <div className="relative flex w-[480px] shrink-0 flex-col overflow-hidden bg-gradient-to-br from-[#0B4A8A] via-[#1570EF] to-[#53B1FD] px-12 py-12 text-white">

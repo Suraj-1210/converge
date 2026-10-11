@@ -28,12 +28,14 @@ import { partnerNotificationsRouter } from "~/server/api/routers/partner-notific
 import { chatRouter } from "~/server/api/routers/chat";
 import { applicationsRouter } from "~/server/api/routers/applications";
 import { notesRouter } from "~/server/api/routers/notes";
+import { impersonationRouter } from "~/server/api/routers/impersonation";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
 export const appRouter = createTRPCRouter({
   account: accountRouter,
   auth: authRouter,
   authSession: authSessionRouter,
+  impersonation: impersonationRouter,
   signup: signupRouter,
   adminAuth: adminAuthRouter,
   users: usersRouter,

@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
@@ -152,6 +153,7 @@ export default function AdminCommissionsPage() {
   const showToast = (m: string) => { setToastMsg(m); setToastOpen(true); };
 
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const listQ = api.commissions.list.useQuery(undefined, { enabled: canView && mounted });
   const rows = useMemo(() => listQ.data ?? [], [listQ.data]);
 
@@ -215,6 +217,7 @@ export default function AdminCommissionsPage() {
       r.vendorInvoice?.number ?? "", r.partnerInvoice?.number ?? "",
     ]);
     downloadCsv(`commission-ledger-${stamp()}.csv`, [header, ...body]);
+    logExport("Commission ledger CSV", body.length);
   };
 
   // ---- partner summary (tab 2) ----

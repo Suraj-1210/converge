@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
@@ -93,6 +94,7 @@ export default function ReconciliationPage() {
   const showToast = (m: string) => { setToastMsg(m); setToastOpen(true); };
 
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const statsQ = api.reconciliation.stats.useQuery(undefined, { enabled: canVerify });
   const pendingQ = api.reconciliation.listPending.useQuery(undefined, { enabled: canVerify });
   const completedQ = api.reconciliation.completed.useQuery(undefined, { enabled: canVerify });
@@ -178,6 +180,7 @@ export default function ReconciliationPage() {
       p.notes ?? "",
     ]);
     downloadCsv(`completed_payments_${todayInput()}.csv`, [header, ...body]);
+    logExport("Completed payments CSV", body.length);
   };
 
   if (!mounted || meQ.isLoading) {

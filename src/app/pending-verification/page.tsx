@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { api } from "~/trpc/react";
+import { ImpersonationBanner } from "~/components/dashboard/impersonation";
 
 // Where a partner lands while not yet approved (or after a rejection /
 // deactivation): what has been done, which documents are verified, missing
@@ -102,6 +103,8 @@ export default function PendingVerificationPage() {
   ];
 
   return (
+    <>
+    <ImpersonationBanner side="partner" fixed={false} />
     <div className="flex min-h-screen justify-center bg-[#F9FAFB] p-6">
       <div className="my-auto w-full max-w-[620px] rounded-2xl bg-white p-8 shadow-[0_8px_30px_rgba(0,0,0,0.06)] sm:p-10">
         <div
@@ -238,6 +241,7 @@ export default function PendingVerificationPage() {
         </Link>
       </div>
     </div>
+    </>
   );
 }
 

@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
@@ -369,6 +370,7 @@ export default function CommissionRatesPage() {
   };
 
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const vendorsQ = api.commissionRates.listVendors.useQuery(undefined, { enabled: canView });
   const contractsQ = api.commissionRates.listContracts.useQuery(undefined, { enabled: canView });
   const unisQ = api.commissionRates.universitiesForPicker.useQuery(undefined, { enabled: canView });
@@ -473,6 +475,7 @@ export default function CommissionRatesPage() {
       ]);
     }
     downloadCsv("commission-rates-export.csv", rows);
+    logExport("Commission rates CSV", contracts.length);
     showToast(`CSV exported (${contracts.length} records)`);
   };
   const handleTemplate = () => {

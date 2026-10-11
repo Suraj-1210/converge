@@ -8,6 +8,13 @@ import { NAV_SECTIONS, navRoleFromCode } from "./nav-config";
 import { AdminRoleLabel, isAdminRole } from "~/server/db/enums";
 import { SHOW_DEMO_DATA } from "~/lib/demo";
 import { api } from "~/trpc/react";
+import { AdminRole } from "~/server/db/enums";
+import {
+  ImpersonateMenu,
+  ImpersonationBanner,
+  bannerOffsetStyle,
+  useImpersonation,
+} from "./impersonation";
 
 // Dev-only illustrative bell content. In production the bell is driven entirely
 // by api.notifications.list (real, current actionable state); these never render
@@ -64,6 +71,9 @@ export function DashboardShell({
   const logout = api.authSession.logout.useMutation();
   // Real signed-in admin (collegepond_user) — drives the profile name/role.
   const me = api.authSession.me.useQuery().data;
+  // Non-null while a Super Admin is impersonating a staff user; `me` is then
+  // the impersonated user.
+  const impersonating = useImpersonation("admin");
 
   // Live admin signals (pending approvals, payouts ready, invoices awaiting
   // review, new students). Drives both the bell and the sidebar approvals badge.
@@ -107,7 +117,8 @@ export function DashboardShell({
 
   return (
     <MobileGate>
-    <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]">
+    <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]" style={bannerOffsetStyle(!!impersonating)}>
+      <ImpersonationBanner side="admin" />
       <Sidebar
         sections={NAV_SECTIONS}
         logoSubtitle="Admin Portal"
@@ -123,8 +134,11 @@ export function DashboardShell({
         taskCount={taskCount}
         onMarkAllRead={() => setAllRead(true)}
         onLogout={handleLogout}
+        actions={
+          me?.role === AdminRole.SUPER_ADMIN && !impersonating ? <ImpersonateMenu /> : null
+        }
       />
-      <main className="ml-16 min-h-screen pt-[60px]">
+      <main className="ml-16 min-h-screen pt-[calc(60px+var(--banner-h,0px))]">
         <div className="p-6">{children}</div>
       </main>
     </div>

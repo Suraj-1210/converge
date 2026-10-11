@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
@@ -58,6 +59,7 @@ export default function AuditLogsPage() {
   const [toastOpen, setToastOpen] = useState(false);
 
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const filtersQ = api.audit.filters.useQuery(undefined, { enabled: canView });
   const queryInput = useMemo(
     () => ({ page, module: module || undefined, category: action || undefined, actorId: user ? Number(user) : undefined, from: from || undefined, to: to || undefined, search: search || undefined }),
@@ -84,6 +86,7 @@ export default function AuditLogsPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `audit_log_export_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
     URL.revokeObjectURL(url);
+    logExport("Audit log CSV", all.length);
     setToastMsg(`Exported ${all.length} audit ${all.length === 1 ? "entry" : "entries"} as CSV`); setToastOpen(true);
   };
 

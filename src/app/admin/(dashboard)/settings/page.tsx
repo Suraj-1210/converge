@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
@@ -119,6 +120,7 @@ export default function SettingsPage() {
 
   // Live exchange rates — real fx_rate table + mid-market feed.
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const fxQ = api.fx.list.useQuery();
   const fxRefresh = api.fx.refresh.useMutation({
     onSuccess: async (r) => { await utils.fx.list.invalidate(); toast(`Refreshed ${r.updated} rates from ${r.source}`); },
@@ -172,7 +174,7 @@ export default function SettingsPage() {
     const blob = new Blob([JSON.stringify({ general, notifs }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `collegepond-settings-${new Date().toISOString().slice(0, 10)}.json`; a.click();
-    URL.revokeObjectURL(url); toast("Settings exported");
+    URL.revokeObjectURL(url); logExport("Settings JSON"); toast("Settings exported");
   };
   const importJson = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; e.target.value = "";

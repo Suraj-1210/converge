@@ -125,7 +125,9 @@ export async function POST(req: Request) {
       metadata: {
         docType: docType.key,
         fileName: file.name,
-        byCpUserId: claims.id,
+        // Real admin while impersonating a staff user (see impersonation-context).
+        byCpUserId: claims.realId ?? claims.id,
+        ...(claims.realId ? { impersonation: { kind: "staff", id: claims.id } } : {}),
       },
     },
   });

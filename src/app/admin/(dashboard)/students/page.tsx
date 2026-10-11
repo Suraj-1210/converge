@@ -13,6 +13,7 @@ import {
   studentStatusGroup,
 } from "~/components/students/status";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import {
   countryName,
@@ -148,6 +149,7 @@ const emptyFilters: Filters = {
 
 export default function StudentsPage() {
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const studentsQuery = api.students.adminList.useQuery();
 
   // Warm the shared /students/[id] route chunk once the list loads, so the very
@@ -426,6 +428,7 @@ export default function StudentsPage() {
       ]),
     ];
     downloadCsv(`Collegepond_Admin_Students_${todayYmd()}.csv`, rows);
+    logExport("Students CSV", sorted.length);
     showToast(`CSV downloaded — ${sorted.length} students exported`);
   };
 

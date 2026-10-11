@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
@@ -214,6 +215,7 @@ export default function PartnerCommissionPage() {
   const showToast = (m: string) => { setToastMsg(m); setToastOpen(true); };
 
   const claimsQ = api.partnerCommission.listClaimable.useQuery();
+  const logExport = useExportLog("partner");
   const historyQ = api.partnerCommission.invoiceHistory.useQuery();
   const yearlyQ = api.partnerCommission.yearlyStats.useQuery();
   const claims = useMemo(() => claimsQ.data ?? [], [claimsQ.data]);
@@ -282,6 +284,7 @@ export default function PartnerCommissionPage() {
       c.receivedAt ? "Yes" : "No", c.paidAt ? "Yes" : "No", c.paidAt ? formatDate(c.paidAt) : "",
     ]);
     downloadCsv(`commission-export-${todayInput()}.csv`, [header, ...body]);
+    logExport("Partner commission CSV", body.length);
   };
 
   return (

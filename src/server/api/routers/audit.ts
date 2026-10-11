@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
+import { createTRPCRouter, protectedAdminProcedure, protectedPartnerProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
 
@@ -20,6 +20,8 @@ const MODULE_BY_ENTITY: Record<string, string> = {
   application: "Applications",
   event: "Events",
   user: "Partners",
+  cp_user: "Users",
+  export: "Exports",
 };
 const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
   Object.entries(MODULE_BY_ENTITY).map(([k, v]) => [v, k]),
@@ -31,10 +33,14 @@ const ACTION_STRINGS = [
   "application.credential_saved", "application.credential_viewed", "application.removed", "application.status_updated", "application.uni_id_saved", "application.vendor_selected",
   "counsellor.approved", "counsellor.invited", "counsellor.rejected",
   "event.created", "event.deleted", "event.updated",
+  "export.downloaded",
+  "impersonation.ended", "impersonation.started",
   "student.academics_updated", "student.application_created", "student.cp_counsellor_assigned", "student.document_removed", "student.document_uploaded", "student.profile_updated", "student.shortlist_removed", "student.shortlisted", "student.status_updated", "student.tests_updated", "student.work_experience_updated",
 ];
 
 function categoryOf(action: string): string {
+  if (action.startsWith("impersonation.")) return "Impersonation";
+  if (action.startsWith("export.")) return "Export";
   if (action.includes("status")) return "Status Change";
   if (action.includes("approved")) return "Approval";
   if (action.includes("rejected")) return "Rejection";
@@ -66,14 +72,30 @@ function humanize(action: string, entityId: number | null, metadata: unknown): s
   const base = words.charAt(0).toUpperCase() + words.slice(1);
   const meta = asRecord(metadata);
   const idPart = entityId ? ` (#${entityId})` : "";
+  // Anything done while impersonating names who the admin was acting as.
+  const imp = asRecord(meta.impersonation);
+  const asPart = typeof imp.name === "string" ? ` [as ${imp.name}]` : "";
+  if (action.startsWith("impersonation.")) {
+    const who = `${s(meta.targetName) || `#${s(meta.targetId)}`}${meta.targetRole ? ` (${s(meta.targetRole)})` : ""}`;
+    return action === "impersonation.started" ? `Started impersonating ${who}` : `Stopped impersonating ${who}`;
+  }
+  if (action === "export.downloaded") {
+    const rows = typeof meta.rows === "number" ? ` — ${meta.rows} rows` : "";
+    return `Exported ${s(meta.file)}${rows}${asPart}`;
+  }
   if (action.includes("status") && meta.from != null && meta.to != null) {
-    return `${base}: ${s(meta.from)} → ${s(meta.to)}${idPart}`;
+    return `${base}: ${s(meta.from)} → ${s(meta.to)}${idPart}${asPart}`;
   }
   const extra =
     typeof meta.fileName === "string" ? ` — ${meta.fileName}` :
     typeof meta.reason === "string" && meta.reason ? ` — ${meta.reason}` : "";
-  return `${base}${idPart}${extra}`;
+  return `${base}${idPart}${extra}${asPart}`;
 }
+
+const exportInput = z.object({
+  file: z.string().min(1).max(200),
+  rows: z.number().int().min(0).optional(),
+});
 
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const daysAgo = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n); return d; };
@@ -184,5 +206,37 @@ export const auditRouter = createTRPCRouter({
       const rows = await db.audit_log.findMany({ where: buildWhere(input), orderBy: { created_at: "desc" }, take: 5000 });
       const actorMap = await resolveActors(rows.map((r) => r.metadata));
       return rows.map((r) => mapRow(r, actorMap));
+    }),
+
+  // Records a client-side CSV/XLSX/JSON download. Any admin may export, so this
+  // isn't gated on audit view access. While impersonating, the row is
+  // attributed to the real admin (see impersonation-context).
+  logExport: protectedAdminProcedure
+    .input(exportInput)
+    .mutation(async ({ ctx, input }) => {
+      await db.audit_log.create({
+        data: {
+          action: "export.downloaded",
+          entity_type: "export",
+          metadata: { byCpUserId: ctx.cpUser.id, file: input.file, rows: input.rows ?? null },
+        },
+      });
+      return { ok: true as const };
+    }),
+
+  // Partner-portal downloads. byCpUserId is only added when a Super Admin is
+  // impersonating the partner.
+  logPartnerExport: protectedPartnerProcedure
+    .input(exportInput)
+    .mutation(async ({ ctx, input }) => {
+      await db.audit_log.create({
+        data: {
+          action: "export.downloaded",
+          entity_type: "export",
+          user_id: ctx.cpPartner.id,
+          metadata: { file: input.file, rows: input.rows ?? null },
+        },
+      });
+      return { ok: true as const };
     }),
 });

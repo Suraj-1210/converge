@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
@@ -312,6 +313,7 @@ export default function UniversityBillingPage() {
 // =============================================================================
 function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast: (m: string) => void }) {
   const utils = api.useUtils();
+  const logExport = useExportLog();
   const q = api.universityBilling.confirmedStudents.useQuery();
   const [status, setStatus] = useState<"all" | "attended">("all");
   const confirm = api.universityBilling.confirmBilling.useMutation({
@@ -344,6 +346,7 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
       withVendor ? `vendor-confirmation-all-${csvStamp()}.csv` : `vendor-confirmation-${slug(vendorName)}-${csvStamp()}.csv`,
       [header, ...body],
     );
+    logExport("Vendor confirmation CSV", body.length);
   };
 
   if (q.isLoading)
@@ -758,6 +761,7 @@ function InvoicesView({
   onOpenRecordPayment: (invoice: Invoice) => void;
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set());
+  const logExport = useExportLog();
   const toggle = (id: number) =>
     setOpen((p) => {
       const n = new Set(p);
@@ -798,6 +802,7 @@ function InvoicesView({
       ["Currency", inv.currency, "Total Expected", inv.totalExpected, "Total Paid (≈)", paid, "Status", VendorInvoiceStatusLabel[inv.status as 0 | 1 | 2 | 3]],
     ];
     downloadCsv(`${inv.invoiceNumber}.csv`, [header, ...body, ...footer]);
+    logExport(`Vendor invoice ${inv.invoiceNumber} CSV`, body.length);
   };
 
   if (loading)

@@ -128,6 +128,18 @@ look identical to working ones:
 just returns false. Smoke-test WhatsApp and uploads explicitly after any config
 change.
 
+## Impersonation
+
+Super Admins can act as any active staff or partner user (header "Impersonate"
+menu, amber banner, `src/server/api/routers/impersonation.ts`). It is a server
+session: the JWT carries the real admin's id (`imp` claim → `ctx.cpUser.realId`
+/ `ctx.cpPartner.impersonatorId`), and `ctx.cpUser.id` is the impersonated
+user. Audit attribution is automatic: a Prisma extension in `src/server/db.ts`
+rewrites `metadata.byCpUserId` to the real admin on every `audit_log` write
+made during an impersonated tRPC request, so audit call sites need no changes.
+Route handlers outside tRPC don't get this — use `claims.realId ?? claims.id`.
+Client-side downloads log `export.downloaded` via `useExportLog()`.
+
 ## Repo conventions
 
 - `generated/prisma/` is **committed**, so `prisma generate` produces diff noise

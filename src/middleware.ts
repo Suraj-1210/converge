@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
-  verifyPartnerSessionJwt,
+  resolvePartnerSession,
   verifySessionJwt,
 } from "~/server/auth/jwt";
 
@@ -37,8 +37,10 @@ export async function middleware(req: NextRequest) {
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
   if (isPartnerGated) {
-    const token = req.cookies.get(PARTNER_SESSION_COOKIE_NAME)?.value;
-    const claims = token ? await verifyPartnerSessionJwt(token) : null;
+    const claims = await resolvePartnerSession(
+      req.cookies.get(PARTNER_SESSION_COOKIE_NAME)?.value,
+      req.cookies.get(SESSION_COOKIE_NAME)?.value,
+    );
     if (!claims) return redirectTo(req, "/login");
     return NextResponse.next();
   }

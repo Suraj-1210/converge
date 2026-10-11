@@ -12,21 +12,8 @@ import {
   verifyEmailOtp,
   verifyPhoneOtp,
 } from "~/server/otp";
-import { SESSION_COOKIE_NAME, signSessionJwt } from "~/server/auth/jwt";
-
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8; // matches the JWT TTL
-
-function buildSessionCookie(token: string): string {
-  const attrs = [
-    `${SESSION_COOKIE_NAME}=${token}`,
-    "HttpOnly",
-    "Path=/",
-    `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
-    "SameSite=Lax",
-  ];
-  if (process.env.NODE_ENV === "production") attrs.push("Secure");
-  return attrs.join("; ");
-}
+import { signSessionJwt } from "~/server/auth/jwt";
+import { buildSessionCookie } from "~/server/auth/cookies";
 
 // Phone is stored as `${countryCode}${phone}` (e.g. "+919876543210"). When the
 // country code starts with "+", we treat the trailing 10 chars as the local

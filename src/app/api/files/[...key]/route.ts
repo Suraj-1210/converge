@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import {
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
-  verifyPartnerSessionJwt,
+  resolvePartnerSession,
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
@@ -39,10 +39,10 @@ export async function GET(
   // Partners may only read files attached to their own user/org (or to a
   // student in their org).
   if (!allowed) {
-    const partnerToken = jar.get(PARTNER_SESSION_COOKIE_NAME)?.value;
-    const partner = partnerToken
-      ? await verifyPartnerSessionJwt(partnerToken)
-      : null;
+    const partner = await resolvePartnerSession(
+      jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
+      adminToken,
+    );
     if (!partner) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
