@@ -788,6 +788,9 @@ export default function SignupPage() {
                 <div className="mb-1 text-center text-[13px] text-[#667085]">
                   Code sent to <strong className="text-[#101828]">{maskEmail(email)}</strong>
                 </div>
+                <div className="text-center text-xs text-[#98A2B3]">
+                  Please check your junk/spam folder if you don&apos;t see it in your inbox.
+                </div>
                 <div className="my-4 flex justify-center">
                   <OtpInput
                     value={emailOtp}

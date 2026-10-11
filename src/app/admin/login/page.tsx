@@ -369,6 +369,11 @@ export default function AdminLoginPage() {
                   <strong className="text-[#344054]">
                     {otpChannel === "email" ? maskEmail(email) : maskPhone(phone, countryCode)}
                   </strong>
+                  {otpChannel === "email" && (
+                    <div className="mt-1 text-xs text-[#98A2B3]">
+                      Please check your junk/spam folder if you don&apos;t see it in your inbox.
+                    </div>
+                  )}
                 </div>
 
                 <DevAutopilotBadge visible={autopilotRunning} />

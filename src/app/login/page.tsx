@@ -448,6 +448,9 @@ export default function LoginPage() {
               <span className="font-semibold text-[#344054]">
                 {maskEmail(email)}
               </span>
+              <div className="mt-1 text-xs text-[#98A2B3]">
+                Please check your junk/spam folder if you don&apos;t see it in your inbox.
+              </div>
             </div>
 
             <DevAutopilotBadge visible={autopilotRunning} />

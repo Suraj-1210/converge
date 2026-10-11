@@ -29,6 +29,16 @@ export const signupRouter = createTRPCRouter({
         sendPhoneOtp(phoneE164),
       ]);
 
+      // One channel failing still lets signup continue, so log why — otherwise
+      // a broken email or SMS setup is invisible. Reason only, never the
+      // address, number or code.
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          console.error(`[otp] signup ${i === 0 ? "email" : "SMS"} send failed: ${reason}`);
+        }
+      });
+
       const failed = results.filter((r) => r.status === "rejected");
       if (failed.length === results.length) {
         throw new TRPCError({
