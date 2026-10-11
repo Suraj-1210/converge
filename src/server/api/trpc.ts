@@ -202,6 +202,17 @@ export const bdmPerformanceProcedure = protectedAdminProcedure.use(({ ctx, next 
 });
 
 // Requires a valid partner (user table) session cookie.
+// Any signed-in partner, whatever their status: only for showing a partner
+// their own account/application state (under review, rejected, inactive).
+// Everything else uses protectedPartnerProcedure, which blocks rejected and
+// deactivated accounts.
+export const partnerSelfProcedure = publicProcedure.use(async ({ ctx, next }) => {
+  if (!ctx.cpPartner) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
+  }
+  return next({ ctx: { ...ctx, cpPartner: ctx.cpPartner } });
+});
+
 export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next }) => {
   if (!ctx.cpPartner) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });

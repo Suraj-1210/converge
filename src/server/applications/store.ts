@@ -243,6 +243,14 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
           data: { logo_url: input.documents.logo },
         });
       }
+      // The signup profile photo is also the account's avatar (shown in the
+      // portal header and on the admin side), not just a document.
+      if (input.documents.profilePhoto) {
+        await tx.user.update({
+          where: { id: user.id },
+          data: { avatar_url: input.documents.profilePhoto },
+        });
+      }
     }
 
     return toApplication(user, orgId, input);
@@ -351,6 +359,9 @@ export interface PartnerListing {
   bdmId: number | null;
   bdmName: string | null;
   pan: string | null;
+  // Display images, already resolved for the browser (null when none).
+  avatarUrl: string | null;
+  logoUrl: string | null;
   gstNumber: string | null;
   // null = the agency was never asked (predates the signup question).
   gstRegistered: boolean | null;
@@ -457,6 +468,8 @@ export async function listApplications(): Promise<PartnerListing[]> {
         role === "agency"
           ? (user.organization?.pan ?? null)
           : blankToNull(user.pan),
+      avatarUrl: resolveStorageUrl(user.avatar_url),
+      logoUrl: resolveStorageUrl(user.organization?.logo_url),
       gstNumber: user.organization?.gst_number ?? null,
       gstRegistered:
         user.organization?.gst_registered == null

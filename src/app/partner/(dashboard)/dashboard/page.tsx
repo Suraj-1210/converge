@@ -54,7 +54,8 @@ export default function PartnerDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.redirectUrl]);
 
-  const rm = stats?.relationshipManager;
+  const contacts = stats?.contacts ?? [];
+  const bdm = stats?.bdm ?? null;
 
   return (
     <>
@@ -143,35 +144,35 @@ export default function PartnerDashboardPage() {
           )}
         </DashboardCard>
 
-        {/* Relationship Manager — live (the partner's BDM) */}
-        <DashboardCard title="Your Relationship Manager">
+        {/* Your Collegepond team — counsellor, counsellor lead (deliberately
+            unlabelled, counsellor first), then the BDM. */}
+        <DashboardCard title="Your Collegepond Team">
           {isLoading ? (
-            <div className="flex items-center gap-3">
-              <Skeleton className="h-11 w-11 rounded-full" />
-              <Skeleton className="h-4 w-32" />
+            <div className="space-y-3">
+              {[0, 1].map((i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <Skeleton className="h-10 w-10 rounded-full" />
+                  <Skeleton className="h-4 w-32" />
+                </div>
+              ))}
             </div>
-          ) : rm ? (
-            <div className="text-[13px]">
-              <div className="flex items-center gap-3">
-                <span className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-[#1570EF] to-[#0b4ea2] text-sm font-bold text-white">
-                  {rm.name.slice(0, 2).toUpperCase()}
-                </span>
-                <div className="font-semibold text-[#101828]">{rm.name}</div>
-              </div>
-              <div className="mt-3 space-y-1.5 text-[#475467]">
-                <div className="flex gap-2">
-                  <span className="text-[#98A2B3]">Email</span>
-                  <span className="truncate">{rm.email}</span>
+          ) : contacts.length || bdm ? (
+            <div className="space-y-3 text-[13px]">
+              {contacts.map((c) => (
+                <TeamContact key={c.name} name={c.name} phone={c.phone} />
+              ))}
+              {bdm && (
+                <div className={contacts.length ? "border-t border-[#EAECF0] pt-3" : ""}>
+                  <div className="mb-2 text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+                    Business Development Manager
+                  </div>
+                  <TeamContact name={bdm.name} phone={bdm.phone} />
                 </div>
-                <div className="flex gap-2">
-                  <span className="text-[#98A2B3]">Phone</span>
-                  <span>{rm.phone}</span>
-                </div>
-              </div>
+              )}
             </div>
           ) : (
             <p className="text-[13px] text-[#98A2B3]">
-              No relationship manager assigned yet.
+              Your Collegepond team will appear here once assigned.
             </p>
           )}
         </DashboardCard>
@@ -274,5 +275,30 @@ export default function PartnerDashboardPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function TeamContact({ name, phone }: { name: string; phone: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1570EF] to-[#0b4ea2] text-xs font-bold text-white">
+        {name
+          .split(/s+/)
+          .map((w) => w[0])
+          .join("")
+          .slice(0, 2)
+          .toUpperCase()}
+      </span>
+      <div className="min-w-0">
+        <div className="truncate font-semibold text-[#101828]">{name}</div>
+        {phone ? (
+          <a href={`tel:${phone.replace(/s+/g, "")}`} className="text-[#475467] hover:text-[#1570EF]">
+            {phone}
+          </a>
+        ) : (
+          <span className="text-[#98A2B3]">—</span>
+        )}
+      </div>
+    </div>
   );
 }

@@ -57,6 +57,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       <Topbar
         userName={userName}
         userInitials={initials}
+        userAvatarUrl={me.data?.avatarUrl}
         roleLabel="Partner"
         searchPlaceholder="Search students, applications…"
         accountHref="/partner/account"

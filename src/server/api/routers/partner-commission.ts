@@ -209,13 +209,22 @@ export const partnerCommissionRouter = createTRPCRouter({
     ]);
     return {
       hasAccount: acct != null,
+      region: acct?.region === 1 ? ("international" as const) : ("domestic" as const),
       accountHolder: acct?.account_holder ?? null,
+      // Partners only ever see the last 4 digits.
       accountNumberLast4: acct?.account_number_last4 ?? null,
       ifsc: acct?.ifsc ?? null,
       swift: acct?.swift ?? null,
+      ibanLast4: acct?.iban ? acct.iban.slice(-4) : null,
       bankName: acct?.bank_name ?? null,
       branch: acct?.branch ?? null,
+      bankCountry: acct?.bank_country ?? null,
+      bankAddress: acct?.bank_address ?? null,
       accountType: acct?.account_type ?? null,
+      hasProof: Boolean(acct?.proof_url),
+      proofFileName: acct?.proof_file_name ?? null,
+      // Finance checks the proof before any payout; partners see the state.
+      verified: acct?.is_verified === 1,
       // GSTIN/PAN are shown on the tax invoice — kept here for the wizard. (The
       // org's gst_number is the non-encrypted source; the encrypted copy on the
       // account is for the payout side.)
@@ -226,35 +235,82 @@ export const partnerCommissionRouter = createTRPCRouter({
     };
   }),
 
+  // Domestic accounts need an IFSC and a cancelled cheque; international ones
+  // a SWIFT/BIC, bank country and address, and a bank letter or statement.
+  // Any save puts the account back to "unverified": finance re-checks the
+  // proof before the next payout.
   saveBankAccount: protectedPartnerProcedure
     .input(
-      z.object({
-        accountHolder: z.string().trim().min(1).max(150),
-        accountNumber: z.string().trim().min(4).max(34),
-        ifsc: z.string().trim().max(15).optional(),
-        swift: z.string().trim().max(15).optional(),
-        bankName: z.string().trim().max(150).optional(),
-        branch: z.string().trim().max(150).optional(),
-        accountType: z.string().trim().max(30).optional(),
-        gstin: z.string().trim().max(20).optional(),
-        // Validated like signup; the org PAN rule (company / firm / proprietor).
-        pan: optionalPanSchema("agency"),
-      }),
+      z
+        .object({
+          region: z.enum(["domestic", "international"]).default("domestic"),
+          accountHolder: z.string().trim().min(1).max(150),
+          accountNumber: z.string().trim().min(4).max(34),
+          ifsc: z.string().trim().toUpperCase().max(15).optional(),
+          swift: z.string().trim().toUpperCase().max(15).optional(),
+          iban: z.string().trim().toUpperCase().max(34).optional(),
+          bankName: z.string().trim().min(1, "Bank name is required").max(150),
+          branch: z.string().trim().max(150).optional(),
+          bankCountry: z.string().trim().toUpperCase().length(2).optional(),
+          bankAddress: z.string().trim().max(255).optional(),
+          accountType: z.string().trim().max(30).optional(),
+          // Key from /api/upload (folder bank-proofs).
+          proofUrl: z
+            .string()
+            .max(500)
+            .refine((u) => /^(\/uploads\/)?bank-proofs\//.test(u), "Upload the cancelled cheque / bank letter"),
+          proofFileName: z.string().trim().max(255).optional(),
+          gstin: z.string().trim().max(20).optional(),
+          // Validated like signup; the org PAN rule (company / firm / proprietor).
+          pan: optionalPanSchema("agency"),
+        })
+        .superRefine((v, ctx) => {
+          if (v.region === "domestic") {
+            if (!v.ifsc || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(v.ifsc)) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["ifsc"], message: "Enter a valid IFSC (e.g. HDFC0001234)" });
+            }
+          } else {
+            if (!v.swift || !/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(v.swift)) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swift"], message: "Enter a valid SWIFT/BIC (8 or 11 characters)" });
+            }
+            if (!v.bankCountry) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bankCountry"], message: "Select the bank's country" });
+            }
+            if (!v.bankAddress?.trim()) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bankAddress"], message: "Enter the bank's address" });
+            }
+          }
+        }),
     )
     .mutation(async ({ ctx, input }) => {
       const orgId = await requireOrgId(ctx.cpPartner.id);
+      const intl = input.region === "international";
       const last4 = input.accountNumber.slice(-4);
       const data = {
+        region: intl ? 1 : 0,
         account_holder: input.accountHolder,
         account_number_enc: encryptSecret(input.accountNumber),
         account_number_last4: last4,
-        ifsc: orNull(input.ifsc),
-        swift: orNull(input.swift),
-        bank_name: orNull(input.bankName),
+        ifsc: intl ? null : orNull(input.ifsc),
+        swift: intl ? orNull(input.swift) : null,
+        iban: intl ? orNull(input.iban) : null,
+        bank_name: input.bankName,
         branch: orNull(input.branch),
+        bank_country: intl ? (input.bankCountry ?? null) : "IN",
+        bank_address: intl ? orNull(input.bankAddress) : null,
         account_type: orNull(input.accountType),
+        proof_url: input.proofUrl,
+        proof_file_name: orNull(input.proofFileName),
         gstin_enc: input.gstin?.trim() ? encryptSecret(input.gstin.trim()) : null,
         pan_enc: input.pan ? encryptSecret(input.pan) : null,
+        // New details → not verified until finance checks them again, and any
+        // RazorpayX token for the old account no longer applies.
+        is_verified: 0,
+        verified_at: null,
+        verified_by_cp_user_id: null,
+        verification_note: null,
+        provider_contact_id: null,
+        provider_fund_account_id: null,
       };
       const existing = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
@@ -275,6 +331,11 @@ export const partnerCommissionRouter = createTRPCRouter({
         commissionIds: z.array(z.number().int().positive()).min(1),
         invoiceNumber: z.string().trim().min(1).max(30),
         invoiceDate: z.string(),
+        // The partner ticked "these bank details are correct" in the
+        // confirmation pop-up before submitting.
+        bankDetailsConfirmed: z.literal(true, {
+          errorMap: () => ({ message: "Please confirm your bank details before submitting." }),
+        }),
         gstin: z.string().trim().max(20).optional(),
         // Validated like signup; the org PAN rule (company / firm / proprietor).
         pan: optionalPanSchema("agency"),
@@ -288,8 +349,16 @@ export const partnerCommissionRouter = createTRPCRouter({
       const bank = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
         orderBy: { id: "desc" },
-        select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true },
+        select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true, proof_url: true },
       });
+      // A claim is paid into the account on file, so it needs one — with the
+      // cheque / bank letter finance will check before paying.
+      if (!bank?.proof_url) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Add your bank details and upload a cancelled cheque (or bank letter) before submitting a claim.",
+        });
+      }
 
       const comms = await db.commission.findMany({
         where: { id: { in: input.commissionIds }, org_id: orgId },

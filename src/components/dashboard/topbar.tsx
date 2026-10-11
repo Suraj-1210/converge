@@ -25,6 +25,8 @@ export interface NotificationItem {
 interface TopbarProps {
   userName: string;
   userInitials: string;
+  // Profile photo URL; initials are shown when absent or if it fails to load.
+  userAvatarUrl?: string | null;
   roleLabel: string;
   taskCount?: number;
   notifications?: NotificationItem[];
@@ -51,6 +53,7 @@ const DOT_TONES: Record<NotificationItem["tone"], string> = {
 export function Topbar({
   userName,
   userInitials,
+  userAvatarUrl,
   roleLabel,
   taskCount = 0,
   notifications = [],
@@ -63,6 +66,7 @@ export function Topbar({
 }: TopbarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const hasUnread = notifications.some((n) => n.unread);
@@ -209,9 +213,19 @@ export function Topbar({
           onClick={() => setProfileOpen((v) => !v)}
           className="flex cursor-pointer items-center gap-2.5 rounded-lg border-none bg-transparent py-1 pr-2 pl-1 transition-colors hover:bg-[#F9FAFB]"
         >
-          <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-gradient-to-br from-[#1570EF] to-[#0b4ea2] text-sm font-semibold text-white">
-            {userInitials}
-          </span>
+          {userAvatarUrl && !avatarFailed ? (
+            // eslint-disable-next-line @next/next/no-img-element -- private, presigned URLs
+            <img
+              src={userAvatarUrl}
+              alt=""
+              onError={() => setAvatarFailed(true)}
+              className="h-[34px] w-[34px] rounded-full object-cover"
+            />
+          ) : (
+            <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-gradient-to-br from-[#1570EF] to-[#0b4ea2] text-sm font-semibold text-white">
+              {userInitials}
+            </span>
+          )}
           <span className="hidden text-left leading-tight sm:block">
             <span className="block text-[13px] font-semibold text-[#101828]">
               {userName}

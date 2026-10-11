@@ -11,7 +11,33 @@ import {
 import { saveApplication } from "~/server/applications/store";
 import { notifyAdminOfSignup } from "~/server/notifications";
 import { checkLocation } from "~/server/geo";
+import { db } from "~/server/db";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
+
+// One account per email and per phone number. A partner who signed up before
+// (pending, rejected, deactivated…) must log in, not apply again — a second
+// signup would otherwise overwrite their record or create a duplicate.
+async function assertNotRegistered(email: string, phone: string, countryCode: string) {
+  // Signup stores countryCode + the number with spaces removed; match that and
+  // the digits-only form so a stray dash doesn't dodge the check.
+  const phones = [
+    `${countryCode}${phone.replace(/s/g, "")}`,
+    `${countryCode}${phone.replace(/D/g, "")}`,
+  ];
+  const existing = await db.user.findFirst({
+    where: { OR: [{ email: email.toLowerCase() }, { phone: { in: phones } }] },
+    select: { email: true },
+  });
+  if (existing) {
+    const byEmail = existing.email.toLowerCase() === email.toLowerCase();
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: byEmail
+        ? "An account with this email already exists. Please log in to check your application status."
+        : "An account with this phone number already exists. Please log in to check your application status.",
+    });
+  }
+}
 
 export const signupRouter = createTRPCRouter({
   sendSignupOtp: publicProcedure
@@ -23,6 +49,8 @@ export const signupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      // Before any codes go out: a returning applicant is sent to login.
+      await assertNotRegistered(input.email, input.phone, input.countryCode);
       const phoneE164 = toE164(input.phone, input.countryCode);
       const results = await Promise.allSettled([
         sendEmailOtp(input.email, "signup"),
@@ -127,6 +155,9 @@ export const signupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      // Re-checked here so the API can't be used to overwrite an account.
+      await assertNotRegistered(input.email, input.phone, input.countryCode);
+
       // Agencies pick their location from the master list; the server checks
       // it against the same list (independents don't give a location yet).
       let location: { country?: string; state?: string; city?: string } = {};

@@ -6,6 +6,7 @@ import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { AdminRole } from "~/server/db/enums";
 import { normalizePan, panError } from "~/lib/utils/pan";
+import { PARTNER_DOC_SLOTS, partnerDocLabel } from "~/lib/constants/partner-documents";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 
@@ -39,6 +40,8 @@ type Partner = {
   bdmId: number | null;
   bdmName: string | null;
   pan: string | null;
+  avatarUrl: string | null;
+  logoUrl: string | null;
   gstNumber: string | null;
   gstRegistered: boolean | null;
   statusReason: string | null;
@@ -221,7 +224,9 @@ export default function PartnersPage() {
             ? "rejected"
             : vars.status === "inactive"
               ? "deactivated"
-              : "updated";
+              : vars.status === "under_review"
+                ? "re-opened for review"
+                : "updated";
       const done = vars.isReactivation
         ? `${displayName(data)} reactivated`
         : `${displayName(data)} ${action}`;
@@ -535,7 +540,13 @@ export default function PartnersPage() {
                   Deactivate
                 </button>
               ) : p.status === "rejected" ? (
-                <span className="text-xs text-[#98A2B3]">Rejected</span>
+                <button
+                  onClick={() => setStatus.mutate({ email: p.email, status: "under_review" })}
+                  disabled={setStatus.isPending}
+                  className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold text-[#1570EF] hover:bg-[#EFF8FF] disabled:opacity-50"
+                >
+                  Re-open
+                </button>
               ) : (
                 <span className="text-xs text-[#98A2B3]">—</span>
               )}
@@ -622,6 +633,18 @@ export default function PartnersPage() {
               isReactivation: true,
             })
           }
+          onReopen={() =>
+            setStatus.mutate({ email: detailPartner.email, status: "under_review" })
+          }
+          onApprove={() => {
+            setDetailEmail(null);
+            setAssignModal({ email: detailPartner.email, name: displayName(detailPartner) });
+          }}
+          onUploaded={() => {
+            void utils.partners.list.invalidate();
+            showToast("Document added — verify it from the pending review card");
+          }}
+          savingStatus={setStatus.isPending}
           savingTier={setTierMut.isPending}
           savingBdm={setBdmMut.isPending}
           savingPan={setPanMut.isPending}
@@ -964,7 +987,21 @@ function DocStatusBadge({ status }: { status: DocStatus }) {
   );
 }
 
+// Agency logo, else the person's photo, else initials (also on a broken image).
 function Avatar({ partner }: { partner: Partner }) {
+  const src = partner.logoUrl ?? partner.avatarUrl;
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- private, presigned URLs
+      <img
+        src={src}
+        alt=""
+        onError={() => setFailed(true)}
+        className="h-10 w-10 shrink-0 rounded-[10px] border border-[#EAECF0] bg-white object-contain"
+      />
+    );
+  }
   return (
     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-gradient-to-br from-[#1570EF] to-[#0B4EA2] text-sm font-semibold text-white">
       {initials(partner)}
@@ -1249,6 +1286,10 @@ function PartnerDetailSlideOver({
   onSavePan,
   onDeactivate,
   onReactivate,
+  onReopen,
+  onApprove,
+  onUploaded,
+  savingStatus,
   savingTier,
   savingBdm,
   savingPan,
@@ -1261,6 +1302,10 @@ function PartnerDetailSlideOver({
   onSavePan: (pan: string | null) => void;
   onDeactivate: () => void;
   onReactivate: () => void;
+  onReopen: () => void;
+  onApprove: () => void;
+  onUploaded: () => void;
+  savingStatus: boolean;
   savingTier: boolean;
   savingBdm: boolean;
   savingPan: boolean;
@@ -1434,19 +1479,25 @@ function PartnerDetailSlideOver({
                     key={d.id}
                     className="flex items-center justify-between rounded-lg border border-[#E4E7EC] px-3 py-2"
                   >
-                    <a
-                      href={d.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="truncate text-sm font-medium text-[#1570EF] hover:underline"
-                    >
-                      {d.fileName}
-                    </a>
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold text-[#667085]">
+                        {partnerDocLabel(d.type)}
+                      </div>
+                      <a
+                        href={d.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block truncate text-sm font-medium text-[#1570EF] hover:underline"
+                      >
+                        {d.fileName}
+                      </a>
+                    </div>
                     <DocStatusBadge status={d.status} />
                   </div>
                 ))}
               </div>
             )}
+            <AddDocument partner={p} onUploaded={onUploaded} />
           </Section>
         </div>
 
@@ -1466,6 +1517,23 @@ function PartnerDetailSlideOver({
             >
               Reactivate
             </button>
+          ) : p.status === "rejected" ? (
+            <>
+              <button
+                onClick={onReopen}
+                disabled={savingStatus}
+                className="cursor-pointer rounded-lg border border-[#B2DDFF] px-4 py-2 text-sm font-semibold text-[#175CD3] hover:bg-[#EFF8FF] disabled:opacity-50"
+              >
+                Re-open for review
+              </button>
+              <button
+                onClick={onApprove}
+                disabled={savingStatus}
+                className="cursor-pointer rounded-lg bg-[#12B76A] px-4 py-2 text-sm font-semibold text-white hover:bg-[#039855] disabled:opacity-50"
+              >
+                Approve
+              </button>
+            </>
           ) : null}
           <button
             onClick={onClose}
@@ -1475,6 +1543,73 @@ function PartnerDetailSlideOver({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Admin adds a partner's document on their behalf (partners can't upload
+// until approved). Uploads to the admin-only partner-docs folder, then links
+// the file to the partner as the chosen document type.
+function AddDocument({ partner, onUploaded }: { partner: Partner; onUploaded: () => void }) {
+  const slots = PARTNER_DOC_SLOTS[partner.role === "agency" ? "agency" : "independent"];
+  const [slot, setSlot] = useState(slots[0]?.key ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const attach = api.partners.uploadDocumentForPartner.useMutation();
+
+  async function onFile(file: File | undefined) {
+    if (!file || !slot) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("folder", `partner-docs/${slot}`);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) throw new Error(body.error ?? "Upload failed");
+      await attach.mutateAsync({ email: partner.email, slot, fileUrl: body.url, fileName: file.name });
+      onUploaded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-dashed border-[#D0D5DD] p-3">
+      <div className="mb-2 text-xs font-semibold text-[#344054]">Add a document for this partner</div>
+      <div className="flex items-center gap-2">
+        <select
+          value={slot}
+          onChange={(e) => setSlot(e.target.value)}
+          className="h-[34px] min-w-0 flex-1 rounded-lg border border-[#D0D5DD] px-2 text-sm text-[#344054] outline-none focus:border-[#1570EF]"
+        >
+          {slots.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <label
+          className={`h-[34px] shrink-0 cursor-pointer rounded-lg bg-[#1570EF] px-3 text-xs leading-[34px] font-semibold text-white hover:bg-[#0B4EA2] ${busy ? "pointer-events-none opacity-50" : ""}`}
+        >
+          {busy ? "Uploading…" : "Choose file"}
+          <input
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png"
+            className="hidden"
+            disabled={busy}
+            onChange={(e) => {
+              void onFile(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+      <div className="mt-1.5 text-[11px] text-[#98A2B3]">PDF, JPG or PNG. Added as pending — verify it as usual.</div>
+      {error && <div className="mt-1.5 text-xs text-[#F04438]">{error}</div>}
     </div>
   );
 }

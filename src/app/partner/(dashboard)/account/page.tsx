@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { api } from "~/trpc/react";
-import { Button } from "~/components/ui/button";
+import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
 
@@ -41,7 +41,7 @@ const NOTIF_CATEGORIES: { title: string; rows: { key: string; label: string }[] 
     rows: [
       { key: "app.new", label: "New Application Submitted" },
       { key: "app.status", label: "Application Status Change" },
-      { key: "app.doc", label: "Document Uploaded by Student" },
+      { key: "app.doc", label: "Document Uploaded by Partner" },
       { key: "app.offer", label: "Offer Letter Received" },
     ],
   },
@@ -54,12 +54,8 @@ const NOTIF_CATEGORIES: { title: string; rows: { key: string; label: string }[] 
     ],
   },
   {
-    title: "Events & Training",
-    rows: [
-      { key: "evt.reminder", label: "Upcoming Event Reminder" },
-      { key: "evt.training", label: "Training Session Available" },
-      { key: "evt.webinar", label: "Webinar Registration Confirmation" },
-    ],
+    title: "Events",
+    rows: [{ key: "evt.reminder", label: "Upcoming Event Reminder" }],
   },
   {
     title: "System",
@@ -622,85 +618,35 @@ export default function PartnerAccountPage() {
   );
 }
 
-// Bank Details tab — the partner's payout account, sourced from our own
-// partner_bank_account store (entered in the invoice wizard, encrypted at rest).
-// This is NOT RazorpayX data; RazorpayX consumes this account for payouts.
-const BANK_INPUT =
-  "rounded-lg border border-[#D0D5DD] px-3.5 py-2.5 text-sm text-[#101828] outline-none transition-all focus:border-[#1570EF] focus:shadow-[0_0_0_3px_rgba(21,112,239,0.1)]";
-
+// Bank Details tab — the partner's payout account (partner_bank_account,
+// encrypted at rest). Shows the masked account and its verification state;
+// "Update" opens the shared form (domestic / international + proof upload).
 function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
-  const utils = api.useUtils();
   const bankQ = api.partnerCommission.bankAccount.useQuery();
   const bank = bankQ.data;
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({
-    accountHolder: "", accountNumber: "", ifsc: "", swift: "",
-    bankName: "", branch: "", accountType: "Current Account",
-  });
-  const [err, setErr] = useState("");
-  const save = api.partnerCommission.saveBankAccount.useMutation({
-    onSuccess: async () => {
-      await utils.partnerCommission.bankAccount.invalidate();
-      setEditing(false);
-      setForm((f) => ({ ...f, accountNumber: "" }));
-      onToast("Bank details saved");
-    },
-    onError: (e) => setErr(e.message),
-  });
-
-  const startEdit = () => {
-    setErr("");
-    setForm({
-      accountHolder: bank?.accountHolder ?? "",
-      accountNumber: "",
-      ifsc: bank?.ifsc ?? "",
-      swift: bank?.swift ?? "",
-      bankName: bank?.bankName ?? "",
-      branch: bank?.branch ?? "",
-      accountType: bank?.accountType ?? "Current Account",
-    });
-    setEditing(true);
-  };
-  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
-  const submit = () => {
-    setErr("");
-    if (!form.accountHolder.trim()) return setErr("Account holder name is required");
-    if (!form.accountNumber.trim()) return setErr("Enter the account number to save");
-    save.mutate({
-      accountHolder: form.accountHolder.trim(),
-      accountNumber: form.accountNumber.trim(),
-      ifsc: form.ifsc || undefined,
-      swift: form.swift || undefined,
-      bankName: form.bankName || undefined,
-      branch: form.branch || undefined,
-      accountType: form.accountType || undefined,
-    });
-  };
 
   if (bankQ.isLoading) {
     return <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7 text-sm text-[#667085]">Loading bank details…</div>;
   }
 
-  const Row = ({ label, value }: { label: string; value: string }) => (
-    <div>
-      <div className="text-xs font-medium tracking-wide text-[#98A2B3] uppercase">{label}</div>
-      <div className="mt-0.5 text-sm font-medium text-[#101828]">{value || "—"}</div>
-    </div>
-  );
-
   return (
     <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
       <div className="mb-5 flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold text-[#101828]">Bank Details</h3>
+          <h3 className="flex items-center gap-2 text-base font-semibold text-[#101828]">
+            Bank Details
+            {bank?.hasAccount && !editing && <BankVerificationBadge verified={bank.verified} />}
+          </h3>
           <p className="mt-1 text-xs text-[#667085]">
-            The account CollegePond pays your commission into. 🔒 Stored encrypted — only the last 4 digits are shown back.
+            The account Collegepond pays your commission into. Our finance team verifies it against your
+            cancelled cheque (or bank letter) before the first payment.
           </p>
         </div>
         {!editing && (
           <button
             type="button"
-            onClick={startEdit}
+            onClick={() => setEditing(true)}
             className="shrink-0 rounded-lg border border-[#D0D5DD] bg-white px-3.5 py-2 text-xs font-semibold text-[#344054] transition-colors hover:bg-[#F9FAFB]"
           >
             {bank?.hasAccount ? "Update" : "Add bank account"}
@@ -708,61 +654,22 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
         )}
       </div>
 
-      {!editing ? (
-        bank?.hasAccount ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-            <Row label="Account Holder" value={bank.accountHolder ?? ""} />
-            <Row label="Account Number" value={bank.accountNumberLast4 ? `•••• ${bank.accountNumberLast4}` : ""} />
-            <Row label="Bank Name" value={bank.bankName ?? ""} />
-            <Row label="Branch" value={bank.branch ?? ""} />
-            <Row label="IFSC" value={bank.ifsc ?? ""} />
-            <Row label="SWIFT" value={bank.swift ?? ""} />
-            <Row label="Account Type" value={bank.accountType ?? ""} />
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-[#D0D5DD] py-10 text-center text-sm text-[#98A2B3]">
-            No bank account on file yet. Add one so CollegePond can pay your commission.
-          </div>
-        )
+      {editing ? (
+        <BankDetailsForm
+          bank={bank}
+          gstin={bank?.gstin ?? undefined}
+          pan={bank?.pan ?? undefined}
+          onSaved={() => {
+            setEditing(false);
+            onToast("Bank details saved — we'll verify them before your next payment");
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : bank?.hasAccount ? (
+        <BankAccountSummary bank={bank} />
       ) : (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Account Holder" required>
-              <input className={BANK_INPUT} value={form.accountHolder} onChange={(e) => set("accountHolder", e.target.value)} />
-            </Field>
-            <Field label={bank?.hasAccount ? "Account Number (re-enter to update)" : "Account Number"} required>
-              <input className={BANK_INPUT} value={form.accountNumber} onChange={(e) => set("accountNumber", e.target.value)} placeholder={bank?.accountNumberLast4 ? `•••• ${bank.accountNumberLast4}` : ""} />
-            </Field>
-            <Field label="Bank Name">
-              <input className={BANK_INPUT} value={form.bankName} onChange={(e) => set("bankName", e.target.value)} />
-            </Field>
-            <Field label="Branch">
-              <input className={BANK_INPUT} value={form.branch} onChange={(e) => set("branch", e.target.value)} />
-            </Field>
-            <Field label="IFSC">
-              <input className={BANK_INPUT} value={form.ifsc} onChange={(e) => set("ifsc", e.target.value)} />
-            </Field>
-            <Field label="SWIFT (international)">
-              <input className={BANK_INPUT} value={form.swift} onChange={(e) => set("swift", e.target.value)} />
-            </Field>
-            <Field label="Account Type">
-              <select className={BANK_INPUT} value={form.accountType} onChange={(e) => set("accountType", e.target.value)}>
-                <option value="Current Account">Current Account</option>
-                <option value="Savings Account">Savings Account</option>
-              </select>
-            </Field>
-          </div>
-          {err && <p className="text-xs font-medium text-[#F04438]">{err}</p>}
-          <div className="flex items-center gap-3">
-            <Button onClick={submit} loading={save.isPending}>Save Bank Details</Button>
-            <button
-              type="button"
-              onClick={() => { setEditing(false); setErr(""); }}
-              className="rounded-lg border border-[#D0D5DD] bg-white px-4 py-2 text-sm font-semibold text-[#344054] transition-colors hover:bg-[#F9FAFB]"
-            >
-              Cancel
-            </button>
-          </div>
+        <div className="rounded-lg border border-dashed border-[#D0D5DD] py-10 text-center text-sm text-[#98A2B3]">
+          No bank account on file yet. Add one so Collegepond can pay your commission.
         </div>
       )}
     </div>

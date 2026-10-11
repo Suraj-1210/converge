@@ -256,9 +256,30 @@ export const dashboardRouter = createTRPCRouter({
     const { db } = ctx;
     const me = await db.user.findUnique({
       where: { id: ctx.cpPartner.id },
-      select: { id: true, org_id: true, bdm_id: true },
+      select: {
+        id: true,
+        org_id: true,
+        is_owner: true,
+        bdm_id: true,
+        counsellor_id: true,
+        lead_counsellor_id: true,
+      },
     });
     if (!me) return null;
+
+    // Collegepond assigns the counsellor, counsellor lead and BDM on the agency
+    // owner. An agency staff member sees their owner's team.
+    let team = me;
+    if (me.org_id && !me.is_owner) {
+      const owner = await db.user.findFirst({
+        where: { org_id: me.org_id, is_owner: 1 },
+        select: { id: true, org_id: true, is_owner: true, bdm_id: true, counsellor_id: true, lead_counsellor_id: true },
+      });
+      if (owner) team = owner;
+    }
+    const staffIds = [team.counsellor_id, team.lead_counsellor_id, team.bdm_id].filter(
+      (x): x is number => x != null,
+    );
 
     // Agency partners scope by org; independents by the students they created.
     const appWhere = me.org_id
@@ -279,7 +300,7 @@ export const dashboardRouter = createTRPCRouter({
       studentsThisYear,
       recentRaw,
       eventsRaw,
-      bdm,
+      staff,
     ] = await Promise.all([
       db.application.count({ where: appWhere }),
       db.application.count({
@@ -318,18 +339,23 @@ export const dashboardRouter = createTRPCRouter({
           is_virtual: true,
         },
       }),
-      me.bdm_id
-        ? db.collegepond_user.findUnique({
-            where: { id: me.bdm_id },
-            select: {
-              first_name: true,
-              last_name: true,
-              email: true,
-              phone: true,
-            },
+      staffIds.length
+        ? db.collegepond_user.findMany({
+            where: { id: { in: staffIds }, status: 1 },
+            select: { id: true, first_name: true, last_name: true, phone: true },
           })
-        : Promise.resolve(null),
+        : Promise.resolve([]),
     ]);
+    const person = (id: number | null) => {
+      const p = id != null ? staff.find((s) => s.id === id) : undefined;
+      return p ? { name: `${p.first_name} ${p.last_name}`.trim(), phone: p.phone } : null;
+    };
+    // Counsellor first, counsellor lead second — shown without role labels so
+    // partners don't default to contacting the lead.
+    const contacts = [person(team.counsellor_id), person(team.lead_counsellor_id)].filter(
+      (c, i, all): c is { name: string; phone: string } =>
+        c != null && all.findIndex((o) => o?.name === c.name) === i,
+    );
 
     return {
       kpis: { applications, offers, deposits, visas },
@@ -347,13 +373,8 @@ export const dashboardRouter = createTRPCRouter({
         location: e.location,
         isVirtual: e.is_virtual === 1,
       })),
-      relationshipManager: bdm
-        ? {
-            name: `${bdm.first_name} ${bdm.last_name}`.trim(),
-            email: bdm.email,
-            phone: bdm.phone,
-          }
-        : null,
+      contacts,
+      bdm: person(team.bdm_id),
       studentsThisYear,
     };
   }),

@@ -10,6 +10,7 @@ import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { normalizePan, panError } from "~/lib/utils/pan";
+import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
 import {
   DashboardCard,
   StatCard,
@@ -596,13 +597,10 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const [invoiceDate, setInvoiceDate] = useState(todayInput());
   const [gstin, setGstin] = useState("");
   const [pan, setPan] = useState("");
-  const [accountHolder, setAccountHolder] = useState("");
-  const [accountNumber, setAccountNumber] = useState("");
-  const [ifsc, setIfsc] = useState("");
-  const [swift, setSwift] = useState("");
-  const [bankName, setBankName] = useState("");
-  const [branch, setBranch] = useState("");
-  const [accountType, setAccountType] = useState("Current Account");
+  const [editingBank, setEditingBank] = useState(false);
+  // Mandatory "these are the right bank details" pop-up before submitting.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [bankConfirmed, setBankConfirmed] = useState(false);
   const [signatory, setSignatory] = useState("");
   const [designation, setDesignation] = useState("Authorized Signatory");
   const [signed, setSigned] = useState(false);
@@ -614,12 +612,6 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
     if (!bank) return;
     setGstin((v) => v || (bank.gstin ?? ""));
     setPan((v) => v || (bank.pan ?? ""));
-    setAccountHolder((v) => v || (bank.accountHolder ?? ""));
-    setIfsc((v) => v || (bank.ifsc ?? ""));
-    setSwift((v) => v || (bank.swift ?? ""));
-    setBankName((v) => v || (bank.bankName ?? ""));
-    setBranch((v) => v || (bank.branch ?? ""));
-    setAccountType((v) => v || (bank.accountType ?? "Current Account"));
   }, [bank]);
 
   // PAN is characters 3-12 of the GSTIN.
@@ -630,9 +622,9 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const commissionIds = claims.map((c) => c.commissionId);
   const previewQ = api.partnerCommission.taxPreview.useQuery({ commissionIds, gstin: gstin || undefined }, { enabled: step === 3 });
 
-  const save = api.partnerCommission.saveBankAccount.useMutation();
   const generate = api.partnerCommission.generateInvoice.useMutation();
-  const busy = save.isPending || generate.isPending;
+  const busy = generate.isPending;
+  const bankReady = Boolean(bank?.hasAccount && bank.hasProof);
 
   const next = () => {
     setErr("");
@@ -643,6 +635,8 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
         const panMsg = panError(pan, "agency");
         if (panMsg) return setErr(panMsg);
       }
+      if (!bankReady) return setErr("Add your bank details and upload a cancelled cheque (or bank letter) to continue");
+      if (editingBank) return setErr("Save your bank details first");
       if (!signed) return setErr("Please apply your digital signature");
     }
     setStep((s) => Math.min(3, s + 1));
@@ -659,23 +653,17 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const submit = async () => {
     setErr("");
     try {
-      if (accountNumber.trim()) {
-        await save.mutateAsync({
-          accountHolder: accountHolder.trim() || signatory.trim() || "Account Holder",
-          accountNumber: accountNumber.trim(),
-          ifsc: ifsc || undefined, swift: swift || undefined, bankName: bankName || undefined,
-          branch: branch || undefined, accountType: accountType || undefined,
-          gstin: gstin || undefined, pan: pan || undefined,
-        });
-      }
       await generate.mutateAsync({
         commissionIds, invoiceNumber: invoiceNumber.trim(), invoiceDate,
+        bankDetailsConfirmed: true,
         gstin: gstin || undefined, pan: pan || undefined,
         signatoryName: signatory.trim(), signatoryDesignation: designation || undefined, notes: notes || undefined,
       });
       void utils.partnerCommission.invalidate();
+      setConfirmOpen(false);
       onDone();
     } catch (e) {
+      setConfirmOpen(false);
       setErr(e instanceof Error ? e.message : "Failed to submit invoice");
     }
   };
@@ -708,14 +696,43 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
 
   const STEPS = ["Review", "Details", "Preview"];
 
+  const confirmDialog = confirmOpen && bank?.hasAccount && (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-[#101828]/50" onClick={() => !busy && setConfirmOpen(false)} aria-hidden />
+      <div className="relative w-full max-w-[480px] rounded-2xl bg-white p-6 shadow-2xl">
+        <h3 className="text-lg font-bold text-[#101828]">Confirm your bank details</h3>
+        <p className="mt-1 text-sm text-[#667085]">
+          This commission will be paid into the account below. Please check it carefully — payments can&apos;t be
+          redirected once released.
+        </p>
+        <div className="mt-4 rounded-xl border border-[#E4E7EC] bg-[#F9FAFB] p-4">
+          <BankAccountSummary bank={bank} />
+        </div>
+        <label className="mt-4 flex cursor-pointer items-start gap-2 text-sm text-[#344054]">
+          <input type="checkbox" className="mt-0.5" checked={bankConfirmed} onChange={(e) => setBankConfirmed(e.target.checked)} />
+          I confirm these bank details are correct and the account belongs to {bank.accountHolder ?? "us"}.
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setConfirmOpen(false)} disabled={busy}>
+            Go back
+          </Button>
+          <Button onClick={() => void submit()} loading={busy} disabled={!bankConfirmed}>
+            Confirm &amp; Submit
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
+    <>
     <Modal open title="Generate Tax Invoice" width="w-[820px]" onClose={onClose}
       footer={
         <>
           {step > 1 && <Button variant="secondary" onClick={() => setStep((s) => s - 1)}>Back</Button>}
           <div className="flex-1" />
           {step === 3 && previewQ.data && <Button variant="secondary" onClick={downloadPdf}>Download PDF</Button>}
-          {step < 3 ? <Button onClick={next}>Next</Button> : <Button onClick={submit} loading={busy}>Submit Invoice</Button>}
+          {step < 3 ? <Button onClick={next}>Next</Button> : <Button onClick={() => { setBankConfirmed(false); setConfirmOpen(true); }} loading={busy}>Submit Invoice</Button>}
         </>
       }
     >
@@ -761,24 +778,37 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
           </div>
           <div className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#667085]">Recipient: <b className="text-[#344054]">Collegepond Counsellors Pvt Ltd</b> · GSTIN 27AADCK1234F1Z5 · SAC 998399</div>
           <div className="rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-semibold tracking-wide text-[#667085] uppercase">Bank details (for payout)</span>
-              {bank?.hasAccount && bank.accountNumberLast4 && !accountNumber && <span className="text-xs text-[#98A2B3]">On file: ••••{bank.accountNumberLast4}</span>}
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[#667085] uppercase">
+                Bank details (for payout)
+                {bank?.hasAccount && !editingBank && <BankVerificationBadge verified={bank.verified} />}
+              </span>
+              {!editingBank && (
+                <button type="button" onClick={() => setEditingBank(true)} className="text-xs font-semibold text-[#1570EF] hover:underline">
+                  {bank?.hasAccount ? "Update" : "Add bank account"}
+                </button>
+              )}
             </div>
-            <div className="flex gap-3">
-              <FormInput label="Account Holder" value={accountHolder} onChange={(e) => setAccountHolder(e.target.value)} />
-              <FormInput label={bank?.hasAccount ? "Account Number (re-enter to update)" : "Account Number"} value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} placeholder={bank?.accountNumberLast4 ? `••••${bank.accountNumberLast4}` : ""} />
-            </div>
-            <div className="mt-3 flex gap-3">
-              <FormInput label="Bank Name" value={bankName} onChange={(e) => setBankName(e.target.value)} />
-              <FormInput label="Branch" value={branch} onChange={(e) => setBranch(e.target.value)} />
-            </div>
-            <div className="mt-3 flex gap-3">
-              <FormInput label="IFSC" value={ifsc} onChange={(e) => setIfsc(e.target.value)} />
-              <FormInput label="SWIFT (international)" value={swift} onChange={(e) => setSwift(e.target.value)} />
-              <FormSelect label="Account Type" options={[{ value: "Current Account", label: "Current Account" }, { value: "Savings Account", label: "Savings Account" }]} value={accountType} onChange={(e) => setAccountType(e.target.value)} />
-            </div>
-            <p className="mt-2 text-[11px] text-[#98A2B3]">🔒 Stored encrypted (AES-256-GCM). Only the last 4 digits are shown back.</p>
+            {editingBank ? (
+              <BankDetailsForm
+                bank={bank}
+                gstin={gstin}
+                pan={pan}
+                onSaved={() => setEditingBank(false)}
+                onCancel={() => setEditingBank(false)}
+              />
+            ) : bank?.hasAccount ? (
+              <>
+                <BankAccountSummary bank={bank} />
+                {!bank.hasProof && (
+                  <p className="mt-2 text-xs font-medium text-[#B54708]">
+                    Please update your bank details and upload a cancelled cheque (or bank letter) to continue.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-[#667085]">Add the bank account we should pay this commission into.</p>
+            )}
           </div>
           <div className="flex gap-3">
             <FormInput label="Authorized Signatory" required value={signatory} onChange={(e) => setSignatory(e.target.value)} />
@@ -815,9 +845,10 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                   <div className="text-[#667085]">GSTIN: {previewQ.data.cpGstin} · SAC: {previewQ.data.sac}</div>
                 </div>
               </div>
-              {(bankName || ifsc || accountHolder) && (
+              {bank?.hasAccount && (
                 <div className="mb-3 rounded-lg border border-[#FEC84B] bg-[#FFFAEB] p-2.5 text-[11px] text-[#B54708]">
-                  <span className="font-semibold">Bank for payment:</span> {accountHolder} · {bankName} {ifsc} {branch ? `· ${branch}` : ""} {accountType ? `· ${accountType}` : ""}
+                  <span className="font-semibold">Bank for payment:</span> {bank.accountHolder} · {bank.bankName} ••••{bank.accountNumberLast4}{" "}
+                  {bank.region === "international" ? bank.swift : bank.ifsc} {bank.branch ? `· ${bank.branch}` : ""}
                 </div>
               )}
               <table className="mb-3 w-full border-collapse">
@@ -848,6 +879,8 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
         </div>
       )}
     </Modal>
+    {confirmDialog}
+    </>
   );
 }
 

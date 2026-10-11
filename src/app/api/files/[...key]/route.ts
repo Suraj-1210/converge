@@ -48,13 +48,25 @@ export async function GET(
     }
     const me = await db.user.findUnique({
       where: { id: partner.id },
-      select: { id: true, org_id: true },
+      select: { id: true, org_id: true, avatar_url: true, organization: { select: { logo_url: true } } },
     });
+    // Profile photos and the org logo live on user/organization rows rather
+    // than as documents, so check those first.
+    if (me && (key === me.avatar_url || key === me.organization?.logo_url)) {
+      allowed = true;
+    } else if (me?.org_id) {
+      const [colleague, bankProof] = await Promise.all([
+        db.user.findFirst({ where: { org_id: me.org_id, avatar_url: key }, select: { id: true } }),
+        // Their own payout account's cancelled cheque / bank letter.
+        db.partner_bank_account.findFirst({ where: { org_id: me.org_id, proof_url: key }, select: { id: true } }),
+      ]);
+      allowed = colleague != null || bankProof != null;
+    }
     const doc = await db.document.findFirst({
       where: { file_url: key },
       select: { user_id: true, org_id: true, student_id: true },
     });
-    if (me && doc) {
+    if (!allowed && me && doc) {
       if (doc.user_id === me.id) {
         allowed = true;
       } else if (

@@ -748,6 +748,22 @@ export default function SignupPage() {
               />
             </div>
 
+            {/* Already registered (same email or phone) → send them to login,
+                where they can see their application status. */}
+            {sendSignupOtp.error && (
+              <div className="mt-2 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-3.5 py-2.5 text-[13px] text-[#B42318]">
+                {sendSignupOtp.error.message}
+                {sendSignupOtp.error.data?.code === "CONFLICT" && (
+                  <>
+                    {" "}
+                    <Link href="/login" className="font-semibold underline">
+                      Log in
+                    </Link>
+                  </>
+                )}
+              </div>
+            )}
+
             <div className="mt-auto flex items-center justify-between pt-6">
               <div />
               <Button onClick={nextStep} iconRight loading={sendSignupOtp.isPending}>

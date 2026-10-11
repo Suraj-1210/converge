@@ -25,19 +25,8 @@ import {
   type Application,
 } from "~/server/applications/store";
 import { normalizePan, panError } from "~/lib/utils/pan";
-import { DocumentStatus, UserStatus } from "~/server/db/enums";
-
-// Slot key (document.doc_type) → the name a partner recognises.
-const DOC_LABELS: Record<string, string> = {
-  companyPan: "Company PAN Card",
-  pan: "PAN Card",
-  aadhaar: "Aadhaar Card",
-  cancelledCheque: "Cancelled Cheque",
-  partnershipDocs: "Company / Partnership Documents",
-  logo: "Company Logo",
-  gst: "GST Certificate",
-  profilePhoto: "Profile Photo",
-};
+import { DocumentStatus, UserStatus, UserType } from "~/server/db/enums";
+import { PARTNER_DOC_SLOTS, partnerDocLabel } from "~/lib/constants/partner-documents";
 
 // Who to tell about a rejected document: the uploader for a personal doc, the
 // agency owner(s) for a company doc. Applicants are usually still under
@@ -117,7 +106,13 @@ export const partnersRouter = createTRPCRouter({
         // a previously-deactivated partner and gets the reactivation email.
         reason: z.string().trim().max(500).optional(),
         isReactivation: z.boolean().optional(),
-      }),
+      })
+      // Declining or deactivating always needs a reason: it is shown to the
+      // partner (status page + email) and kept on the record.
+      .refine(
+        (v) => !(v.status === "rejected" || v.status === "inactive") || !!v.reason?.trim(),
+        { message: "A reason is required to decline or deactivate a partner.", path: ["reason"] },
+      ),
     )
     .mutation(async ({ input }) => {
       const app = await setApplicationStatus(
@@ -242,7 +237,7 @@ export const partnersRouter = createTRPCRouter({
       // doesn't send the partner a second copy.
       let emailSent: boolean | null = null;
       if (before && input.status === "rejected" && before.status !== DocumentStatus.REJECTED) {
-        const label = DOC_LABELS[before.doc_type] ?? before.doc_type;
+        const label = partnerDocLabel(before.doc_type);
         const recipients = await documentRecipients(before);
         emailSent = false;
         for (const u of recipients) {
@@ -261,6 +256,66 @@ export const partnersRouter = createTRPCRouter({
         }
       }
       return { success: true as const, emailSent };
+    }),
+
+  // Admin adds a partner's document on their behalf. Partners can't upload
+  // until approved, so missing / re-sent documents (usually emailed to
+  // support) come in this way. Lands as "pending" for the usual verify step.
+  uploadDocumentForPartner: protectedAdminProcedure
+    .input(
+      z.object({
+        email: z.string().email(),
+        slot: z.string().min(1).max(50),
+        // The key /api/upload returned for the admin-only partner-docs folder.
+        fileUrl: z
+          .string()
+          .max(500)
+          .refine((u) => /^(\/uploads\/)?partner-docs\//.test(u), "Not an uploaded partner document"),
+        fileName: z.string().trim().min(1).max(255),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await db.user.findUnique({
+        where: { email: input.email.toLowerCase() },
+        select: { id: true, type: true, org_id: true },
+      });
+      if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found" });
+      const role = user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
+      const slot = PARTNER_DOC_SLOTS[role].find((s) => s.key === input.slot);
+      if (!slot) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "That document type doesn't apply to this partner." });
+      }
+      const orgDoc = slot.orgDoc && user.org_id != null;
+
+      const doc = await db.document.create({
+        data: {
+          file_name: input.fileName,
+          file_url: input.fileUrl,
+          doc_type: slot.key,
+          status: DocumentStatus.PENDING,
+          is_org_document: orgDoc ? 1 : 0,
+          user_id: orgDoc ? null : user.id,
+          org_id: orgDoc ? user.org_id : null,
+        },
+        select: { id: true },
+      });
+      // A logo / profile photo is also the displayed image.
+      if (slot.key === "logo" && user.org_id) {
+        await db.organization.update({ where: { id: user.org_id }, data: { logo_url: input.fileUrl } });
+      } else if (slot.key === "profilePhoto") {
+        await db.user.update({ where: { id: user.id }, data: { avatar_url: input.fileUrl } });
+      }
+      await db.audit_log.create({
+        data: {
+          user_id: user.id,
+          org_id: user.org_id,
+          action: "partner.document_added_by_admin",
+          entity_type: "document",
+          entity_id: doc.id,
+          metadata: { slot: slot.key, byCpUserId: ctx.cpUser.id },
+        },
+      });
+      return { success: true as const, documentId: doc.id };
     }),
 
   // Emails the partner a list of what is missing. Partner status is left
@@ -282,7 +337,7 @@ export const partnersRouter = createTRPCRouter({
           { message: "Pick at least one item or add a message" },
         ),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const app = await getApplicationByEmail(input.email);
       if (!app) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Partner application not found" });
@@ -300,6 +355,28 @@ export const partnersRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to send the request email.",
+        });
+      }
+      // Kept so the partner's status page can show what was asked for.
+      const target = await db.user.findUnique({
+        where: { email: input.email.toLowerCase() },
+        select: { id: true, org_id: true },
+      });
+      if (target) {
+        await db.audit_log.create({
+          data: {
+            user_id: target.id,
+            org_id: target.org_id,
+            action: "partner.more_info_requested",
+            entity_type: "user",
+            entity_id: target.id,
+            metadata: {
+              items: input.items,
+              other: input.otherText?.trim() ? input.otherText.trim() : null,
+              message: input.additionalMessage?.trim() ? input.additionalMessage.trim() : null,
+              byCpUserId: ctx.cpUser.id,
+            },
+          },
         });
       }
       return { success: true as const };

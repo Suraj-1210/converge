@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
+  partnerSelfProcedure,
   protectedPartnerProcedure,
   publicProcedure,
 } from "~/server/api/trpc";
@@ -19,7 +20,9 @@ import {
   PARTNER_SESSION_COOKIE_NAME,
   signPartnerSessionJwt,
 } from "~/server/auth/jwt";
-import { UserType } from "~/server/db/enums";
+import { DocumentStatus, UserType } from "~/server/db/enums";
+import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { resolveStorageUrl } from "~/server/storage";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
 
@@ -155,7 +158,9 @@ export const authRouter = createTRPCRouter({
 
   // Returns the signed-in partner's current state. Pages call this on mount
   // and use redirectUrl to bounce to the right screen if state has shifted.
-  me: protectedPartnerProcedure.query(async ({ ctx }) => {
+  // Readable at any status: a rejected or deactivated partner still needs to
+  // see their own state (the status page), just nothing else.
+  me: partnerSelfProcedure.query(async ({ ctx }) => {
     const user = await ctx.db.user.findUnique({
       where: { id: ctx.cpPartner.id },
       select: {
@@ -167,6 +172,7 @@ export const authRouter = createTRPCRouter({
         type: true,
         mou_signed_at: true,
         tracking_id: true,
+        avatar_url: true,
       },
     });
     if (!user) {
@@ -186,6 +192,7 @@ export const authRouter = createTRPCRouter({
       email: user.email,
       firstName: user.first_name,
       lastName: user.last_name,
+      avatarUrl: resolveStorageUrl(user.avatar_url),
       applicationId: user.tracking_id ?? "",
       status,
       mouSigned: !!mouSignedAt,
@@ -194,6 +201,77 @@ export const authRouter = createTRPCRouter({
         mouSignedAt,
         user.type === UserType.AGENCY_COUNSELLOR,
       ),
+    };
+  }),
+
+  // Status page for a partner who isn't approved yet (or was rejected /
+  // deactivated): each required document and its review state, the latest
+  // "more information" request from the team, and the decision reason.
+  applicationProgress: partnerSelfProcedure.query(async ({ ctx }) => {
+    const user = await ctx.db.user.findUnique({
+      where: { id: ctx.cpPartner.id },
+      select: {
+        id: true,
+        type: true,
+        org_id: true,
+        status: true,
+        status_reason: true,
+        is_email_verified: true,
+        is_phone_verified: true,
+        created_at: true,
+        organization: { select: { gst_registered: true } },
+      },
+    });
+    if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
+
+    const role = user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
+    const docs = await ctx.db.document.findMany({
+      where: {
+        OR: [{ user_id: user.id }, ...(user.org_id ? [{ org_id: user.org_id }] : [])],
+      },
+      orderBy: { id: "desc" },
+      select: { doc_type: true, status: true, created_at: true },
+    });
+    const gstRegistered =
+      user.organization?.gst_registered == null ? null : user.organization.gst_registered === 1;
+
+    const documents = PARTNER_DOC_SLOTS[role]
+      .map((slot) => {
+        const latest = docs.find((d) => d.doc_type === slot.key); // newest first
+        const required = slot.required({ gstRegistered });
+        const state = !latest
+          ? ("missing" as const)
+          : latest.status === DocumentStatus.APPROVED
+            ? ("verified" as const)
+            : latest.status === DocumentStatus.REJECTED
+              ? ("rejected" as const)
+              : ("in_review" as const);
+        return { key: slot.key, label: slot.label, required, state };
+      })
+      // Optional slots only matter once something was uploaded.
+      .filter((d) => d.required || d.state !== "missing");
+
+    const moreInfo = await ctx.db.audit_log.findFirst({
+      where: { user_id: user.id, action: "partner.more_info_requested" },
+      orderBy: { created_at: "desc" },
+      select: { metadata: true, created_at: true },
+    });
+    const m = (moreInfo?.metadata ?? null) as
+      | { items?: string[]; other?: string | null; message?: string | null }
+      | null;
+
+    return {
+      submittedAt: user.created_at.toISOString(),
+      contactVerified: user.is_email_verified === 1 && user.is_phone_verified === 1,
+      documents,
+      reason: user.status_reason,
+      moreInfo: moreInfo
+        ? {
+            at: moreInfo.created_at.toISOString(),
+            items: [...(m?.items ?? []), ...(m?.other ? [m.other] : [])],
+            message: m?.message ?? null,
+          }
+        : null,
     };
   }),
 

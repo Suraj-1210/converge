@@ -954,20 +954,30 @@ model vendor_payment {
 model partner_bank_account {
   id                       Int              @id @default(autoincrement())
   org_id                   Int
+  // 0 Domestic (IFSC), 1 International (SWIFT).
+  region                   Int              @default(0) @db.UnsignedTinyInt
   account_holder           String           @db.VarChar(150)
   account_number_enc       String?          @db.VarChar(1024)
   account_number_last4     String?          @db.Char(4)
   ifsc                     String?          @db.VarChar(15)
   swift                    String?          @db.VarChar(15)
+  iban                     String?          @db.VarChar(34)
   bank_name                String?          @db.VarChar(150)
   branch                   String?          @db.VarChar(150)
+  bank_country             String?          @db.Char(2)
+  bank_address             String?          @db.VarChar(255)
   account_type             String?          @db.VarChar(30)
   gstin_enc                String?          @db.VarChar(512)
   pan_enc                  String?          @db.VarChar(512)
+  // Cancelled cheque / bank letter; checked by finance before verification.
+  proof_url                String?          @db.VarChar(500)
+  proof_file_name          String?          @db.VarChar(255)
   provider_fund_account_id String?          @db.VarChar(100)
   provider_contact_id      String?          @db.VarChar(100)
   is_verified              Int              @default(0) @db.TinyInt
   verified_at              DateTime?        @db.Timestamp(0)
+  verified_by_cp_user_id   Int?
+  verification_note        String?          @db.VarChar(500)
   created_at               DateTime         @default(now()) @db.Timestamp(0)
   updated_at               DateTime         @default(now()) @db.Timestamp(0)
   organization             organization     @relation(fields: [org_id], references: [id], onDelete: Cascade, map: "fk_partner_bank_account_org")

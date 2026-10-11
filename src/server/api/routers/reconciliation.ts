@@ -4,7 +4,9 @@ import {
   createTRPCRouter,
   financeProcedure,
   financeManagerProcedure,
+  superAdminProcedure,
 } from "~/server/api/trpc";
+import { resolveStorageUrl } from "~/server/storage";
 import { db } from "~/server/db";
 import {
   PartnerInvoiceStatus,
@@ -87,11 +89,22 @@ export const reconciliationRouter = createTRPCRouter({
             bank_account: {
               select: {
                 id: true,
+                region: true,
                 account_holder: true,
                 account_number_last4: true,
                 ifsc: true,
+                swift: true,
+                iban: true,
                 bank_name: true,
+                branch: true,
+                bank_country: true,
+                bank_address: true,
+                proof_url: true,
+                proof_file_name: true,
                 is_verified: true,
+                verified_at: true,
+                verification_note: true,
+                verified_by_cp_user_id: true,
               },
             },
             invoice_item: {
@@ -121,7 +134,10 @@ export const reconciliationRouter = createTRPCRouter({
         },
       },
     });
-    const names = await userNameMap(payouts.map((p) => p.ops_approved_by_cp_user_id));
+    const names = await userNameMap([
+      ...payouts.map((p) => p.ops_approved_by_cp_user_id),
+      ...payouts.map((p) => p.invoice.bank_account?.verified_by_cp_user_id ?? null),
+    ]);
     return payouts.map((p) => ({
       id: p.id,
       partner: p.invoice.organization.name,
@@ -138,11 +154,26 @@ export const reconciliationRouter = createTRPCRouter({
       bankAccountId: p.bank_account_id ?? p.invoice.bank_account?.id ?? null,
       bank: p.invoice.bank_account
         ? {
+            region: p.invoice.bank_account.region === 1 ? ("international" as const) : ("domestic" as const),
             accountHolder: p.invoice.bank_account.account_holder,
+            // Masked for everyone; Super Admin can reveal via revealAccountNumber.
             last4: p.invoice.bank_account.account_number_last4,
             ifsc: p.invoice.bank_account.ifsc,
+            swift: p.invoice.bank_account.swift,
+            ibanLast4: p.invoice.bank_account.iban ? p.invoice.bank_account.iban.slice(-4) : null,
             bankName: p.invoice.bank_account.bank_name,
+            branch: p.invoice.bank_account.branch,
+            bankCountry: p.invoice.bank_account.bank_country,
+            bankAddress: p.invoice.bank_account.bank_address,
+            proofUrl: resolveStorageUrl(p.invoice.bank_account.proof_url),
+            proofFileName: p.invoice.bank_account.proof_file_name,
             verified: p.invoice.bank_account.is_verified === 1,
+            verifiedAt: p.invoice.bank_account.verified_at?.toISOString() ?? null,
+            verifiedBy:
+              p.invoice.bank_account.verified_by_cp_user_id != null
+                ? (names.get(p.invoice.bank_account.verified_by_cp_user_id) ?? null)
+                : null,
+            verificationNote: p.invoice.bank_account.verification_note,
           }
         : null,
       checks: {
@@ -238,7 +269,18 @@ export const reconciliationRouter = createTRPCRouter({
       const bank = bankAccountId
         ? await db.partner_bank_account.findUnique({ where: { id: bankAccountId } })
         : null;
-      const bankVerified = bank?.is_verified === 1 && Boolean(bank.provider_fund_account_id);
+      // Payouts go only to an account finance has verified (cheque / bank
+      // letter checked by hand, or RazorpayX penny-drop).
+      if (!bank) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This claim has no bank account to pay into." });
+      }
+      if (bank.is_verified !== 1) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Verify the partner's bank account (check the cancelled cheque / bank letter) before releasing payment.",
+        });
+      }
+      const bankVerified = bank.is_verified === 1 && Boolean(bank.provider_fund_account_id);
       let provider: { id: string; status: string; utr?: string | null } | null = null;
 
       if (razorpayConfigured() && mode && bankAccountId && bankVerified && bank?.provider_fund_account_id) {
@@ -255,35 +297,13 @@ export const reconciliationRouter = createTRPCRouter({
         }
       }
 
-      // Gate: a MANUAL release (no RazorpayX payout fired) to a bank that isn't
-      // RazorpayX-verified, on a domestic method that *could* have gone through
-      // RazorpayX, bypasses the penny-drop account check. Require a written
-      // justification so it's a deliberate, audited decision — not a silent
-      // unverified payout. Deliberately skipped when RazorpayX is unconfigured
-      // (whole flow is manual) or for International Wire (mode == null), which
-      // RazorpayX can neither verify nor process.
-      const manualToUnverifiedDomestic =
-        provider === null && razorpayConfigured() && mode != null && !bankVerified;
-      const manualReason = orNull(input.manualVerifyReason);
-      if (manualToUnverifiedDomestic && !manualReason) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "This bank account isn't RazorpayX-verified. Add a note on how you confirmed the account before releasing manually.",
-        });
-      }
-
       const reference = provider ? (provider.utr ?? provider.id) : input.referenceNumber?.trim();
       if (!reference) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a payment reference, or verify the bank account to pay via RazorpayX." });
       }
 
       const now = new Date();
-      // Record the manual-verification justification on the payout itself so it
-      // travels with the record (capped to the column width).
-      const releaseNotes = manualToUnverifiedDomestic
-        ? `[Manual release — bank not RazorpayX-verified. Confirmed via: ${manualReason}]${input.notes ? ` ${input.notes}` : ""}`.slice(0, 500)
-        : orNull(input.notes);
+      const releaseNotes = orNull(input.notes);
 
       await db.$transaction([
         db.partner_payout.update({
@@ -335,25 +355,6 @@ export const reconciliationRouter = createTRPCRouter({
           },
           data: { partner_paid_at: now },
         }),
-        // Audit trail for the deliberate bypass of RazorpayX verification.
-        ...(manualToUnverifiedDomestic
-          ? [
-              db.audit_log.create({
-                data: {
-                  action: "payout.manual_release_unverified",
-                  entity_type: "user",
-                  entity_id: bankAccountId ?? 0,
-                  metadata: {
-                    byCpUserId: ctx.cpUser.id,
-                    payoutId: payout.id,
-                    bankAccountId,
-                    amountInr,
-                    reason: manualReason,
-                  },
-                },
-              }),
-            ]
-          : []),
       ]);
       // A commission is fully disbursed once ALL its tranches are PAID — stamp
       // partner_paid_at then so downstream "disbursed" derivations stay correct.
@@ -400,6 +401,80 @@ export const reconciliationRouter = createTRPCRouter({
       return { success: true as const, provider: provider ? { id: provider.id, status: provider.status } : null };
     }),
 
+  // Finance has checked the cancelled cheque / bank letter against the details
+  // and confirms the account. Required before any payout to it.
+  markBankVerified: financeProcedure
+    .input(
+      z.object({
+        bankAccountId: z.number().int().positive(),
+        note: z.string().trim().min(5, "Note how you verified the account").max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const bank = await db.partner_bank_account.findUnique({
+        where: { id: input.bankAccountId },
+        select: { id: true, org_id: true, proof_url: true },
+      });
+      if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
+      if (!bank.proof_url) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No cancelled cheque / bank letter on file. Ask the partner to re-enter their bank details with the proof.",
+        });
+      }
+      await db.partner_bank_account.update({
+        where: { id: bank.id },
+        data: {
+          is_verified: 1,
+          verified_at: new Date(),
+          verified_by_cp_user_id: ctx.cpUser.id,
+          verification_note: input.note,
+        },
+      });
+      await db.audit_log.create({
+        data: {
+          org_id: bank.org_id,
+          action: "bank.verified_manually",
+          entity_type: "partner_bank_account",
+          entity_id: bank.id,
+          metadata: { byCpUserId: ctx.cpUser.id, note: input.note },
+        },
+      });
+      return { success: true as const };
+    }),
+
+  // Super Admin only: the full account number, for checking against the
+  // cheque or a bank enquiry. Every reveal is logged.
+  revealAccountNumber: superAdminProcedure
+    .input(z.object({ bankAccountId: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      const bank = await db.partner_bank_account.findUnique({
+        where: { id: input.bankAccountId },
+        select: { id: true, org_id: true, account_number_enc: true, iban: true, provider_fund_account_id: true },
+      });
+      if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
+      await db.audit_log.create({
+        data: {
+          org_id: bank.org_id,
+          action: "bank.account_number_revealed",
+          entity_type: "partner_bank_account",
+          entity_id: bank.id,
+          metadata: { byCpUserId: ctx.cpUser.id },
+        },
+      });
+      if (!bank.account_number_enc) {
+        // After RazorpayX tokenization the number lives only with RazorpayX.
+        return {
+          accountNumber: null,
+          iban: bank.iban,
+          note: bank.provider_fund_account_id
+            ? "Held by RazorpayX after verification — not stored by Collegepond."
+            : "No account number on file.",
+        };
+      }
+      return { accountNumber: decryptSecret(bank.account_number_enc), iban: bank.iban, note: null };
+    }),
+
   // Payments config for the UI (is RazorpayX wired, and is it test/live?).
   paymentsConfig: financeProcedure.query(() => ({ configured: razorpayConfigured(), mode: razorpayMode() })),
 
@@ -413,6 +488,9 @@ export const reconciliationRouter = createTRPCRouter({
       }
       const bank = await db.partner_bank_account.findUnique({ where: { id: input.bankAccountId } });
       if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
+      if (bank.region === 1) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "International accounts can't be checked by RazorpayX — verify the bank letter by hand." });
+      }
       if (!bank.ifsc) throw new TRPCError({ code: "BAD_REQUEST", message: "Bank account is missing its IFSC." });
       try {
         let contactId = bank.provider_contact_id;
@@ -441,7 +519,12 @@ export const reconciliationRouter = createTRPCRouter({
         const active = validation.results?.account_status === "active";
         await db.partner_bank_account.update({
           where: { id: bank.id },
-          data: { is_verified: active ? 1 : 0, verified_at: active ? new Date() : null },
+          data: {
+            is_verified: active ? 1 : 0,
+            verified_at: active ? new Date() : null,
+            verified_by_cp_user_id: active ? ctx.cpUser.id : null,
+            verification_note: active ? "RazorpayX penny-drop: account active" : null,
+          },
         });
         await db.audit_log.create({
           data: {

@@ -76,6 +76,7 @@ export default function ReconciliationPage() {
     role === AdminRole.FINANCE_MANAGER ||
     role === AdminRole.FINANCE_EXECUTIVE;
   const canRelease = role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_MANAGER;
+  const isSuperAdmin = role === AdminRole.SUPER_ADMIN;
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -118,6 +119,14 @@ export default function ReconciliationPage() {
   const payments = paymentsQ.data ?? { configured: false, mode: null };
   const verifyBank = api.reconciliation.verifyBankAccount.useMutation({
     onSuccess: (r) => { refetch(); showToast(r.verified ? `Bank verified${r.registeredName ? ` — ${r.registeredName}` : ""}` : `Verification ${r.status}: ${r.accountStatus ?? "pending"}`); },
+    onError: (e) => showToast(e.message),
+  });
+
+  const markBankVerified = api.reconciliation.markBankVerified.useMutation({
+    onSuccess: () => { refetch(); showToast("Bank account marked verified"); },
+    onError: (e) => showToast(e.message),
+  });
+  const revealAccount = api.reconciliation.revealAccountNumber.useMutation({
     onError: (e) => showToast(e.message),
   });
 
@@ -292,6 +301,17 @@ export default function ReconciliationPage() {
                             onVerify={(checks) => verify.mutate({ payoutId: p.id, ...checks })}
                             onRelease={(payment) => release.mutate({ payoutId: p.id, ...payment })}
                             onVerifyBank={p.bankAccountId != null ? () => verifyBank.mutate({ bankAccountId: p.bankAccountId! }) : undefined}
+                            markingBank={markBankVerified.isPending}
+                            onMarkBankVerified={
+                              p.bankAccountId != null
+                                ? (note) => markBankVerified.mutate({ bankAccountId: p.bankAccountId!, note })
+                                : undefined
+                            }
+                            onRevealAccount={
+                              isSuperAdmin && p.bankAccountId != null
+                                ? () => revealAccount.mutateAsync({ bankAccountId: p.bankAccountId! })
+                                : undefined
+                            }
                             onHold={() => setReasonFor({ payout: p, kind: "hold" })}
                             onSendBack={() => setReasonFor({ payout: p, kind: "sendBack" })}
                           />
@@ -405,8 +425,14 @@ function ReconPanel({
   onVerifyBank,
   onHold,
   onSendBack,
+  markingBank,
+  onMarkBankVerified,
+  onRevealAccount,
 }: {
   payout: Payout;
+  markingBank: boolean;
+  onMarkBankVerified?: (note: string) => void;
+  onRevealAccount?: () => Promise<{ accountNumber: string | null; iban: string | null; note: string | null }>;
   canVerify: boolean;
   canRelease: boolean;
   payments: { configured: boolean; mode: string | null };
@@ -414,7 +440,7 @@ function ReconPanel({
   releasing: boolean;
   verifyingBank: boolean;
   onVerify: (checks: { bankConfirmed: boolean; invoiceVerified: boolean; commissionVerified: boolean; duplicateCheck: boolean }) => void;
-  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string; manualVerifyReason?: string }) => void;
+  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string }) => void;
   onVerifyBank?: () => void;
   onHold: () => void;
   onSendBack: () => void;
@@ -432,7 +458,8 @@ function ReconPanel({
   const [date, setDate] = useState(todayInput());
   const [amount, setAmount] = useState(String(payout.amountInr));
   const [notes, setNotes] = useState("");
-  const [manualReason, setManualReason] = useState("");
+  const [verifyNote, setVerifyNote] = useState("");
+  const [revealed, setRevealed] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
   const readyToPay = payout.status === PayoutStatus.READY_TO_PAY;
@@ -449,15 +476,11 @@ function ReconPanel({
 
   // Pay via RazorpayX when it's configured, the bank account is verified, and the
   // method maps to a RazorpayX mode (international wire stays manual).
-  const payVia = payments.configured && (payout.bank?.verified ?? false) && !isWire;
-  // Manual release to an unverified DOMESTIC bank — RazorpayX is configured but the
-  // account isn't penny-drop-verified, and it's not an international wire. This skips
-  // the account-validity check, so require a written justification.
-  const needsManualReason =
-    payments.configured && !(payout.bank?.verified ?? false) && !isWire;
+  const bankVerified = payout.bank?.verified ?? false;
+  const payVia = payments.configured && bankVerified && !isWire;
   const doRelease = () => {
     if (!payVia && !reference.trim()) return setErr("Enter a Payment Reference # (or verify the bank to pay via RazorpayX).");
-    if (needsManualReason && !manualReason.trim()) return setErr("This bank isn't RazorpayX-verified — note how you confirmed the account before releasing.");
+    if (!bankVerified) return setErr("Verify the partner's bank account first.");
     onRelease({
       method,
       bankName: bankName || undefined,
@@ -468,7 +491,6 @@ function ReconPanel({
       paymentDate: date,
       amountInr: amount.trim() === "" ? undefined : Number(amount),
       notes: notes || undefined,
-      manualVerifyReason: needsManualReason ? manualReason.trim() : undefined,
     });
   };
 
@@ -505,24 +527,99 @@ function ReconPanel({
               <div className="pt-0.5">GST: <span className="font-medium text-[#344054]">{payout.gstin ?? "—"}</span> · PAN: <span className="font-medium text-[#344054]">{payout.pan ?? "—"}</span></div>
             </div>
           </div>
-          {payout.bank && (
+          {payout.bank ? (
             <div className="mt-3 border-t border-[#F2F4F7] pt-3">
               <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">
-                Bank Account
+                Bank Account · {payout.bank.region === "international" ? "International" : "Domestic"}
                 {payout.bank.verified ? (
                   <span className="rounded-full bg-[#ECFDF3] px-2 py-0.5 text-[10px] font-bold text-[#067647] normal-case">✓ Verified</span>
                 ) : (
                   <span className="rounded-full bg-[#FFF6ED] px-2 py-0.5 text-[10px] font-bold text-[#B54708] normal-case">Unverified</span>
                 )}
               </div>
-              <div className="text-xs text-[#667085]">{payout.bank.accountHolder} · {payout.bank.bankName ?? "—"} · ****{payout.bank.last4 ?? "—"} · {payout.bank.ifsc ?? "—"}</div>
-              {!payout.bank.verified && canVerify && onVerifyBank && (
-                payments.configured ? (
-                  <Button variant="secondary" className="!mt-2 !h-8 !text-[12px]" loading={verifyingBank} onClick={onVerifyBank}>Verify bank via RazorpayX (penny-drop)</Button>
-                ) : (
-                  <p className="mt-2 text-[11px] text-[#98A2B3]">RazorpayX not configured — confirm the bank manually via the checklist.</p>
-                )
+              <div className="space-y-0.5 text-xs text-[#667085]">
+                <div>
+                  <span className="font-medium text-[#344054]">{payout.bank.accountHolder}</span> ·{" "}
+                  {revealed ?? `••••${payout.bank.last4 ?? "—"}`}
+                  {onRevealAccount && !revealed && (
+                    <button
+                      type="button"
+                      className="ml-1.5 font-semibold text-[#1570EF] hover:underline"
+                      onClick={() =>
+                        void onRevealAccount().then((r) =>
+                          setRevealed(r.accountNumber ?? r.note ?? "Not available"),
+                        )
+                      }
+                    >
+                      Reveal
+                    </button>
+                  )}
+                </div>
+                <div>
+                  {payout.bank.bankName ?? "—"}
+                  {payout.bank.branch ? ` · ${payout.bank.branch}` : ""} ·{" "}
+                  {payout.bank.region === "international"
+                    ? `SWIFT ${payout.bank.swift ?? "—"}${payout.bank.ibanLast4 ? ` · IBAN ••••${payout.bank.ibanLast4}` : ""}`
+                    : `IFSC ${payout.bank.ifsc ?? "—"}`}
+                </div>
+                {payout.bank.region === "international" && (
+                  <div>
+                    {payout.bank.bankCountry ?? "—"} · {payout.bank.bankAddress ?? "—"}
+                  </div>
+                )}
+                <div>
+                  {payout.bank.region === "international" ? "Bank letter" : "Cancelled cheque"}:{" "}
+                  {payout.bank.proofUrl ? (
+                    <a href={payout.bank.proofUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-[#1570EF] hover:underline">
+                      {payout.bank.proofFileName ?? "View"}
+                    </a>
+                  ) : (
+                    <span className="font-semibold text-[#B42318]">not uploaded — ask the partner to re-enter bank details</span>
+                  )}
+                </div>
+                {payout.bank.verified && (
+                  <div className="text-[#067647]">
+                    Verified{payout.bank.verifiedBy ? ` by ${payout.bank.verifiedBy}` : ""}
+                    {payout.bank.verifiedAt ? ` on ${new Date(payout.bank.verifiedAt).toLocaleDateString("en-IN")}` : ""}
+                    {payout.bank.verificationNote ? ` — ${payout.bank.verificationNote}` : ""}
+                  </div>
+                )}
+              </div>
+              {!payout.bank.verified && canVerify && (
+                <div className="mt-2.5 space-y-2 rounded-lg border border-[#FEDF89] bg-[#FFFCF5] p-2.5">
+                  <p className="text-[11px] text-[#B54708]">
+                    Check the {payout.bank.region === "international" ? "bank letter" : "cancelled cheque"} against the
+                    holder name, account number and {payout.bank.region === "international" ? "SWIFT" : "IFSC"} above. Payment can&apos;t be released until the account is verified.
+                  </p>
+                  {onMarkBankVerified && payout.bank.proofUrl && (
+                    <>
+                      <input
+                        value={verifyNote}
+                        onChange={(e) => setVerifyNote(e.target.value)}
+                        placeholder="How you verified it (e.g. cheque matches name, a/c and IFSC)"
+                        className="h-8 w-full rounded-md border border-[#D0D5DD] px-2 text-xs outline-none focus:border-[#1570EF]"
+                      />
+                      <Button
+                        className="!h-8 !text-[12px]"
+                        disabled={verifyNote.trim().length < 5}
+                        loading={markingBank}
+                        onClick={() => onMarkBankVerified(verifyNote.trim())}
+                      >
+                        Mark bank verified
+                      </Button>
+                    </>
+                  )}
+                  {payout.bank.region === "domestic" && payments.configured && onVerifyBank && (
+                    <Button variant="secondary" className="!h-8 !text-[12px]" loading={verifyingBank} onClick={onVerifyBank}>
+                      Or verify via RazorpayX (₹1 penny-drop)
+                    </Button>
+                  )}
+                </div>
               )}
+            </div>
+          ) : (
+            <div className="mt-3 border-t border-[#F2F4F7] pt-3 text-xs font-semibold text-[#B42318]">
+              No bank account on this claim — payment can&apos;t be released.
             </div>
           )}
           {!readyToPay && canVerify && (
@@ -579,20 +676,19 @@ function ReconPanel({
             </div>
             <FormTextarea label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
-          {readyToPay && canRelease && needsManualReason && (
-            <div className="mt-3 rounded-lg border border-[#FEC84B] bg-[#FFFAEB] p-3">
-              <p className="text-xs font-semibold text-[#B54708]">⚠ Bank not RazorpayX-verified</p>
-              <p className="mt-1 mb-2 text-[11px] text-[#B54708]">Releasing manually skips the penny-drop account check. Note how you confirmed this account belongs to the partner — this note is logged with the payout.</p>
-              <FormTextarea label="How was the account verified? *" value={manualReason} onChange={(e) => setManualReason(e.target.value)} placeholder="e.g. Matched bank statement + cancelled cheque on file; confirmed over call." />
-            </div>
-          )}
           {!readyToPay && (
             <div className="mt-3">
               <button disabled className="h-9 w-full cursor-not-allowed rounded-lg bg-[#EAECF0] text-[13px] font-semibold text-[#98A2B3]">Release Payment</button>
               <p className="mt-1.5 text-center text-[11px] text-[#98A2B3]">Complete the 4-point verification first.</p>
             </div>
           )}
-          {readyToPay && canRelease && (
+          {readyToPay && canRelease && !bankVerified && (
+            <div className="mt-3">
+              <button disabled className="h-9 w-full cursor-not-allowed rounded-lg bg-[#EAECF0] text-[13px] font-semibold text-[#98A2B3]">Release Payment</button>
+              <p className="mt-1.5 text-center text-[11px] text-[#B54708]">Verify the partner&apos;s bank account first (left).</p>
+            </div>
+          )}
+          {readyToPay && canRelease && bankVerified && (
             <Button className="!mt-3 !h-9 w-full !text-[13px]" loading={releasing} onClick={doRelease}>{payVia ? `Pay via RazorpayX${payments.mode === "test" ? " (test)" : ""}` : "Release Payment"}</Button>
           )}
           {readyToPay && !canRelease && (

@@ -23,6 +23,11 @@ type FolderAuth = "admin" | "partner" | "public";
 function folderPolicy(folder: string): FolderAuth | null {
   if (folder === "uni-logos") return "admin";
   if (folder === "avatars") return "partner";
+  // Cancelled cheque / bank letter for payout bank details. Private.
+  if (folder === "bank-proofs") return "partner";
+  // Admin adding a partner's KYC document on their behalf (partners can't
+  // upload until approved). Private, like the signup documents.
+  if (/^partner-docs\/[a-zA-Z0-9._-]+$/.test(folder)) return "admin";
   if (/^signup\/(agency|independent)\/[a-zA-Z0-9._-]+$/.test(folder)) {
     return "public";
   }

@@ -87,7 +87,9 @@ function activityStyle(action: string): { icon: string; bg: string } {
 
 function QuickActions({ pending }: { pending: number }) {
   const items: { label: string; href: string; badge?: number }[] = [
-    { label: "Review Approvals", href: "/admin/counselor-approvals", badge: pending },
+    // The count is partner signups under review, so it goes to Partners (which
+    // opens on its Pending tab), not counsellor approvals.
+    { label: "Review Approvals", href: "/admin/partners", badge: pending },
     { label: "Add Partner", href: "/admin/partners" },
     { label: "Add University", href: "/admin/universities" },
     { label: "View Students", href: "/admin/students" },
@@ -249,7 +251,7 @@ export default function DashboardPage() {
       {/* Pending approvals call-out */}
       {k && k.pendingApprovals > 0 && (
         <Link
-          href="/admin/counselor-approvals"
+          href="/admin/partners"
           className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-[#FEDF89] bg-[#FFFCF5] px-5 py-3.5 text-[13px] transition-colors hover:border-[#F79009]"
         >
           <span className="flex items-center gap-2.5 font-medium text-[#B54708]">
