@@ -246,6 +246,123 @@ export function partnerReactivatedEmail(p: PartnerRef, appUrl: string): EmailMes
   );
 }
 
+// 10. A single signup document was rejected during review. There is no
+// re-upload screen in the portal yet, so the partner replies with a new copy.
+export function documentRejectedEmail(p: PartnerRef, documentName: string): EmailMessage {
+  return build(
+    `Action Needed: Please Re-send Your ${documentName}`,
+    "A document needs your attention",
+    hello(p.name),
+    [
+      { p: `While reviewing your Collegepond partner application, we were unable to accept the following document:` },
+      { list: [documentName] },
+      { p: "This usually happens when a scan is unclear, incomplete, or the wrong document was uploaded. Please reply to this email with a clear, complete copy (PDF, JPG or PNG) and we will continue the review." },
+    ],
+  );
+}
+
+// ─── Students & commissions ──────────────────────────────────────────────────
+
+const inr = (n: number) =>
+  `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const portal = (appUrl: string, path: string) => `${appUrl.replace(/\/+$/, "")}${path}`;
+
+// 11. A student's university application moved to a new status.
+export function applicationStatusEmail(
+  p: PartnerRef,
+  a: { studentName: string; university: string; program: string; status: string; note?: string | null },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `Application Update: ${a.studentName} – ${a.status}`,
+    "Student application update",
+    hello(p.name),
+    [
+      { p: `There is an update on ${a.studentName}'s application:` },
+      {
+        list: [
+          `Student: ${a.studentName}`,
+          `University: ${a.university}`,
+          `Program: ${a.program}`,
+          `New status: ${a.status}`,
+        ],
+      },
+      ...(a.note?.trim() ? [{ p: a.note.trim() } as Block] : []),
+      { button: { label: "View in the Partner Portal", url: portal(appUrl, "/partner/students") } },
+    ],
+  );
+}
+
+// 12. A commission claim (partner invoice) was approved, in full or in part.
+export function commissionClaimApprovedEmail(
+  p: PartnerRef,
+  c: { invoiceNumber: string; amountInr: number; partial: boolean },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    c.partial
+      ? `Commission Claim ${c.invoiceNumber} Partially Approved`
+      : `Commission Claim ${c.invoiceNumber} Approved`,
+    c.partial ? "Your claim is partially approved" : "Your claim is approved",
+    hello(p.name),
+    [
+      {
+        p: c.partial
+          ? `Your commission claim ${c.invoiceNumber} has been partially approved. We have approved the students for whom Collegepond has already received the commission from the university; the rest will follow once it arrives.`
+          : `Your commission claim ${c.invoiceNumber} has been approved for payment.`,
+      },
+      { list: [`Amount approved: ${inr(c.amountInr)}`] },
+      { p: "Our finance team will now release the payment to your registered bank account. You will receive another email once it has been sent." },
+      { button: { label: "View in the Partner Portal", url: portal(appUrl, "/partner/commission") } },
+    ],
+  );
+}
+
+// 13. A commission claim was rejected.
+export function commissionClaimRejectedEmail(
+  p: PartnerRef,
+  c: { invoiceNumber: string; reason: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `Commission Claim ${c.invoiceNumber} Not Approved`,
+    "Your claim could not be approved",
+    hello(p.name),
+    [
+      { p: `We were unable to approve your commission claim ${c.invoiceNumber}.` },
+      { quote: c.reason, label: "Reason" },
+      { p: "Once the issue is resolved you can submit a new claim from the Commission section of the Partner Portal. If you have questions, simply reply to this email." },
+      { button: { label: "Go to Commission", url: portal(appUrl, "/partner/commission") } },
+    ],
+  );
+}
+
+// 14. A payout was released to the partner's bank.
+export function payoutSentEmail(
+  p: PartnerRef,
+  pay: { invoiceNumber: string; amountInr: number; method: string; reference: string; paymentDate: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `Payment Sent: ${inr(pay.amountInr)} for Claim ${pay.invoiceNumber}`,
+    "Your payment is on its way",
+    hello(p.name),
+    [
+      { p: `We have released the payment for your commission claim ${pay.invoiceNumber}.` },
+      {
+        list: [
+          `Amount: ${inr(pay.amountInr)}`,
+          `Payment method: ${pay.method}`,
+          `Reference / UTR: ${pay.reference}`,
+          `Payment date: ${pay.paymentDate}`,
+        ],
+      },
+      { p: "Depending on your bank, it may take up to 2 working days to appear in your account. If it has not arrived by then, reply to this email with the reference above." },
+      { button: { label: "View Payment History", url: portal(appUrl, "/partner/commission") } },
+    ],
+  );
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).

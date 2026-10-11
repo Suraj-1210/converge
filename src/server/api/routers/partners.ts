@@ -4,6 +4,7 @@ import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
   appUrl,
+  documentRejectedEmail,
   moreInfoRequestEmail,
   partnerApprovedEmail,
   partnerDeactivatedEmail,
@@ -24,6 +25,32 @@ import {
   type Application,
 } from "~/server/applications/store";
 import { normalizePan, panError } from "~/lib/utils/pan";
+import { DocumentStatus, UserStatus } from "~/server/db/enums";
+
+// Slot key (document.doc_type) → the name a partner recognises.
+const DOC_LABELS: Record<string, string> = {
+  companyPan: "Company PAN Card",
+  pan: "PAN Card",
+  aadhaar: "Aadhaar Card",
+  cancelledCheque: "Cancelled Cheque",
+  partnershipDocs: "Company / Partnership Documents",
+  logo: "Company Logo",
+  gst: "GST Certificate",
+  profilePhoto: "Profile Photo",
+};
+
+// Who to tell about a rejected document: the uploader for a personal doc, the
+// agency owner(s) for a company doc. Applicants are usually still under
+// review here, so no "approved only" filter — just skip deactivated users.
+async function documentRecipients(doc: { user_id: number | null; org_id: number | null }) {
+  const users = await db.user.findMany({
+    where: doc.user_id
+      ? { id: doc.user_id }
+      : { org_id: doc.org_id ?? -1, is_owner: 1 },
+    select: { email: true, first_name: true, last_name: true, status: true, organization: { select: { name: true } } },
+  });
+  return users.filter((u) => u.status !== UserStatus.INACTIVE);
+}
 
 const partnerStatus = z.enum([
   "under_review",
@@ -205,8 +232,35 @@ export const partnersRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      const before = await db.document.findUnique({
+        where: { id: input.documentId },
+        select: { status: true, doc_type: true, user_id: true, org_id: true },
+      });
       await setDocumentStatus(input.documentId, input.status);
-      return { success: true as const };
+
+      // Email only on the transition into "rejected", so re-clicking Reject
+      // doesn't send the partner a second copy.
+      let emailSent: boolean | null = null;
+      if (before && input.status === "rejected" && before.status !== DocumentStatus.REJECTED) {
+        const label = DOC_LABELS[before.doc_type] ?? before.doc_type;
+        const recipients = await documentRecipients(before);
+        emailSent = false;
+        for (const u of recipients) {
+          try {
+            await sendEmail(
+              u.email,
+              documentRejectedEmail(
+                { name: `${u.first_name} ${u.last_name}`.trim(), company: u.organization?.name ?? null },
+                label,
+              ),
+            );
+            emailSent = true;
+          } catch (e) {
+            console.error("[Partners] Document-rejected email failed:", e instanceof Error ? e.message : e);
+          }
+        }
+      }
+      return { success: true as const, emailSent };
     }),
 
   // Emails the partner a list of what is missing. Partner status is left

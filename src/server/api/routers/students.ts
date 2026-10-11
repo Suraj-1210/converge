@@ -8,6 +8,8 @@ import {
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
+import { appUrl, applicationStatusEmail } from "~/server/email";
+import { emailPartners, studentPartnerRecipients } from "~/server/email/partners";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
 const LIST_CAP = 500;
@@ -24,6 +26,7 @@ import {
   TERMINAL_FALLBACK_STAGE,
   UNI_APP_STATUS_CODES,
   UniApplicationStatus,
+  UniApplicationStatusLabel,
   UserType,
   type CourseLevel,
   type EducationLevel,
@@ -36,6 +39,40 @@ import {
 // ---------------------------------------------------------------------------
 // Shared shapes
 // ---------------------------------------------------------------------------
+
+// Partner email for a student's application moving to `status`.
+async function notifyApplicationStatus(applicationId: number, status: number): Promise<void> {
+  try {
+    const a = await db.application.findUnique({
+      where: { id: applicationId },
+      select: {
+        student_id: true,
+        student: { select: { first_name: true, last_name: true } },
+        course: { select: { name: true, university: { select: { name: true } } } },
+      },
+    });
+    if (!a) return;
+    const recipients = await studentPartnerRecipients(a.student_id);
+    const label = UniApplicationStatusLabel[status as UniApplicationStatus] ?? "Updated";
+    await emailPartners(
+      recipients,
+      (r) =>
+        applicationStatusEmail(
+          r,
+          {
+            studentName: `${a.student.first_name} ${a.student.last_name}`.trim(),
+            university: a.course.university.name,
+            program: a.course.name,
+            status: label,
+          },
+          appUrl(),
+        ),
+      "application-status",
+    );
+  } catch (e) {
+    console.error("[email] application-status lookup failed:", e instanceof Error ? e.message : e);
+  }
+}
 
 const studentInclude = {
   organization: {
@@ -1439,6 +1476,14 @@ export const studentsRouter = createTRPCRouter({
         },
       });
       await syncStudentStatusFromApplications(app.student_id);
+
+      // Tell the partner — but not for a revert (an admin undoing a mistake)
+      // or a no-op re-save. Fire-and-forget: the status change is saved.
+      const isRevert = target <= UniApplicationStatus.ENROLLED && target < stageBefore;
+      if (target !== app.status && !isRevert) {
+        void notifyApplicationStatus(app.id, target);
+      }
+
       await db.audit_log.create({
         data: {
           action: "application.status_updated",

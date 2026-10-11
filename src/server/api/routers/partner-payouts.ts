@@ -7,6 +7,12 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
+  appUrl,
+  commissionClaimApprovedEmail,
+  commissionClaimRejectedEmail,
+} from "~/server/email";
+import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
+import {
   PartnerInvoiceStatus,
   PayoutStatus,
   TrancheStatus,
@@ -16,6 +22,19 @@ import {
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
+
+// Partner email once a claim is approved (fire-and-forget; already saved).
+function notifyClaimApproved(orgId: number, invoiceNumber: string, amountInr: number, partial: boolean) {
+  return orgOwnerRecipients(orgId)
+    .then((rs) =>
+      emailPartners(
+        rs,
+        (r) => commissionClaimApprovedEmail(r, { invoiceNumber, amountInr, partial }, appUrl()),
+        "claim-approved",
+      ),
+    )
+    .catch((e) => console.error("[email] claim-approved lookup failed:", e));
+}
 // Net the partner is owed (incl. GST / less TDS); falls back to the subtotal.
 const netOf = (inv: { net_payable: Decimalish; total_amount: Decimalish }) =>
   inv.net_payable == null ? num(inv.total_amount) : num(inv.net_payable);
@@ -193,6 +212,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           },
         }),
       ]);
+      void notifyClaimApproved(inv.org_id, inv.invoice_number, netOf(inv), false);
       return { success: true as const };
     }),
 
@@ -255,6 +275,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           },
         }),
       ]);
+      void notifyClaimApproved(inv.org_id, inv.invoice_number, partialNet, true);
       return { success: true as const };
     }),
 
@@ -266,10 +287,25 @@ export const partnerPayoutsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
-      await db.invoice.update({
+      const inv = await db.invoice.update({
         where: { id: input.invoiceId },
         data: { status: PartnerInvoiceStatus.REJECTED, rejection_reason: input.reason },
+        select: { org_id: true, invoice_number: true },
       });
+      void orgOwnerRecipients(inv.org_id)
+        .then((rs) =>
+          emailPartners(
+            rs,
+            (r) =>
+              commissionClaimRejectedEmail(
+                r,
+                { invoiceNumber: inv.invoice_number, reason: input.reason },
+                appUrl(),
+              ),
+            "claim-rejected",
+          ),
+        )
+        .catch((e) => console.error("[email] claim-rejected lookup failed:", e));
       return { success: true as const };
     }),
 

@@ -243,13 +243,15 @@ export default function PartnersPage() {
   });
 
   const setDocStatus = api.partners.setDocumentStatus.useMutation({
-    onSuccess: (_, vars) => {
+    onSuccess: (data, vars) => {
       void utils.partners.list.invalidate();
       showToast(
         vars.status === "approved"
           ? "Document verified"
           : vars.status === "rejected"
-            ? "Document rejected"
+            ? data.emailSent === false
+              ? "Document rejected, but the email to the partner failed"
+              : "Document rejected — partner emailed to re-send it"
             : "Document reset",
       );
     },

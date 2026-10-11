@@ -9,10 +9,14 @@ import { db } from "~/server/db";
 import {
   PartnerInvoiceStatus,
   PayoutStatus,
+  PayoutMethodLabel,
   TrancheStatus,
   PAYOUT_METHOD_CODES,
   financialYearOf,
+  type PayoutMethod,
 } from "~/server/db/enums";
+import { appUrl, payoutSentEmail } from "~/server/email";
+import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
 import {
   razorpayConfigured,
   razorpayMode,
@@ -368,6 +372,31 @@ export const reconciliationRouter = createTRPCRouter({
           await db.commission.update({ where: { id: cid }, data: { partner_paid_at: now } });
         }
       }
+      // Tell the agency the money is on its way (fire-and-forget; already saved).
+      void orgOwnerRecipients(payout.invoice.org_id)
+        .then((rs) =>
+          emailPartners(
+            rs,
+            (r) =>
+              payoutSentEmail(
+                r,
+                {
+                  invoiceNumber: payout.invoice.invoice_number,
+                  amountInr,
+                  method: PayoutMethodLabel[input.method as PayoutMethod] ?? "Bank transfer",
+                  reference,
+                  paymentDate: new Date(input.paymentDate).toLocaleDateString("en-IN", {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  }),
+                },
+                appUrl(),
+              ),
+            "payout-sent",
+          ),
+        )
+        .catch((e) => console.error("[email] payout-sent lookup failed:", e));
       return { success: true as const, provider: provider ? { id: provider.id, status: provider.status } : null };
     }),
 
