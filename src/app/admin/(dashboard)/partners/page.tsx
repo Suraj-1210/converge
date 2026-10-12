@@ -279,6 +279,11 @@ export default function PartnersPage() {
     onError: (err) => showToast(err.message),
   });
 
+  const mouReminder = api.partners.sendMouReminder.useMutation({
+    onSuccess: () => showToast("MOU reminder sent"),
+    onError: (err) => showToast(err.message),
+  });
+
   const setPanMut = api.partners.setPan.useMutation({
     onSuccess: () => {
       void utils.partners.list.invalidate();
@@ -645,6 +650,8 @@ export default function PartnersPage() {
             showToast("Document added — verify it from the pending review card");
           }}
           savingStatus={setStatus.isPending}
+          onSendMouReminder={() => mouReminder.mutate({ email: detailPartner.email })}
+          sendingMouReminder={mouReminder.isPending}
           savingTier={setTierMut.isPending}
           savingBdm={setBdmMut.isPending}
           savingPan={setPanMut.isPending}
@@ -1290,6 +1297,8 @@ function PartnerDetailSlideOver({
   onApprove,
   onUploaded,
   savingStatus,
+  onSendMouReminder,
+  sendingMouReminder,
   savingTier,
   savingBdm,
   savingPan,
@@ -1306,6 +1315,8 @@ function PartnerDetailSlideOver({
   onApprove: () => void;
   onUploaded: () => void;
   savingStatus: boolean;
+  onSendMouReminder: () => void;
+  sendingMouReminder: boolean;
   savingTier: boolean;
   savingBdm: boolean;
   savingPan: boolean;
@@ -1447,10 +1458,22 @@ function PartnerDetailSlideOver({
                   }))}
                 />
               </div>
-              <DetailItem
-                label="MOU Signed"
-                value={p.mouSignedAt ? formatDate(p.mouSignedAt) : "Not signed"}
-              />
+              <div>
+                <DetailItem
+                  label="MOU Signed"
+                  value={p.mouSignedAt ? formatDate(p.mouSignedAt) : "Not signed"}
+                />
+                {p.status === "approved" && !p.mouSignedAt && (
+                  <button
+                    type="button"
+                    onClick={onSendMouReminder}
+                    disabled={sendingMouReminder}
+                    className="mt-1 cursor-pointer text-xs font-semibold text-[#1570EF] hover:underline disabled:opacity-50"
+                  >
+                    {sendingMouReminder ? "Sending…" : "Send MOU reminder"}
+                  </button>
+                )}
+              </div>
               <DetailItem
                 label="Last Login"
                 value={p.lastLoginAt ? formatDate(p.lastLoginAt) : "Never"}

@@ -6,6 +6,7 @@ import {
   appUrl,
   documentRejectedEmail,
   moreInfoRequestEmail,
+  mouReminderEmail,
   partnerApprovedEmail,
   partnerDeactivatedEmail,
   partnerDeclinedEmail,
@@ -316,6 +317,68 @@ export const partnersRouter = createTRPCRouter({
         },
       });
       return { success: true as const, documentId: doc.id };
+    }),
+
+  // Remind an approved partner who hasn't signed the MOU yet. At most once a
+  // day per partner (tracked in audit_log), so repeated clicks don't spam.
+  sendMouReminder: protectedAdminProcedure
+    .input(z.object({ email: z.string().email() }))
+    .mutation(async ({ ctx, input }) => {
+      const user = await db.user.findUnique({
+        where: { email: input.email.toLowerCase() },
+        select: {
+          id: true,
+          org_id: true,
+          email: true,
+          type: true,
+          status: true,
+          mou_signed_at: true,
+          first_name: true,
+          last_name: true,
+          organization: { select: { name: true } },
+        },
+      });
+      if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found" });
+      if (user.status !== UserStatus.APPROVED || user.type === UserType.AGENCY_COUNSELLOR) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Only approved partners sign the MOU." });
+      }
+      if (user.mou_signed_at) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This partner has already signed the MOU." });
+      }
+      const last = await db.audit_log.findFirst({
+        where: { user_id: user.id, action: "partner.mou_reminder_sent" },
+        orderBy: { created_at: "desc" },
+        select: { created_at: true },
+      });
+      if (last && Date.now() - last.created_at.getTime() < 24 * 60 * 60 * 1000) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: `A reminder was already sent on ${last.created_at.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" })}. Try again tomorrow.`,
+        });
+      }
+      try {
+        await sendEmail(
+          user.email,
+          mouReminderEmail(
+            { name: `${user.first_name} ${user.last_name}`.trim(), company: user.organization?.name ?? null },
+            appUrl(),
+          ),
+        );
+      } catch (e) {
+        console.error("[Partners] MOU reminder email failed:", e instanceof Error ? e.message : e);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to send the reminder email." });
+      }
+      await db.audit_log.create({
+        data: {
+          user_id: user.id,
+          org_id: user.org_id,
+          action: "partner.mou_reminder_sent",
+          entity_type: "user",
+          entity_id: user.id,
+          metadata: { byCpUserId: ctx.cpUser.id },
+        },
+      });
+      return { success: true as const };
     }),
 
   // Emails the partner a list of what is missing. Partner status is left

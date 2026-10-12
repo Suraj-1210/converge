@@ -363,6 +363,106 @@ export function payoutSentEmail(
   );
 }
 
+// ─── Agency counsellors & MOU ────────────────────────────────────────────────
+
+// 15. An agency owner added this person as a counsellor (pending approval).
+export function counsellorAddedEmail(
+  c: { name: string; agency: string; addedBy: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `You've Been Added as a Counsellor at ${c.agency}`,
+    "Welcome to Collegepond",
+    hello(c.name),
+    [
+      { p: `${c.addedBy} has added you as a counsellor for ${c.agency} on the Collegepond Partner Portal.` },
+      { p: "Our team will review the request shortly. Once it is approved, we will email you and you can sign in with this email address — we send a one-time code each time you sign in, so there is no password to remember." },
+      { button: { label: "Go to the Partner Portal", url: loginUrl(appUrl) } },
+      { p: "If you weren't expecting this, simply reply to this email and let us know." },
+    ],
+  );
+}
+
+// 16. Collegepond admin inbox: a counsellor is waiting for approval.
+export function adminCounsellorPendingEmail(
+  c: { name: string; email: string; phone: string; agency: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `New Counsellor Awaiting Approval: ${c.name} (${c.agency})`,
+    "Counsellor awaiting approval",
+    "Hello,",
+    [
+      { p: `${c.agency} has added a counsellor who needs approval before they can sign in.` },
+      { list: [`Name: ${c.name}`, `Email: ${c.email}`, `Phone: ${c.phone}`, `Agency: ${c.agency}`] },
+      { button: { label: "Review Counsellor Approvals", url: portal(appUrl, "/admin/counselor-approvals") } },
+    ],
+  );
+}
+
+// 17. The counsellor's own account was approved.
+export function counsellorApprovedEmail(
+  c: { name: string; agency: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    "Your Collegepond Counsellor Account Is Approved",
+    "You're all set!",
+    hello(c.name),
+    [
+      { p: `Your counsellor account for ${c.agency} on the Collegepond Partner Portal has been approved.` },
+      { p: "Sign in with this email address — we will email you a one-time code each time." },
+      { button: { label: "Log in to the Partner Portal", url: loginUrl(appUrl) } },
+    ],
+  );
+}
+
+// 18. Agency owner: Collegepond decided on a counsellor they added.
+export function counsellorDecisionOwnerEmail(
+  p: PartnerRef,
+  c: { counsellorName: string; approved: boolean; reason?: string | null },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    c.approved
+      ? `${c.counsellorName} Is Approved as a Counsellor`
+      : `Counsellor Request for ${c.counsellorName} Not Approved`,
+    c.approved ? "Counsellor approved" : "Counsellor request not approved",
+    hello(p.name),
+    [
+      {
+        p: c.approved
+          ? `${c.counsellorName} has been approved as a counsellor for your agency and can now sign in to the Partner Portal.`
+          : `We were unable to approve ${c.counsellorName} as a counsellor for your agency.`,
+      },
+      ...(!c.approved && c.reason?.trim() ? [{ quote: c.reason.trim(), label: "Reason" } as Block] : []),
+      ...(!c.approved
+        ? [{ p: "If you have questions, or would like to add someone else, simply reply to this email." } as Block]
+        : []),
+      { button: { label: "View Your Counsellors", url: portal(appUrl, "/partner/counsellors") } },
+    ],
+  );
+}
+
+// 19. Approved partner hasn't signed the partnership agreement (MOU) yet.
+export function mouReminderEmail(p: PartnerRef, appUrl: string): EmailMessage {
+  return build(
+    "Reminder: Sign Your Collegepond Partner Agreement",
+    "One last step to get started",
+    hello(p.name),
+    [
+      {
+        p: p.company
+          ? `Your partner account for ${p.company} is approved, but the Collegepond partnership agreement (MOU) hasn't been signed yet.`
+          : "Your partner account is approved, but the Collegepond partnership agreement (MOU) hasn't been signed yet.",
+      },
+      { p: "Signing takes a couple of minutes: log in to the Partner Portal and you will be taken straight to the agreement. You can start adding students as soon as it is signed." },
+      { button: { label: "Log in and Sign the MOU", url: loginUrl(appUrl) } },
+      { p: "If you have questions about the agreement, simply reply to this email." },
+    ],
+  );
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).
