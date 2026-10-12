@@ -283,7 +283,7 @@ function TeamContact({ name, phone }: { name: string; phone: string }) {
     <div className="flex items-center gap-3">
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1570EF] to-[#0b4ea2] text-xs font-bold text-white">
         {name
-          .split(/s+/)
+          .split(/\s+/)
           .map((w) => w[0])
           .join("")
           .slice(0, 2)
