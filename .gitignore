@@ -54,3 +54,6 @@ yarn-error.log*
 # and by the App Platform build command (`prisma generate && next build`), so
 # committing it only produced diff noise on every machine.
 /generated/
+
+# Local output of scripts/reset-data.mjs
+/backups/
