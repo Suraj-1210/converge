@@ -125,3 +125,46 @@ export async function resolvePartnerSession(
   if (!admin || admin.realId || admin.id !== partner.impersonatorId) return null;
   return partner;
 }
+
+// =============================================================================
+// Signup verification proofs
+// =============================================================================
+//
+// Signup verifies the email and phone OTPs in separate calls before the form is
+// submitted. Each successful verify returns one of these, and submitApplication
+// requires both, so an application can only be filed for an email and phone the
+// applicant controls. Bound to the exact address/number; never a session.
+
+const SIGNUP_PROOF_TTL = "2h";
+
+export type SignupProofChannel = "email" | "phone";
+
+function signupProofKind(channel: SignupProofChannel) {
+  return `signup_${channel}_verified`;
+}
+
+/** `subject` is the lower-cased email or the E.164 digits of the phone. */
+export async function signSignupProof(
+  channel: SignupProofChannel,
+  subject: string,
+): Promise<string> {
+  return new SignJWT({ kind: signupProofKind(channel) })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(subject)
+    .setIssuedAt()
+    .setExpirationTime(SIGNUP_PROOF_TTL)
+    .sign(secret());
+}
+
+export async function verifySignupProof(
+  token: string,
+  channel: SignupProofChannel,
+  subject: string,
+): Promise<boolean> {
+  try {
+    const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
+    return payload.kind === signupProofKind(channel) && payload.sub === subject;
+  } catch {
+    return false;
+  }
+}

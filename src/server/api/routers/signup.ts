@@ -13,16 +13,17 @@ import { notifyAdminOfSignup } from "~/server/notifications";
 import { checkLocation } from "~/server/geo";
 import { db } from "~/server/db";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
+import { signSignupProof, verifySignupProof } from "~/server/auth/jwt";
 
 // One account per email and per phone number. A partner who signed up before
 // (pending, rejected, deactivated…) must log in, not apply again — a second
 // signup would otherwise overwrite their record or create a duplicate.
 async function assertNotRegistered(email: string, phone: string, countryCode: string) {
-  // Signup stores countryCode + the number with spaces removed; match that and
-  // the digits-only form so a stray dash doesn't dodge the check.
+  // Signup stores countryCode + the digits (older rows: spaces removed); match
+  // both forms so a stray dash doesn't dodge the check.
   const phones = [
-    `${countryCode}${phone.replace(/s/g, "")}`,
-    `${countryCode}${phone.replace(/D/g, "")}`,
+    `${countryCode}${phone.replace(/\s/g, "")}`,
+    `${countryCode}${phone.replace(/\D/g, "")}`,
   ];
   const existing = await db.user.findFirst({
     where: { OR: [{ email: email.toLowerCase() }, { phone: { in: phones } }] },
@@ -35,6 +36,27 @@ async function assertNotRegistered(email: string, phone: string, countryCode: st
       message: byEmail
         ? "An account with this email already exists. Please log in to check your application status."
         : "An account with this phone number already exists. Please log in to check your application status.",
+    });
+  }
+}
+
+// The OTP verify calls return signed proofs; without both, matching the email
+// and phone being submitted, an application can't be filed in someone else's
+// name by calling the API directly.
+async function assertVerified(
+  email: string,
+  phone: string,
+  countryCode: string,
+  proofs: { email: string; phone: string },
+) {
+  const [emailOk, phoneOk] = await Promise.all([
+    verifySignupProof(proofs.email, "email", email.toLowerCase()),
+    verifySignupProof(proofs.phone, "phone", toE164(phone, countryCode)),
+  ]);
+  if (!emailOk || !phoneOk) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Your email and phone verification is missing or has expired. Please verify them again.",
     });
   }
 }
@@ -94,7 +116,10 @@ export const signupRouter = createTRPCRouter({
       if (!ok) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired OTP" });
       }
-      return { verified: true as const };
+      return {
+        verified: true as const,
+        proof: await signSignupProof("email", input.email.toLowerCase()),
+      };
     }),
 
   verifyPhoneOtp: publicProcedure
@@ -111,7 +136,7 @@ export const signupRouter = createTRPCRouter({
       if (!ok) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired OTP" });
       }
-      return { verified: true as const };
+      return { verified: true as const, proof: await signSignupProof("phone", phoneE164) };
     }),
 
   submitApplication: publicProcedure
@@ -140,6 +165,9 @@ export const signupRouter = createTRPCRouter({
         pan: z.string().max(20).optional(),
         // No bdmId: BDMs are assigned internally after signup. Team names are
         // not exposed on the public form, and an unknown key is stripped.
+
+        // Proofs returned by verifyEmailOtp / verifyPhoneOtp; see assertVerified.
+        verification: z.object({ email: z.string().min(1), phone: z.string().min(1) }),
       })
       // A GST-registered agency must supply its certificate. The client enforces
       // this too, but the rule lives here as well so the API can't be bypassed.
@@ -155,6 +183,7 @@ export const signupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      await assertVerified(input.email, input.phone, input.countryCode, input.verification);
       // Re-checked here so the API can't be used to overwrite an account.
       await assertNotRegistered(input.email, input.phone, input.countryCode);
 
@@ -174,7 +203,9 @@ export const signupRouter = createTRPCRouter({
         role: input.role,
         firstName: input.firstName,
         lastName: input.lastName,
-        phone: input.phone,
+        // Digits only, so the stored number matches what was verified and what
+        // assertNotRegistered looks up, whatever separators were sent.
+        phone: input.phone.replace(/\D/g, ""),
         countryCode: input.countryCode,
         companyName: input.companyName,
         companyWebsite: input.companyWebsite,

@@ -194,6 +194,9 @@ export default function SignupPage() {
   const [phoneOtp, setPhoneOtp] = useState<string[]>(["", "", "", "", ""]);
   const [emailVerified, setEmailVerified] = useState(false);
   const [phoneVerified, setPhoneVerified] = useState(false);
+  // Signed proofs from the verify calls; submitApplication requires both.
+  const [emailProof, setEmailProof] = useState("");
+  const [phoneProof, setPhoneProof] = useState("");
   const [emailTimerSeconds, setEmailTimerSeconds] = useState(30);
   const [phoneTimerSeconds, setPhoneTimerSeconds] = useState(30);
   const emailTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -333,7 +336,8 @@ export default function SignupPage() {
       verifyEmailOtpMut.mutate(
         { email, otp: emailOtp.join("") },
         {
-          onSuccess: () => {
+          onSuccess: (data) => {
+            setEmailProof(data.proof);
             setEmailVerified(true);
             if (emailTimerRef.current) clearInterval(emailTimerRef.current);
           },
@@ -349,7 +353,8 @@ export default function SignupPage() {
       verifyPhoneOtpMut.mutate(
         { phone: phone.replace(/\s/g, ""), countryCode, otp: phoneOtp.join("") },
         {
-          onSuccess: () => {
+          onSuccess: (data) => {
+            setPhoneProof(data.proof);
             setPhoneVerified(true);
             if (phoneTimerRef.current) clearInterval(phoneTimerRef.current);
           },
@@ -455,27 +460,33 @@ export default function SignupPage() {
     setErrors({});
   };
 
+  // Sends fresh codes and opens the OTP screen with verification cleared.
+  const startVerification = () => {
+    sendSignupOtp.mutate(
+      { email, phone: phone.replace(/\s/g, ""), countryCode },
+      {
+        onSuccess: () => {
+          setEmailOtp(["", "", "", "", ""]);
+          setPhoneOtp(["", "", "", "", ""]);
+          setEmailVerified(false);
+          setPhoneVerified(false);
+          setEmailProof("");
+          setPhoneProof("");
+          setCurrentStepIndex((steps as readonly string[]).indexOf("otp"));
+          startEmailTimer();
+          startPhoneTimer();
+        },
+      },
+    );
+  };
+
   const nextStep = () => {
     setErrors({});
     const step = currentStepName;
 
     if (step === "basic") {
       if (!validateBasicInfo()) return;
-      // Send OTP
-      sendSignupOtp.mutate(
-        { email, phone: phone.replace(/\s/g, ""), countryCode },
-        {
-          onSuccess: () => {
-            setEmailOtp(["", "", "", "", ""]);
-            setPhoneOtp(["", "", "", "", ""]);
-            setEmailVerified(false);
-            setPhoneVerified(false);
-            setCurrentStepIndex(currentStepIndex + 1);
-            startEmailTimer();
-            startPhoneTimer();
-          },
-        },
-      );
+      startVerification();
       return;
     }
 
@@ -528,11 +539,17 @@ export default function SignupPage() {
         gstRegistered: role === "agency" ? gstRegistered === "yes" : undefined,
         documents,
         pan: pan.trim() ? normalizePan(pan) : undefined,
+        verification: { email: emailProof, phone: phoneProof },
       },
       {
         onSuccess: (data) => {
           setApplicationId(data.applicationId);
           setShowSuccess(true);
+        },
+        onError: (err) => {
+          // Proofs expire; send new codes so the applicant can re-verify and
+          // come back here with everything else they entered still filled in.
+          if (err.data?.code === "PRECONDITION_FAILED") startVerification();
         },
       },
     );
@@ -789,6 +806,12 @@ export default function SignupPage() {
             <div className="mb-7 text-sm text-[#667085]">
               We&apos;ve sent a 5-digit verification code to your email and phone number.
             </div>
+            {/* Sent back here from submit because the proofs expired. */}
+            {submitApp.error?.data?.code === "PRECONDITION_FAILED" && (
+              <div className="-mt-4 mb-5 text-[13px] text-[#F04438]">
+                {submitApp.error.message}
+              </div>
+            )}
 
             <div className="flex flex-col gap-5 mt-2">
               {/* Email OTP */}
