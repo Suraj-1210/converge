@@ -68,6 +68,11 @@ async function notifyApplicationStatus(applicationId: number, status: number): P
           appUrl(),
         ),
       "application-status",
+      // Offers have their own toggle ("Offer Letter Received").
+      status === UniApplicationStatus.CONDITIONAL_OFFER ||
+        status === UniApplicationStatus.UNCONDITIONAL_OFFER
+        ? "app.offer"
+        : "app.status",
     );
   } catch (e) {
     console.error("[email] application-status lookup failed:", e instanceof Error ? e.message : e);

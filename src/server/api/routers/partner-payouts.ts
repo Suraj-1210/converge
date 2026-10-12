@@ -31,6 +31,7 @@ function notifyClaimApproved(orgId: number, invoiceNumber: string, amountInr: nu
         rs,
         (r) => commissionClaimApprovedEmail(r, { invoiceNumber, amountInr, partial }, appUrl()),
         "claim-approved",
+        "fin.invoice",
       ),
     )
     .catch((e) => console.error("[email] claim-approved lookup failed:", e));
@@ -303,6 +304,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
                 appUrl(),
               ),
             "claim-rejected",
+            "fin.invoice",
           ),
         )
         .catch((e) => console.error("[email] claim-rejected lookup failed:", e));

@@ -395,6 +395,7 @@ export const reconciliationRouter = createTRPCRouter({
                 appUrl(),
               ),
             "payout-sent",
+            "fin.commission",
           ),
         )
         .catch((e) => console.error("[email] payout-sent lookup failed:", e));

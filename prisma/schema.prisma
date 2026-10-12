@@ -360,6 +360,7 @@ model notification_preference {
   via_sms           Int  @default(0) @db.TinyInt
   user              user @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notification_preference_user")
 
+  @@unique([user_id, notification_type], map: "uq_notification_pref_user_type")
   @@index([user_id], map: "fk_notification_preference_user1_idx")
 }
 

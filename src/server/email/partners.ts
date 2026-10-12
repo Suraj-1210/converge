@@ -3,12 +3,17 @@ import { db } from "~/server/db";
 import { UserStatus } from "~/server/db/enums";
 import { sendEmail } from "./index";
 import type { EmailMessage, PartnerRef } from "./templates";
+import {
+  notificationPrefCode,
+  type NotificationPrefKey,
+} from "~/lib/constants/notification-prefs";
 
 // Who at a partner receives an operational email, and a best-effort sender.
 // These emails follow an admin action that has already been saved, so a mail
 // failure is logged and never thrown back at the admin.
 
 export interface Recipient extends PartnerRef {
+  id: number;
   email: string;
 }
 
@@ -17,12 +22,14 @@ export interface Recipient extends PartnerRef {
 const active = { status: UserStatus.APPROVED } as const;
 
 function toRecipient(u: {
+  id: number;
   email: string;
   first_name: string;
   last_name: string;
   organization: { name: string } | null;
 }): Recipient {
   return {
+    id: u.id,
     email: u.email,
     name: `${u.first_name} ${u.last_name}`.trim(),
     company: u.organization?.name ?? null,
@@ -30,6 +37,7 @@ function toRecipient(u: {
 }
 
 const userSelect = {
+  id: true,
   email: true,
   first_name: true,
   last_name: true,
@@ -75,15 +83,34 @@ export async function studentPartnerRecipients(studentId: number): Promise<Recip
   return dedupe([...owners, ...handlers.map(toRecipient)]);
 }
 
+// Recipients who switched this email off in their notification preferences.
+async function optedOut(recipients: Recipient[], pref: NotificationPrefKey): Promise<Set<number>> {
+  if (recipients.length === 0) return new Set();
+  const rows = await db.notification_preference.findMany({
+    where: {
+      user_id: { in: recipients.map((r) => r.id) },
+      notification_type: notificationPrefCode(pref),
+      via_email: 0,
+    },
+    select: { user_id: true },
+  });
+  return new Set(rows.map((r) => r.user_id));
+}
+
 // Sends `build(recipient)` to each recipient. Returns how many went out; logs
 // failures (with `context`, never the address) instead of throwing.
+// `pref`: the notification preference that governs this email — anyone who
+// turned it off is skipped. Omit it only for account-critical emails.
 export async function emailPartners(
   recipients: Recipient[],
   build: (r: Recipient) => EmailMessage,
   context: string,
+  pref?: NotificationPrefKey,
 ): Promise<number> {
+  const skip = pref ? await optedOut(recipients, pref) : new Set<number>();
+  if (skip.size) console.log(`[email] ${context}: ${skip.size} recipient(s) opted out (${pref})`);
   let sent = 0;
-  for (const r of recipients) {
+  for (const r of recipients.filter((x) => !skip.has(x.id))) {
     try {
       await sendEmail(r.email, build(r));
       sent++;

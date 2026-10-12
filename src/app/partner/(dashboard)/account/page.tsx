@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { api } from "~/trpc/react";
+import {
+  DEFAULT_NOTIFICATION_PREF,
+  NOTIFICATION_PREF_GROUPS,
+} from "~/lib/constants/notification-prefs";
 import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
@@ -34,38 +38,6 @@ const DOC_BADGE: Record<DocStatus, { label: string; cls: string }> = {
   pending: { label: "Pending Review", cls: "bg-[#FFFAEB] text-[#B54708]" },
   rejected: { label: "Rejected", cls: "bg-[#FEF3F2] text-[#B42318]" },
 };
-
-const NOTIF_CATEGORIES: { title: string; rows: { key: string; label: string }[] }[] = [
-  {
-    title: "Application Updates",
-    rows: [
-      { key: "app.new", label: "New Application Submitted" },
-      { key: "app.status", label: "Application Status Change" },
-      { key: "app.doc", label: "Document Uploaded by Partner" },
-      { key: "app.offer", label: "Offer Letter Received" },
-    ],
-  },
-  {
-    title: "Financial",
-    rows: [
-      { key: "fin.commission", label: "Commission Credited" },
-      { key: "fin.invoice", label: "Invoice Generated" },
-      { key: "fin.payment", label: "Payment Reminder" },
-    ],
-  },
-  {
-    title: "Events",
-    rows: [{ key: "evt.reminder", label: "Upcoming Event Reminder" }],
-  },
-  {
-    title: "System",
-    rows: [
-      { key: "sys.feature", label: "New Feature Announcements" },
-      { key: "sys.maintenance", label: "System Maintenance Alerts" },
-      { key: "sys.report", label: "Monthly Performance Report" },
-    ],
-  },
-];
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -110,15 +82,21 @@ export default function PartnerAccountPage() {
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Notification toggles are local-only for now. Defaults mirror the mock.
-  const [notifPrefs, setNotifPrefs] = useState<Record<string, { email: boolean; whatsapp: boolean }>>(() => {
-    const init: Record<string, { email: boolean; whatsapp: boolean }> = {};
-    for (const cat of NOTIF_CATEGORIES) {
-      for (const row of cat.rows) {
-        init[row.key] = { email: true, whatsapp: false };
-      }
-    }
-    return init;
+  // Notification preferences: loaded from and saved to the server, where they
+  // decide whether the matching partner emails are sent.
+  const notifQ = api.account.notificationPrefs.useQuery();
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, { email: boolean; whatsapp: boolean }>>({});
+  const [notifDirty, setNotifDirty] = useState(false);
+  useEffect(() => {
+    if (notifQ.data && !notifDirty) setNotifPrefs(notifQ.data);
+  }, [notifQ.data, notifDirty]);
+  const saveNotif = api.account.saveNotificationPrefs.useMutation({
+    onSuccess: async () => {
+      setNotifDirty(false);
+      await notifQ.refetch();
+      showToast("Notification preferences saved");
+    },
+    onError: (e) => showToast(e.message),
   });
 
   // Hydrate form once data is loaded.
@@ -536,18 +514,21 @@ export default function PartnerAccountPage() {
             <div className="flex-1" />
             <div className="flex w-[180px] items-center justify-between text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
               <span className="w-20 text-center">Email</span>
-              <span className="w-20 text-center">WhatsApp</span>
+              <span className="w-20 text-center leading-tight">
+                WhatsApp
+                <span className="block text-[10px] font-medium tracking-normal normal-case">coming soon</span>
+              </span>
             </div>
           </div>
 
-          {NOTIF_CATEGORIES.map((cat) => (
+          {NOTIFICATION_PREF_GROUPS.map((cat) => (
             <div key={cat.title} className="mb-6 last:mb-0">
               <h4 className="mb-2 text-sm font-semibold text-[#101828]">
                 {cat.title}
               </h4>
               <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#F2F4F7]">
                 {cat.rows.map((row) => {
-                  const pref = notifPrefs[row.key] ?? { email: true, whatsapp: false };
+                  const pref = notifPrefs[row.key] ?? DEFAULT_NOTIFICATION_PREF;
                   return (
                     <div
                       key={row.key}
@@ -555,26 +536,25 @@ export default function PartnerAccountPage() {
                     >
                       <div className="flex-1 text-sm text-[#344054]">
                         {row.label}
+                        {!row.email && (
+                          <span className="ml-2 rounded-full bg-[#F2F4F7] px-2 py-0.5 text-[10px] font-semibold text-[#667085]">
+                            coming soon
+                          </span>
+                        )}
                       </div>
                       <div className="flex w-[180px] items-center justify-between">
                         <Toggle
                           checked={pref.email}
-                          onChange={(v) =>
+                          disabled={notifQ.isLoading}
+                          onChange={(v) => {
+                            setNotifDirty(true);
                             setNotifPrefs((prev) => ({
                               ...prev,
                               [row.key]: { ...pref, email: v },
-                            }))
-                          }
+                            }));
+                          }}
                         />
-                        <Toggle
-                          checked={pref.whatsapp}
-                          onChange={(v) =>
-                            setNotifPrefs((prev) => ({
-                              ...prev,
-                              [row.key]: { ...pref, whatsapp: v },
-                            }))
-                          }
-                        />
+                        <Toggle checked={pref.whatsapp} disabled onChange={() => undefined} />
                       </div>
                     </div>
                   );
@@ -586,13 +566,18 @@ export default function PartnerAccountPage() {
           <div className="mt-6 flex items-center gap-4 border-t border-[#F2F4F7] pt-5">
             <button
               type="button"
-              onClick={() => showToast("Notification preferences saved")}
-              className="cursor-pointer rounded-lg border-none bg-[#1570EF] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#1260d4]"
+              disabled={!notifDirty || saveNotif.isPending}
+              onClick={() =>
+                saveNotif.mutate(
+                  Object.entries(notifPrefs).map(([key, p]) => ({ key, email: p.email, whatsapp: p.whatsapp })),
+                )
+              }
+              className="cursor-pointer rounded-lg border-none bg-[#1570EF] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#1260d4] disabled:cursor-default disabled:opacity-50"
             >
-              Save Preferences
+              {saveNotif.isPending ? "Saving…" : "Save Preferences"}
             </button>
             <span className="text-xs text-[#98A2B3]">
-              You can change your notification preferences at any time.
+              Login codes and decisions about your account are always emailed.
             </span>
           </div>
         </div>
@@ -813,17 +798,20 @@ function ReadOnlyRow({
 function Toggle({
   checked,
   onChange,
+  disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 cursor-pointer rounded-full border-none transition-colors ${
+      className={`relative h-6 w-11 cursor-pointer rounded-full border-none transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
         checked ? "bg-[#1570EF]" : "bg-[#E4E7EC]"
       }`}
     >

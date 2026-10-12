@@ -557,6 +557,8 @@ CREATE TABLE IF NOT EXISTS `notification_preference` (
   `via_sms`           TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   INDEX `fk_notification_preference_user1_idx` (`user_id` ASC) VISIBLE,
+  -- One row per partner per type (codes: src/lib/constants/notification-prefs.ts).
+  UNIQUE INDEX `uq_notification_pref_user_type` (`user_id` ASC, `notification_type` ASC) VISIBLE,
   CONSTRAINT `fk_notification_preference_user`
     FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE

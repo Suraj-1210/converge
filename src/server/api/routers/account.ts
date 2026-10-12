@@ -6,6 +6,10 @@ import {
 } from "~/server/api/trpc";
 import { DocumentStatus, UserType } from "~/server/db/enums";
 import { resolveStorageUrl } from "~/server/storage";
+import {
+  DEFAULT_NOTIFICATION_PREF,
+  NOTIFICATION_PREF_ROWS,
+} from "~/lib/constants/notification-prefs";
 
 // Slot key (as stored in document.doc_type) → human label for the docs tab.
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -141,6 +145,44 @@ export const accountRouter = createTRPCRouter({
             : {}),
         },
       });
+      return { success: true as const };
+    }),
+
+  // The partner's notification preferences, keyed like the toggle screen.
+  // No saved row = the default (email on, WhatsApp off).
+  notificationPrefs: protectedPartnerProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db.notification_preference.findMany({
+      where: { user_id: ctx.cpPartner.id },
+      select: { notification_type: true, via_email: true, via_sms: true },
+    });
+    const prefs: Record<string, { email: boolean; whatsapp: boolean }> = {};
+    for (const r of NOTIFICATION_PREF_ROWS) {
+      const saved = rows.find((x) => x.notification_type === r.code);
+      prefs[r.key] = saved
+        ? { email: saved.via_email === 1, whatsapp: saved.via_sms === 1 }
+        : { ...DEFAULT_NOTIFICATION_PREF };
+    }
+    return prefs;
+  }),
+
+  saveNotificationPrefs: protectedPartnerProcedure
+    .input(
+      z
+        .array(z.object({ key: z.string(), email: z.boolean(), whatsapp: z.boolean() }))
+        .max(50),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.cpPartner.id;
+      for (const p of input) {
+        const row = NOTIFICATION_PREF_ROWS.find((r) => r.key === p.key);
+        if (!row) continue; // retired / unknown keys are ignored
+        const data = { via_email: p.email ? 1 : 0, via_sms: p.whatsapp ? 1 : 0 };
+        await ctx.db.notification_preference.upsert({
+          where: { user_id_notification_type: { user_id: userId, notification_type: row.code } },
+          create: { user_id: userId, notification_type: row.code, ...data },
+          update: data,
+        });
+      }
       return { success: true as const };
     }),
 });
