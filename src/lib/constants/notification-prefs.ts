@@ -3,8 +3,9 @@
 // controls agree. `code` is notification_preference.notification_type — never
 // renumber one; retired types just disappear from the list.
 //
-// `email` says whether an email is actually sent for this today. Toggles for
-// the rest are saved but marked "coming soon" so partners aren't misled.
+// `email` says whether an email is actually sent for this today; the other
+// toggles are saved and take effect once their email exists. Email is the only
+// channel (no WhatsApp notifications), so via_sms stays 0.
 // Account-critical emails (login codes, application decisions, document and
 // more-info requests, deactivation) are always sent and have no toggle.
 
@@ -61,5 +62,5 @@ export function notificationPrefCode(key: NotificationPrefKey): number {
   return row.code;
 }
 
-// With no saved row, email is on and WhatsApp off.
-export const DEFAULT_NOTIFICATION_PREF = { email: true, whatsapp: false } as const;
+// With no saved row, email is on.
+export const DEFAULT_NOTIFICATION_PREF = { email: true } as const;

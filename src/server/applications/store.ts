@@ -314,10 +314,20 @@ export async function getApplicationByEmail(
   };
 }
 
-export async function markMouSigned(userId: number): Promise<void> {
+export async function markMouSigned(
+  userId: number,
+  signature: { kind: number; data: string; signerName: string; ip: string | null; version: string },
+): Promise<void> {
   await db.user.update({
     where: { id: userId },
-    data: { mou_signed_at: new Date() },
+    data: {
+      mou_signed_at: new Date(),
+      mou_signature: signature.data,
+      mou_signature_kind: signature.kind,
+      mou_signer_name: signature.signerName.slice(0, 101),
+      mou_signed_ip: signature.ip?.slice(0, 45) ?? null,
+      mou_version: signature.version,
+    },
   });
 }
 

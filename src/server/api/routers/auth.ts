@@ -21,6 +21,7 @@ import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/a
 import { endImpersonationFromLogout } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { MOU_VERSION, MouSignatureKind } from "~/lib/constants/mou";
 import { resolveStorageUrl } from "~/server/storage";
 
 // Decides where to send the partner after login (and on revisits).
@@ -245,19 +246,46 @@ export const authRouter = createTRPCRouter({
     };
   }),
 
-  // Marks mou_signed_at = NOW(). Signature payload is currently discarded —
-  // when Digio/Leegality is wired in, the document URL would be stored too.
+  // Records the signature with the signing time, signer name and IP, so the
+  // executed MOU can be downloaded from /api/mou.
   signMou: protectedPartnerProcedure
     .input(
-      z.object({
-        kind: z.enum(["drawn", "typed"]),
-        // Drawn: a base64-encoded PNG data URL. Typed: the typed name. We
-        // accept both to satisfy validation but don't persist either yet.
-        data: z.string().min(1),
-      }),
+      z.discriminatedUnion("kind", [
+        // A PNG data URL from the signature pad (a few KB to a few hundred).
+        z.object({
+          kind: z.literal("drawn"),
+          data: z
+            .string()
+            .max(1_500_000, "Signature image is too large")
+            .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/, "Invalid signature image"),
+        }),
+        z.object({ kind: z.literal("typed"), data: z.string().trim().min(1).max(100) }),
+      ]),
     )
-    .mutation(async ({ ctx }) => {
-      await markMouSigned(ctx.cpPartner.id);
+    .mutation(async ({ ctx, input }) => {
+      // A signature has to come from the partner themselves.
+      if (ctx.cpPartner.impersonatorId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "The MOU can't be signed while impersonating a partner.",
+        });
+      }
+      const user = await ctx.db.user.findUnique({
+        where: { id: ctx.cpPartner.id },
+        select: { first_name: true, last_name: true, mou_signed_at: true },
+      });
+      if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
+      if (user.mou_signed_at) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "The MOU is already signed." });
+      }
+      const xff = ctx.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+      await markMouSigned(ctx.cpPartner.id, {
+        kind: input.kind === "drawn" ? MouSignatureKind.DRAWN : MouSignatureKind.TYPED,
+        data: input.data,
+        signerName: `${user.first_name} ${user.last_name}`.trim(),
+        ip: xff ?? ctx.headers.get("x-real-ip"),
+        version: MOU_VERSION,
+      });
       return { success: true as const };
     }),
 

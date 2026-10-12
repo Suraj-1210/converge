@@ -85,7 +85,7 @@ export default function PartnerAccountPage() {
   // Notification preferences: loaded from and saved to the server, where they
   // decide whether the matching partner emails are sent.
   const notifQ = api.account.notificationPrefs.useQuery();
-  const [notifPrefs, setNotifPrefs] = useState<Record<string, { email: boolean; whatsapp: boolean }>>({});
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, { email: boolean }>>({});
   const [notifDirty, setNotifDirty] = useState(false);
   useEffect(() => {
     if (notifQ.data && !notifDirty) setNotifPrefs(notifQ.data);
@@ -441,6 +441,24 @@ export default function PartnerAccountPage() {
               >
                 {data.mou.signed ? "Signed" : "Not Signed"}
               </span>
+              {data.mou.signed && (
+                <>
+                  <a
+                    href="/api/mou"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-md border border-[#D0D5DD] bg-white px-3 py-1.5 text-xs font-semibold text-[#344054] no-underline transition-colors hover:bg-[#F9FAFB]"
+                  >
+                    View
+                  </a>
+                  <a
+                    href="/api/mou?download=1"
+                    className="rounded-md border border-[#D0D5DD] bg-white px-3 py-1.5 text-xs font-semibold text-[#344054] no-underline transition-colors hover:bg-[#F9FAFB]"
+                  >
+                    Download
+                  </a>
+                </>
+              )}
             </li>
 
             {data.documents.length === 0 ? (
@@ -512,12 +530,8 @@ export default function PartnerAccountPage() {
           {/* Column header */}
           <div className="mb-4 flex items-center border-b border-[#F2F4F7] pb-3 pl-1">
             <div className="flex-1" />
-            <div className="flex w-[180px] items-center justify-between text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
-              <span className="w-20 text-center">Email</span>
-              <span className="w-20 text-center leading-tight">
-                WhatsApp
-                <span className="block text-[10px] font-medium tracking-normal normal-case">coming soon</span>
-              </span>
+            <div className="w-20 text-center text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
+              Email
             </div>
           </div>
 
@@ -536,13 +550,8 @@ export default function PartnerAccountPage() {
                     >
                       <div className="flex-1 text-sm text-[#344054]">
                         {row.label}
-                        {!row.email && (
-                          <span className="ml-2 rounded-full bg-[#F2F4F7] px-2 py-0.5 text-[10px] font-semibold text-[#667085]">
-                            coming soon
-                          </span>
-                        )}
                       </div>
-                      <div className="flex w-[180px] items-center justify-between">
+                      <div className="flex w-20 justify-center">
                         <Toggle
                           checked={pref.email}
                           disabled={notifQ.isLoading}
@@ -554,7 +563,6 @@ export default function PartnerAccountPage() {
                             }));
                           }}
                         />
-                        <Toggle checked={pref.whatsapp} disabled onChange={() => undefined} />
                       </div>
                     </div>
                   );
@@ -569,7 +577,7 @@ export default function PartnerAccountPage() {
               disabled={!notifDirty || saveNotif.isPending}
               onClick={() =>
                 saveNotif.mutate(
-                  Object.entries(notifPrefs).map(([key, p]) => ({ key, email: p.email, whatsapp: p.whatsapp })),
+                  Object.entries(notifPrefs).map(([key, p]) => ({ key, email: p.email })),
                 )
               }
               className="cursor-pointer rounded-lg border-none bg-[#1570EF] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#1260d4] disabled:cursor-default disabled:opacity-50"

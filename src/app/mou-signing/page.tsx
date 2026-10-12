@@ -6,6 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Toast } from "~/components/ui/toast";
 import { api } from "~/trpc/react";
 import { ImpersonationBanner } from "~/components/dashboard/impersonation";
+import { MOU_SECTIONS, type MouSection } from "~/lib/constants/mou";
 
 type Step = 0 | 1 | 2 | 3;
 type SignatureMode = "draw" | "type";
@@ -51,14 +52,19 @@ export default function MouSigningPage() {
     setToastOpen(true);
   };
 
-  // Bounce away if state has shifted (already signed, or not approved yet).
+  // Bounce away if state has shifted (already signed, or not approved yet) —
+  // except right after signing here, so the confirmation step (with the signed
+  // MOU download) stays up until the partner clicks Enter Portal.
+  const justSignedRef = useRef(false);
   useEffect(() => {
     const target = me.data?.redirectUrl;
+    if (justSignedRef.current) return;
     if (target && target !== "/mou-signing") router.replace(target);
   }, [me.data?.redirectUrl, router]);
 
   const signMou = api.auth.signMou.useMutation({
     onSuccess: async () => {
+      justSignedRef.current = true;
       // Refresh redirectUrl (now /partner/dashboard) BEFORE advancing, so the
       // dashboard's redirect guard doesn't read the stale pre-sign value and
       // bounce back to /mou-signing — which forced a confusing second signing.
@@ -405,143 +411,14 @@ export default function MouSigningPage() {
                     onScroll={onMouScroll}
                     className="mb-4 max-h-[380px] overflow-y-auto rounded-[10px] border border-[#E4E7EC] bg-[#FAFBFC] p-6"
                   >
-                    <MouSection
-                      number={1}
-                      title="Partnership Terms"
-                      body={
-                        <>
-                          <p>
-                            This Memorandum of Understanding (&quot;MOU&quot;) is
-                            entered into between Collegepond Education Services Pvt.
-                            Ltd. (&quot;Collegepond&quot;) and the Partner
-                            (&quot;Partner&quot;) identified in the registration,
-                            establishing a referral and student placement
-                            partnership.
-                          </p>
-                          <p className="mt-2">
-                            The partnership shall commence from the date of digital
-                            signing of this MOU and shall remain in effect for a
-                            period of one (1) year, automatically renewable unless
-                            terminated by either party with 30 days written notice.
-                          </p>
-                        </>
-                      }
-                    />
-                    <MouSection
-                      number={2}
-                      title="Scope of Services"
-                      body={
-                        <>
-                          <p>Under this agreement, Collegepond shall:</p>
-                          <ul className="mt-2 list-disc space-y-1 pl-5">
-                            <li>Provide access to the Collegepond Partner Portal for application management</li>
-                            <li>Process student applications to partner universities on behalf of the Partner</li>
-                            <li>Provide regular updates on application status and university decisions</li>
-                            <li>Offer training materials and resources for counselors</li>
-                            <li>Maintain direct relationships with 500+ universities across 15+ countries</li>
-                          </ul>
-                          <p className="mt-3">The Partner shall:</p>
-                          <ul className="mt-2 list-disc space-y-1 pl-5">
-                            <li>Submit complete and accurate student applications through the portal</li>
-                            <li>Ensure all student documents are authentic and verified</li>
-                            <li>Maintain professional standards in student counseling</li>
-                            <li>Respond to queries and requests within reasonable timeframes</li>
-                          </ul>
-                        </>
-                      }
-                    />
-                    <MouSection
-                      number={3}
-                      title="Commission Structure"
-                      body={
-                        <>
-                          <p>
-                            Collegepond shall pay the Partner a commission for each
-                            successfully enrolled student as per the following tier
-                            structure:
-                          </p>
-                          <ul className="mt-2 list-disc space-y-1 pl-5">
-                            <li><strong>Silver Tier (1-10 students):</strong> 70% of university commission received by Collegepond</li>
-                            <li><strong>Gold Tier (11-30 students):</strong> 75% of university commission received by Collegepond</li>
-                            <li><strong>Platinum Tier (31-50 students):</strong> 80% of university commission received by Collegepond</li>
-                            <li><strong>Titanium Tier (51-75 students):</strong> 85% of university commission received by Collegepond</li>
-                            <li><strong>Diamond Tier (75+ students):</strong> 90% of university commission received by Collegepond</li>
-                          </ul>
-                          <p className="mt-2">
-                            Commission shall be payable within 30 days of Collegepond
-                            receiving payment from the respective university. All
-                            payments shall be made via bank transfer to the account
-                            specified by the Partner.
-                          </p>
-                        </>
-                      }
-                    />
-                    <MouSection
-                      number={4}
-                      title="Obligations & Responsibilities"
-                      body={
-                        <>
-                          <p>
-                            Both parties agree to act in good faith and in the best
-                            interest of the students. The Partner acknowledges that
-                            Collegepond reserves the right to reject any application
-                            that does not meet the minimum eligibility criteria set
-                            by the partner universities.
-                          </p>
-                          <p className="mt-2">
-                            The Partner shall not make any false promises or
-                            guarantees to students regarding admission outcomes. Any
-                            misrepresentation may result in immediate termination of
-                            this partnership.
-                          </p>
-                        </>
-                      }
-                    />
-                    <MouSection
-                      number={5}
-                      title="Confidentiality"
-                      body={
-                        <>
-                          <p>
-                            Both parties agree to maintain strict confidentiality
-                            regarding all student information, commission structures,
-                            internal processes, and proprietary systems shared during
-                            the course of this partnership. This obligation survives
-                            the termination of this MOU.
-                          </p>
-                          <p className="mt-2">
-                            Neither party shall disclose confidential information to
-                            third parties without prior written consent from the
-                            other party, except as required by law.
-                          </p>
-                        </>
-                      }
-                    />
-                    <MouSection
-                      number={6}
-                      title="Term & Termination"
-                      last
-                      body={
-                        <>
-                          <p>
-                            This MOU may be terminated by either party with 30 days
-                            written notice. Upon termination:
-                          </p>
-                          <ul className="mt-2 list-disc space-y-1 pl-5">
-                            <li>All pending applications shall be processed to completion</li>
-                            <li>Outstanding commissions shall be paid as per the agreed schedule</li>
-                            <li>Access to the Partner Portal shall be revoked within 7 days</li>
-                            <li>Both parties shall return or destroy any confidential information</li>
-                          </ul>
-                          <p className="mt-2">
-                            Collegepond reserves the right to immediately terminate
-                            this agreement in cases of fraud, misrepresentation, or
-                            breach of confidentiality obligations without any prior
-                            notice period.
-                          </p>
-                        </>
-                      }
-                    />
+                    {MOU_SECTIONS.map((section, i) => (
+                      <MouSectionView
+                        key={section.title}
+                        number={i + 1}
+                        section={section}
+                        last={i === MOU_SECTIONS.length - 1}
+                      />
+                    ))}
                   </div>
 
                   <div
@@ -784,6 +661,22 @@ export default function MouSigningPage() {
                     </div>
                   </div>
 
+                  <a
+                    href="/api/mou?download=1"
+                    className="mb-3 flex h-11 w-full max-w-[400px] items-center justify-center gap-2 rounded-lg border border-[#D0D5DD] bg-white px-6 text-sm font-semibold text-[#344054] transition-colors hover:bg-[#F9FAFB]"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <path
+                        d="M8 2v8m0 0L5 7m3 3 3-3M3 12.5h10"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    Download Signed MOU (PDF)
+                  </a>
+
                   <button
                     onClick={handleEnterPortal}
                     className="flex h-11 w-full max-w-[400px] cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#12B76A] px-6 text-sm font-semibold text-white transition-colors hover:bg-[#0E9F5A]"
@@ -844,23 +737,39 @@ function FeatureCard({
   );
 }
 
-function MouSection({
+function MouSectionView({
   number,
-  title,
-  body,
+  section,
   last,
 }: {
   number: number;
-  title: string;
-  body: React.ReactNode;
+  section: MouSection;
   last?: boolean;
 }) {
   return (
     <div className={last ? "" : "mb-5"}>
       <h3 className="mb-2 text-sm font-bold text-[#101828]">
-        {number}. {title}
+        {number}. {section.title}
       </h3>
-      <div className="text-[13px] leading-relaxed text-[#344054]">{body}</div>
+      <div className="space-y-2 text-[13px] leading-relaxed text-[#344054]">
+        {section.blocks.map((b, i) =>
+          b.kind === "p" ? (
+            <p key={i}>{b.text}</p>
+          ) : (
+            <ul key={i} className="list-disc space-y-1 pl-5">
+              {b.items.map((item, j) =>
+                typeof item === "string" ? (
+                  <li key={j}>{item}</li>
+                ) : (
+                  <li key={j}>
+                    <strong>{item.bold}</strong> {item.text}
+                  </li>
+                ),
+              )}
+            </ul>
+          ),
+        )}
+      </div>
     </div>
   );
 }

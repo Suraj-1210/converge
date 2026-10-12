@@ -98,6 +98,12 @@ CREATE TABLE IF NOT EXISTS `user` (
   `status_reason`                   VARCHAR(500) NULL DEFAULT NULL,
   `tier`                            TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
   `mou_signed_at`                   TIMESTAMP NULL DEFAULT NULL,
+  -- The MOU signature, kept so the executed MOU can be downloaded.
+  `mou_signature`                   MEDIUMTEXT   NULL DEFAULT NULL,  -- drawn: PNG data URL; typed: the typed name
+  `mou_signature_kind`              TINYINT UNSIGNED NULL DEFAULT NULL,  -- 0 drawn, 1 typed
+  `mou_signer_name`                 VARCHAR(101) NULL DEFAULT NULL,
+  `mou_signed_ip`                   VARCHAR(45)  NULL DEFAULT NULL,
+  `mou_version`                     VARCHAR(20)  NULL DEFAULT NULL,
   `last_login_at`                   TIMESTAMP NULL DEFAULT NULL,
   `created_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
