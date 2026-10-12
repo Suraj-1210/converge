@@ -292,7 +292,7 @@ function TeamContact({ name, phone }: { name: string; phone: string }) {
       <div className="min-w-0">
         <div className="truncate font-semibold text-[#101828]">{name}</div>
         {phone ? (
-          <a href={`tel:${phone.replace(/s+/g, "")}`} className="text-[#475467] hover:text-[#1570EF]">
+          <a href={`tel:${phone.replace(/\s+/g, "")}`} className="text-[#475467] hover:text-[#1570EF]">
             {phone}
           </a>
         ) : (
