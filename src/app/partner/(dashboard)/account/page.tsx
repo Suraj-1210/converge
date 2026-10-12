@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { api } from "~/trpc/react";
@@ -9,6 +9,7 @@ import {
   NOTIFICATION_PREF_GROUPS,
 } from "~/lib/constants/notification-prefs";
 import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
+import { MouViewer } from "~/components/partner/mou-viewer";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
 
@@ -81,6 +82,9 @@ export default function PartnerAccountPage() {
   const [errors, setErrors] = useState<{ firstName?: string; lastName?: string }>({});
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [mouViewerOpen, setMouViewerOpen] = useState(false);
+  const closeMouViewer = useCallback(() => setMouViewerOpen(false), []);
 
   // Notification preferences: loaded from and saved to the server, where they
   // decide whether the matching partner emails are sent.
@@ -443,14 +447,13 @@ export default function PartnerAccountPage() {
               </span>
               {data.mou.signed && (
                 <>
-                  <a
-                    href="/api/mou"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-md border border-[#D0D5DD] bg-white px-3 py-1.5 text-xs font-semibold text-[#344054] no-underline transition-colors hover:bg-[#F9FAFB]"
+                  <button
+                    type="button"
+                    onClick={() => setMouViewerOpen(true)}
+                    className="cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-3 py-1.5 text-xs font-semibold text-[#344054] transition-colors hover:bg-[#F9FAFB]"
                   >
                     View
-                  </a>
+                  </button>
                   <a
                     href="/api/mou?download=1"
                     className="rounded-md border border-[#D0D5DD] bg-white px-3 py-1.5 text-xs font-semibold text-[#344054] no-underline transition-colors hover:bg-[#F9FAFB]"
@@ -459,6 +462,7 @@ export default function PartnerAccountPage() {
                   </a>
                 </>
               )}
+              <MouViewer open={mouViewerOpen} onClose={closeMouViewer} />
             </li>
 
             {data.documents.length === 0 ? (
