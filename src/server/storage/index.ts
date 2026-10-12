@@ -1,8 +1,8 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { env } from "~/env";
-import { saveLocal } from "./local";
-import { publicUrl, putObject, spacesConfigured } from "./spaces";
+import { readLocal, saveLocal } from "./local";
+import { getObjectBuffer, publicUrl, putObject, spacesConfigured } from "./spaces";
 
 export interface StoredFile {
   /**
@@ -54,6 +54,14 @@ export async function saveBuffer(
   }
   const local = await saveLocal(buffer, key);
   return { key, url: local.url };
+}
+
+// Reads back a file stored by saveBuffer, given the `url` it returned. For
+// private files the app serves itself rather than redirecting to Spaces.
+export async function readStoredFile(ref: string): Promise<Buffer> {
+  if (ref.startsWith("/uploads/")) return readLocal(ref);
+  if (isPrivateKey(ref) && spacesConfigured()) return getObjectBuffer(ref);
+  throw new Error(`Can't read stored file ${ref}`);
 }
 
 export async function saveUpload(

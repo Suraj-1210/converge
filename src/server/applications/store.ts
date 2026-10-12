@@ -316,12 +316,21 @@ export async function getApplicationByEmail(
 
 export async function markMouSigned(
   userId: number,
-  signature: { kind: number; data: string; signerName: string; ip: string | null; version: string },
+  signature: {
+    signedAt: Date;
+    kind: number;
+    data: string;
+    signerName: string;
+    ip: string | null;
+    version: string;
+    pdfUrl: string;
+  },
 ): Promise<void> {
   await db.user.update({
     where: { id: userId },
     data: {
-      mou_signed_at: new Date(),
+      mou_signed_at: signature.signedAt,
+      mou_pdf_url: signature.pdfUrl,
       mou_signature: signature.data,
       mou_signature_kind: signature.kind,
       mou_signer_name: signature.signerName.slice(0, 101),

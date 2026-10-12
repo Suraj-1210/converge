@@ -6,7 +6,8 @@ import {
   resolvePartnerSession,
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
-import { renderExecutedMou } from "~/server/mou-pdf";
+import { MOU_USER_SELECT, executedMouFor, mouFileName, renderExecutedMou } from "~/server/mou-pdf";
+import { readStoredFile } from "~/server/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +15,9 @@ export const dynamic = "force-dynamic";
 // The signed-in partner's executed MOU as a PDF. ?download=1 saves it as a
 // file; otherwise it opens in the browser's PDF viewer. A counsellor in an
 // agency gets the MOU their agency owner signed.
+//
+// Serves the copy frozen at signing. MOUs signed before copies were kept have
+// none, so theirs is rendered from the current text.
 export async function GET(req: Request) {
   const jar = await cookies();
   const partner = await resolvePartnerSession(
@@ -24,73 +28,43 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const select = {
-    first_name: true,
-    last_name: true,
-    email: true,
-    phone: true,
-    address: true,
-    city: true,
-    state: true,
-    country: true,
-    org_id: true,
-    mou_signed_at: true,
-    mou_signature: true,
-    mou_signature_kind: true,
-    mou_signer_name: true,
-    mou_signed_ip: true,
-    mou_version: true,
-    organization: { select: { name: true, address: true, city: true, state: true, country: true } },
-  } as const;
-  const me = await db.user.findUnique({ where: { id: partner.id }, select });
+  const me = await db.user.findUnique({ where: { id: partner.id }, select: MOU_USER_SELECT });
   const signer = me?.mou_signed_at
     ? me
     : me?.org_id
       ? await db.user.findFirst({
           where: { org_id: me.org_id, is_owner: 1, mou_signed_at: { not: null } },
-          select,
+          select: MOU_USER_SELECT,
         })
       : null;
   if (!signer?.mou_signed_at) {
     return NextResponse.json({ error: "The MOU has not been signed yet." }, { status: 404 });
   }
 
-  const org = signer.organization;
-  const place = org?.address ? org : signer;
-  const country = countryName(place.country);
-  const address = [place.address, place.city, place.state, country].filter(Boolean).join(", ");
-  const partnerName = `${signer.first_name} ${signer.last_name}`.trim();
+  const mou = executedMouFor(signer, signer.mou_signed_at);
+  let pdf: Uint8Array;
+  if (signer.mou_pdf_url) {
+    // Never substitute a re-render for a stored copy — the point of the copy
+    // is that it's exactly what was signed.
+    try {
+      pdf = await readStoredFile(signer.mou_pdf_url);
+    } catch (err) {
+      console.error("[mou] couldn't read the stored MOU", signer.mou_pdf_url, err);
+      return NextResponse.json(
+        { error: "Couldn't load your signed MOU right now. Please try again shortly." },
+        { status: 502 },
+      );
+    }
+  } else {
+    pdf = await renderExecutedMou(mou);
+  }
 
-  const pdf = await renderExecutedMou({
-    partnerName,
-    businessName: org?.name ?? null,
-    email: signer.email,
-    phone: signer.phone,
-    address,
-    signedAt: signer.mou_signed_at,
-    signerName: signer.mou_signer_name,
-    signature: signer.mou_signature,
-    signatureKind: signer.mou_signature_kind,
-    signedIp: signer.mou_signed_ip,
-    version: signer.mou_version,
-  });
-
-  const fileName = `Collegepond-MOU-${(org?.name ?? partnerName).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "Partner"}.pdf`;
   const download = new URL(req.url).searchParams.get("download") === "1";
   return new NextResponse(Buffer.from(pdf), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${fileName}"`,
+      "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${mouFileName(mou)}"`,
       "Cache-Control": "private, no-store",
     },
   });
-}
-
-function countryName(code: string | null | undefined): string | null {
-  if (!code) return null;
-  try {
-    return new Intl.DisplayNames(["en"], { type: "region" }).of(code.toUpperCase()) ?? code;
-  } catch {
-    return code;
-  }
 }

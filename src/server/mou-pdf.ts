@@ -8,7 +8,82 @@ import {
 } from "~/lib/constants/mou";
 
 // Renders the executed partner MOU (the agreed text plus the partner's details
-// and signature) as an A4 PDF. Served by /api/mou.
+// and signature) as an A4 PDF. signMou renders it once and stores that frozen
+// copy; /api/mou serves it (or renders one for MOUs signed before copies were
+// kept).
+
+// The user fields an executed MOU is built from.
+export const MOU_USER_SELECT = {
+  first_name: true,
+  last_name: true,
+  email: true,
+  phone: true,
+  address: true,
+  city: true,
+  state: true,
+  country: true,
+  org_id: true,
+  mou_signed_at: true,
+  mou_signature: true,
+  mou_signature_kind: true,
+  mou_signer_name: true,
+  mou_signed_ip: true,
+  mou_version: true,
+  mou_pdf_url: true,
+  organization: { select: { name: true, address: true, city: true, state: true, country: true } },
+} as const;
+
+interface MouUserRow {
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  address: string;
+  city: string;
+  state: string;
+  country: string;
+  mou_signature: string | null;
+  mou_signature_kind: number | null;
+  mou_signer_name: string | null;
+  mou_signed_ip: string | null;
+  mou_version: string | null;
+  organization: { name: string; address: string | null; city: string | null; state: string | null; country: string | null } | null;
+}
+
+export function executedMouFor(row: MouUserRow, signedAt: Date): ExecutedMou {
+  const org = row.organization;
+  const place = org?.address ? org : row;
+  const address = [place.address, place.city, place.state, countryName(place.country)]
+    .filter(Boolean)
+    .join(", ");
+  return {
+    partnerName: `${row.first_name} ${row.last_name}`.trim(),
+    businessName: org?.name ?? null,
+    email: row.email,
+    phone: row.phone,
+    address,
+    signedAt,
+    signerName: row.mou_signer_name,
+    signature: row.mou_signature,
+    signatureKind: row.mou_signature_kind,
+    signedIp: row.mou_signed_ip,
+    version: row.mou_version,
+  };
+}
+
+export function mouFileName(mou: ExecutedMou): string {
+  const who = (mou.businessName ?? mou.partnerName).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return `Collegepond-MOU-${who || "Partner"}.pdf`;
+}
+
+function countryName(code: string | null | undefined): string | null {
+  if (!code) return null;
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
 
 export interface ExecutedMou {
   partnerName: string;

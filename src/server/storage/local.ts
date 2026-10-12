@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads");
@@ -29,4 +29,14 @@ export async function saveLocal(
     path: absPath,
     url: `${URL_PREFIX}/${keyPath.split(path.sep).join("/")}`,
   };
+}
+
+// Reads back a file saved by saveLocal, given its "/uploads/..." URL.
+export async function readLocal(url: string): Promise<Buffer> {
+  if (!url.startsWith(`${URL_PREFIX}/`)) throw new Error("Not a local upload");
+  const absPath = path.resolve(UPLOAD_DIR, url.slice(URL_PREFIX.length + 1));
+  if (!absPath.startsWith(path.resolve(UPLOAD_DIR) + path.sep)) {
+    throw new Error("Invalid upload path");
+  }
+  return readFile(absPath);
 }

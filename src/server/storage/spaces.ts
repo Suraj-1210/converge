@@ -70,6 +70,15 @@ export function publicUrl(key: string): string {
   return `https://${env.SPACES_BUCKET}.${host}/${key}`;
 }
 
+// Reads a whole object, for files the app serves itself (e.g. the frozen MOU).
+export async function getObjectBuffer(key: string): Promise<Buffer> {
+  const res = await getClient().send(
+    new GetObjectCommand({ Bucket: env.SPACES_BUCKET!, Key: key }),
+  );
+  if (!res.Body) throw new Error(`Empty object: ${key}`);
+  return Buffer.from(await res.Body.transformToByteArray());
+}
+
 // Short-lived signed URL for a private object, generated on demand by the
 // gated /api/files proxy.
 export async function presignGetUrl(key: string, expiresIn = 300): Promise<string> {

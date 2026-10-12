@@ -22,7 +22,9 @@ import { endImpersonationFromLogout } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { MOU_VERSION, MouSignatureKind } from "~/lib/constants/mou";
-import { resolveStorageUrl } from "~/server/storage";
+import { MOU_USER_SELECT, executedMouFor, renderExecutedMou } from "~/server/mou-pdf";
+import { randomUUID } from "node:crypto";
+import { resolveStorageUrl, saveBuffer } from "~/server/storage";
 
 // Decides where to send the partner after login (and on revisits).
 //   under_review / rejected / inactive → /pending-verification
@@ -272,20 +274,57 @@ export const authRouter = createTRPCRouter({
       }
       const user = await ctx.db.user.findUnique({
         where: { id: ctx.cpPartner.id },
-        select: { first_name: true, last_name: true, mou_signed_at: true },
+        select: MOU_USER_SELECT,
       });
       if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
       if (user.mou_signed_at) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "The MOU is already signed." });
       }
       const xff = ctx.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-      await markMouSigned(ctx.cpPartner.id, {
+      // Whole seconds, matching what mou_signed_at stores, so the frozen PDF
+      // and the database agree on the signing time.
+      const signedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+      const signature = {
+        signedAt,
         kind: input.kind === "drawn" ? MouSignatureKind.DRAWN : MouSignatureKind.TYPED,
         data: input.data,
         signerName: `${user.first_name} ${user.last_name}`.trim(),
         ip: xff ?? ctx.headers.get("x-real-ip"),
         version: MOU_VERSION,
-      });
+      };
+
+      // Freeze the executed MOU as signed. It's saved before the MOU is
+      // marked signed, so a partner is never signed without their copy.
+      let pdfUrl: string;
+      try {
+        const pdf = await renderExecutedMou(
+          executedMouFor(
+            {
+              ...user,
+              mou_signature: signature.data,
+              mou_signature_kind: signature.kind,
+              mou_signer_name: signature.signerName,
+              mou_signed_ip: signature.ip ?? null,
+              mou_version: signature.version,
+            },
+            signedAt,
+          ),
+        );
+        const stored = await saveBuffer(
+          Buffer.from(pdf),
+          `partner-mou/${ctx.cpPartner.id}/${randomUUID()}.pdf`,
+          { contentType: "application/pdf" },
+        );
+        pdfUrl = stored.url;
+      } catch (err) {
+        console.error("[mou] couldn't save the signed MOU", err);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "We couldn't save your signed MOU. Please try again.",
+        });
+      }
+
+      await markMouSigned(ctx.cpPartner.id, { ...signature, pdfUrl });
       return { success: true as const };
     }),
 
