@@ -31,10 +31,11 @@ const independentSteps = ["basic", "otp", "documents", "review"] as const;
 
 // Always-required agency uploads. "gst" is required on top of these only when
 // the agency answers "GST Registered? → Yes" in Company Details.
+// Bank details and the cancelled cheque are not part of sign-up: they're added
+// after approval in My Account → Financial Details.
 const AGENCY_REQUIRED_DOCS = [
   "companyPan",
   "aadhaar",
-  "cancelledCheque",
   "partnershipDocs",
 ] as const;
 
@@ -206,7 +207,6 @@ export default function SignupPage() {
   const [agencyDocs, setAgencyDocs] = useState<Record<string, FileState>>({
     companyPan: {},
     aadhaar: {},
-    cancelledCheque: {},
     partnershipDocs: {},
     logo: {},
     gst: {},
@@ -216,7 +216,6 @@ export default function SignupPage() {
   const [independentDocs, setIndependentDocs] = useState<Record<string, FileState>>({
     pan: {},
     aadhaar: {},
-    cancelledCheque: {},
     profilePhoto: {},
   });
 
@@ -432,7 +431,7 @@ export default function SignupPage() {
           return false;
         }
       }
-      const required = ["pan", "aadhaar", "cancelledCheque"];
+      const required = ["pan", "aadhaar"];
       const missing = required.some((k) => !independentDocs[k]?.name);
       if (missing) {
         setErrors({ documents: "Please upload all required documents" });
@@ -601,7 +600,6 @@ export default function SignupPage() {
     const docs = [
       { key: "companyPan", name: "Company PAN", required: true },
       { key: "aadhaar", name: "Aadhaar Card", required: true },
-      { key: "cancelledCheque", name: "Cancelled Cheque", required: true },
       { key: "partnershipDocs", name: "Partnership Docs", required: true },
       { key: "logo", name: "Company Logo", required: false },
       { key: "gst", name: "GST Certificate", required: gstRegistered === "yes" },
@@ -620,7 +618,6 @@ export default function SignupPage() {
     const docs = [
       { key: "pan", name: "PAN Card", required: true },
       { key: "aadhaar", name: "Aadhaar Card", required: true },
-      { key: "cancelledCheque", name: "Cancelled Cheque", required: true },
       { key: "profilePhoto", name: "Profile Photo", required: false },
     ];
     return docs.map((d) => ({
@@ -1174,16 +1171,6 @@ export default function SignupPage() {
                 onFileRemove={() => removeAgencyDoc("aadhaar")}
               />
               <FileUpload
-                label="Cancelled Cheque"
-                required
-                hint="PDF, JPG or PNG (max 5MB)"
-                fileName={agencyDocs.cancelledCheque?.name}
-                uploading={agencyDocs.cancelledCheque?.uploading}
-                error={!!errors.documents && !agencyDocs.cancelledCheque?.name}
-                onFileSelect={(f) => void setAgencyDoc("cancelledCheque", f)}
-                onFileRemove={() => removeAgencyDoc("cancelledCheque")}
-              />
-              <FileUpload
                 label="Company / Partnership Documents"
                 required
                 hint="PDF, JPG or PNG (max 5MB)"
@@ -1297,16 +1284,6 @@ export default function SignupPage() {
                 error={!!errors.documents && !independentDocs.aadhaar?.name}
                 onFileSelect={(f) => void setIndependentDoc("aadhaar", f)}
                 onFileRemove={() => removeIndependentDoc("aadhaar")}
-              />
-              <FileUpload
-                label="Cancelled Cheque"
-                required
-                hint="PDF, JPG or PNG (max 5MB)"
-                fileName={independentDocs.cancelledCheque?.name}
-                uploading={independentDocs.cancelledCheque?.uploading}
-                error={!!errors.documents && !independentDocs.cancelledCheque?.name}
-                onFileSelect={(f) => void setIndependentDoc("cancelledCheque", f)}
-                onFileRemove={() => removeIndependentDoc("cancelledCheque")}
               />
             </div>
 

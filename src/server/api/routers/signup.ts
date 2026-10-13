@@ -14,6 +14,19 @@ import { checkLocation } from "~/server/geo";
 import { db } from "~/server/db";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
 import { signSignupProof, verifySignupProof } from "~/server/auth/jwt";
+import { PARTNER_DOC_SLOTS, type PartnerRole } from "~/lib/constants/partner-documents";
+
+// Keeps only the documents sign-up collects. Banking proof (the cancelled
+// cheque) belongs to Financial Details after approval, so one sent by a page
+// loaded before that change is dropped rather than failing the sign-up.
+function signupDocuments(
+  role: PartnerRole,
+  documents: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!documents) return documents;
+  const allowed = new Set(PARTNER_DOC_SLOTS[role].filter((s) => s.atSignup).map((s) => s.key));
+  return Object.fromEntries(Object.entries(documents).filter(([key]) => allowed.has(key)));
+}
 
 // One account per email and per phone number. A partner who signed up before
 // (pending, rejected, deactivated…) must log in, not apply again — a second
@@ -169,11 +182,20 @@ export const signupRouter = createTRPCRouter({
         // Proofs returned by verifyEmailOtp / verifyPhoneOtp; see assertVerified.
         verification: z.object({ email: z.string().min(1), phone: z.string().min(1) }),
       })
-      // A GST-registered agency must supply its certificate. The client enforces
-      // this too, but the rule lives here as well so the API can't be bypassed.
-      .refine((v) => !(v.gstRegistered === true) || !!v.documents?.gst, {
-        message: "GST certificate is required for a GST-registered agency",
-        path: ["documents"],
+      // Required sign-up documents (incl. the GST certificate for a
+      // GST-registered agency). The client enforces these too, but the rule
+      // lives here as well so the API can't be bypassed.
+      .superRefine((v, ctx) => {
+        const gstRegistered = v.gstRegistered ?? null;
+        for (const slot of PARTNER_DOC_SLOTS[v.role]) {
+          if (slot.atSignup && slot.required({ gstRegistered }) && !v.documents?.[slot.key]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${slot.label} is required`,
+              path: ["documents"],
+            });
+          }
+        }
       })
       .superRefine((v, ctx) => {
         const pan = v.pan ? normalizePan(v.pan) : "";
@@ -214,7 +236,7 @@ export const signupRouter = createTRPCRouter({
         numCounselors: input.numCounselors,
         annualVolume: input.annualVolume,
         gstRegistered: input.gstRegistered,
-        documents: input.documents,
+        documents: signupDocuments(input.role, input.documents),
         pan: input.pan ? normalizePan(input.pan) : undefined,
       });
 
