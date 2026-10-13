@@ -18,6 +18,16 @@
 --   role=8 BDM                  → bdm@collegepond.com             / +91 9876543218
 -- =============================================================================
 
+-- Department master (Settings -> Departments). Same rows as the
+-- 20261013120000_department_master migration seeds.
+INSERT IGNORE INTO `department` (`name`, `is_active`, `sort_order`) VALUES
+  ('Management',           1, 10),
+  ('Counselling',          1, 20),
+  ('Business Development', 1, 30),
+  ('Operations',           1, 40),
+  ('Finance',              1, 50),
+  ('Content',              1, 60);
+
 -- One CollegePond staff user per role, for local development. status=1 → active.
 -- last_login_at seeded to NOW() so the dev UI doesn't show "Never" everywhere.
 INSERT IGNORE INTO `cp_user` (

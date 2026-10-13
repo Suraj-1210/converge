@@ -26,7 +26,8 @@ const cpUserSelect = {
   email: true,
   phone: true,
   role: true,
-  department: true,
+  department_id: true,
+  department: { select: { name: true, is_active: true } },
   status: true,
   last_login_at: true,
   created_at: true,
@@ -39,7 +40,8 @@ interface DbCpUser {
   email: string;
   phone: string;
   role: number;
-  department: string | null;
+  department_id: number | null;
+  department: { name: string; is_active: number } | null;
   status: number;
   last_login_at: Date | null;
   created_at: Date;
@@ -55,16 +57,37 @@ function toApi(u: DbCpUser) {
     phone,
     countryCode,
     role: u.role as AdminRole,
-    department: u.department,
+    departmentId: u.department_id,
+    department: u.department?.name ?? null,
+    departmentActive: u.department ? u.department.is_active === 1 : null,
     status: u.status === 1 ? ("active" as const) : ("inactive" as const),
     lastLogin: u.last_login_at?.toISOString() ?? null,
     createdAt: u.created_at.toISOString(),
   };
 }
 
-function normDepartment(value: string | undefined): string | null {
-  const t = value?.trim();
-  return t && t.length > 0 ? t : null;
+// Departments come from the department master (Settings -> Departments). Only
+// active ones can be newly assigned; a user already on a since-deactivated
+// department may keep it, so editing their other details doesn't force a move.
+async function resolveDepartmentId(
+  departmentId: number | null | undefined,
+  currentId: number | null,
+): Promise<number | null> {
+  if (departmentId == null) return null;
+  const d = await db.department.findUnique({
+    where: { id: departmentId },
+    select: { is_active: true },
+  });
+  if (!d) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "That department no longer exists." });
+  }
+  if (d.is_active !== 1 && departmentId !== currentId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "That department is inactive. Pick an active department.",
+    });
+  }
+  return departmentId;
 }
 
 const personFields = z.object({
@@ -77,7 +100,7 @@ const personFields = z.object({
     .number()
     .int()
     .refine((v) => ADMIN_ROLE_CODES.includes(v as AdminRole), { message: "Invalid role" }),
-  department: z.string().trim().max(100).optional(),
+  departmentId: z.number().int().positive().nullable().optional(),
 });
 
 export const usersRouter = createTRPCRouter({
@@ -123,7 +146,7 @@ export const usersRouter = createTRPCRouter({
         email,
         phone: phoneStored,
         role: input.role,
-        department: normDepartment(input.department),
+        department_id: await resolveDepartmentId(input.departmentId, null),
         status: 1,
       },
       select: cpUserSelect,
@@ -147,6 +170,14 @@ export const usersRouter = createTRPCRouter({
 
       const phoneStored = `${input.countryCode}${input.phone.replace(/\s/g, "")}`;
 
+      const current = await db.collegepond_user.findUnique({
+        where: { id: input.id },
+        select: { department_id: true },
+      });
+      if (!current) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found." });
+      }
+
       const user = await db.collegepond_user.update({
         where: { id: input.id },
         data: {
@@ -155,7 +186,10 @@ export const usersRouter = createTRPCRouter({
           email,
           phone: phoneStored,
           role: input.role,
-          department: normDepartment(input.department),
+          department_id: await resolveDepartmentId(
+            input.departmentId,
+            current.department_id,
+          ),
         },
         select: cpUserSelect,
       });

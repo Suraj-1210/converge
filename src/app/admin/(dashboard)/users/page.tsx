@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
@@ -25,7 +26,9 @@ type AdminUser = {
   phone: string;
   countryCode: string;
   role: number;
+  departmentId: number | null;
   department: string | null;
+  departmentActive: boolean | null;
   status: "active" | "inactive";
   lastLogin: string | null;
   createdAt: string;
@@ -48,14 +51,6 @@ const ROLE_OPTIONS = (Object.values(AdminRole) as number[]).map((code) => ({
   value: String(code),
   label: AdminRoleLabel[code as AdminRole],
 }));
-
-const DEPARTMENT_OPTIONS = [
-  "Management",
-  "Finance",
-  "Operations",
-  "Business Development",
-  "Content",
-].map((d) => ({ value: d, label: d }));
 
 function formatLastLogin(iso: string | null): string {
   if (!iso) return "Never";
@@ -80,7 +75,7 @@ const emptyForm = {
   phone: "",
   countryCode: "+91",
   role: String(AdminRole.COUNSELLOR),
-  department: "",
+  departmentId: "",
   status: "active" as "active" | "inactive",
 };
 
@@ -89,6 +84,11 @@ export default function UsersPage() {
   const usersQuery = api.users.list.useQuery();
   const meQuery = api.authSession.me.useQuery();
   const isSuperAdmin = meQuery.data?.role === SUPER_ADMIN;
+  // Department master (Settings -> Departments). Only Super Admins open the
+  // Add/Edit form, and the endpoint is Super Admin only.
+  const departmentsQuery = api.departments.list.useQuery(undefined, {
+    enabled: isSuperAdmin,
+  });
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [search, setSearch] = useState("");
@@ -144,6 +144,25 @@ export default function UsersPage() {
     onError: (err) => showToast(err.message),
   });
 
+  // Active departments only; a user already on a since-deactivated one keeps
+  // it as an option while being edited, so saving doesn't silently clear it.
+  const departmentOptions = useMemo(() => {
+    const opts = (departmentsQuery.data ?? [])
+      .filter((d) => d.active)
+      .map((d) => ({ value: String(d.id), label: d.name }));
+    const editing = modal.editing;
+    if (
+      editing?.departmentId != null &&
+      !opts.some((o) => o.value === String(editing.departmentId))
+    ) {
+      opts.push({
+        value: String(editing.departmentId),
+        label: `${editing.department ?? "Unknown"} (inactive)`,
+      });
+    }
+    return opts;
+  }, [departmentsQuery.data, modal.editing]);
+
   const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
   const total = users.length;
   const activeCount = users.filter((u) => u.status === "active").length;
@@ -175,7 +194,7 @@ export default function UsersPage() {
       phone: u.phone,
       countryCode: u.countryCode || "+91",
       role: String(u.role),
-      department: u.department ?? "",
+      departmentId: u.departmentId != null ? String(u.departmentId) : "",
       status: u.status,
     });
     setErrors({});
@@ -208,7 +227,7 @@ export default function UsersPage() {
     if (!validate()) return;
 
     const role = Number(form.role);
-    const department = form.department.trim() ? form.department.trim() : undefined;
+    const departmentId = form.departmentId ? Number(form.departmentId) : null;
 
     if (modal.editing) {
       const editing = modal.editing;
@@ -220,7 +239,7 @@ export default function UsersPage() {
         phone: form.phone.replace(/\s/g, ""),
         countryCode: form.countryCode,
         role,
-        department,
+        departmentId,
       });
 
       // Status changes apply via a separate mutation.
@@ -235,7 +254,7 @@ export default function UsersPage() {
         phone: form.phone.replace(/\s/g, ""),
         countryCode: form.countryCode,
         role,
-        department,
+        departmentId,
       });
     }
   }
@@ -396,6 +415,9 @@ export default function UsersPage() {
                     <td className="px-3.5 py-3 text-sm text-[#344054]">{u.email}</td>
                     <td className="px-3.5 py-3 text-sm text-[#344054]">
                       {u.department ?? "—"}
+                      {u.departmentActive === false && (
+                        <span className="ml-1 text-xs text-[#98A2B3]">(inactive)</span>
+                      )}
                     </td>
                     <td className="px-3.5 py-3 text-sm text-[#344054]">
                       {u.countryCode} {u.phone}
@@ -516,12 +538,22 @@ export default function UsersPage() {
           />
           <FormSelect
             label="Department"
-            options={DEPARTMENT_OPTIONS}
-            placeholder="— Select —"
-            value={form.department}
-            onChange={(e) => setForm({ ...form, department: e.target.value })}
+            options={departmentOptions}
+            placeholder={departmentsQuery.isLoading ? "Loading…" : "— None —"}
+            value={form.departmentId}
+            onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
           />
         </div>
+        <p className="-mt-1 text-xs text-[#667085]">
+          Departments are managed in{" "}
+          <Link
+            href="/admin/settings?section=departments"
+            className="font-semibold text-[#1570EF] hover:underline"
+          >
+            Settings → Departments
+          </Link>
+          .
+        </p>
 
         {modal.editing && (
           <FormSelect

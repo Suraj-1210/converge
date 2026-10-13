@@ -43,8 +43,28 @@ CREATE TABLE IF NOT EXISTS `organization` (
 
 
 -- -----------------------------------------------------
+-- department  (master list for cp_user.department_id; Settings -> Departments)
+-- Organisational only — access is decided by cp_user.role. Deactivate rather
+-- than delete; a delete is blocked while any cp_user still points here.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `department` (
+  `id`         INT          NOT NULL AUTO_INCREMENT,
+  `name`       VARCHAR(100) NOT NULL,
+  `is_active`  TINYINT      NOT NULL DEFAULT 1,
+  `sort_order` INT          NOT NULL DEFAULT 0,
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_department_name` (`name` ASC) VISIBLE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
 -- cp_user  (internal staff accounts; carries role)
 -- (renamed from collegepond_user)
+-- `department` is the legacy free-text column, frozen since
+-- 20261013120000_department_master and no longer written; department_id
+-- replaces it. Drop it once that migration has been live without a rollback.
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `cp_user` (
   `id`            INT NOT NULL AUTO_INCREMENT,
@@ -56,10 +76,15 @@ CREATE TABLE IF NOT EXISTS `cp_user` (
   `phone`         VARCHAR(45)  NOT NULL,
   `role`          TINYINT(8) UNSIGNED NOT NULL,
   `department`    VARCHAR(100) NULL DEFAULT NULL,
+  `department_id` INT NULL DEFAULT NULL,
   `status`        TINYINT(1) UNSIGNED NOT NULL DEFAULT 1,
   `last_login_at` TIMESTAMP NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `email_UNIQUE` (`email` ASC) VISIBLE
+  UNIQUE INDEX `email_UNIQUE` (`email` ASC) VISIBLE,
+  INDEX `fk_cp_user_department_idx` (`department_id` ASC) VISIBLE,
+  CONSTRAINT `fk_cp_user_department`
+    FOREIGN KEY (`department_id`) REFERENCES `department` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
 
