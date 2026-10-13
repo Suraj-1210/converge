@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
-  protectedPartnerProcedure,
+  payeeProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { encryptSecret } from "~/server/crypto";
@@ -57,26 +57,24 @@ function computeTax(subtotal: number, partnerGstin: string | null) {
   return { isInterstate: false, cgst, sgst, igst: 0, tds: 0, netPayable: round2(subtotal + cgst + sgst) };
 }
 
-async function requireOrgId(cpPartnerId: number): Promise<number> {
-  const u = await db.user.findUnique({
-    where: { id: cpPartnerId },
-    select: { org_id: true },
-  });
-  if (!u?.org_id) {
+// Every procedure here is payeeProcedure (agency owner or independent;
+// counsellors refused), so ctx.payee.orgId is the org whose money this is.
+function requireOrgId(orgId: number | null): number {
+  if (orgId === null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "Your account isn't linked to an organization, so invoices can't be raised yet.",
     });
   }
-  return u.org_id;
+  return orgId;
 }
 
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
 
 export const partnerCommissionRouter = createTRPCRouter({
   // Every commission for the partner's org, with a derived claim status.
-  listClaimable: protectedPartnerProcedure.query(async ({ ctx }) => {
-    const orgId = await requireOrgId(ctx.cpPartner.id);
+  listClaimable: payeeProcedure.query(async ({ ctx }) => {
+    const orgId = requireOrgId(ctx.payee.orgId);
     const comms = await db.commission.findMany({
       where: { org_id: orgId },
       orderBy: { id: "desc" },
@@ -202,8 +200,8 @@ export const partnerCommissionRouter = createTRPCRouter({
 
   // The partner's saved payout account. The raw account number / GSTIN / PAN are
   // encrypted at rest (crypto.ts); only the masked last-4 reaches the client.
-  bankAccount: protectedPartnerProcedure.query(async ({ ctx }) => {
-    const orgId = await requireOrgId(ctx.cpPartner.id);
+  bankAccount: payeeProcedure.query(async ({ ctx }) => {
+    const orgId = requireOrgId(ctx.payee.orgId);
     const [acct, org] = await Promise.all([
       db.partner_bank_account.findFirst({ where: { org_id: orgId }, orderBy: { id: "desc" } }),
       db.organization.findUnique({ where: { id: orgId }, select: { gst_number: true, pan: true, name: true } }),
@@ -246,7 +244,7 @@ export const partnerCommissionRouter = createTRPCRouter({
   // Verifications queue (and the admin bell), and no payout goes to it until
   // finance verifies it. Every save is audit-logged with the old and new
   // last 4 digits.
-  saveBankAccount: protectedPartnerProcedure
+  saveBankAccount: payeeProcedure
     .input(
       z
         .object({
@@ -290,7 +288,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         }),
     )
     .mutation(async ({ ctx, input }) => {
-      const orgId = await requireOrgId(ctx.cpPartner.id);
+      const orgId = requireOrgId(ctx.payee.orgId);
       const intl = input.region === "international";
       const last4 = input.accountNumber.slice(-4);
       const data = {
@@ -347,7 +345,7 @@ export const partnerCommissionRouter = createTRPCRouter({
     }),
 
   // Generate a GST tax invoice for the selected claimable commissions.
-  generateInvoice: protectedPartnerProcedure
+  generateInvoice: payeeProcedure
     .input(
       z.object({
         commissionIds: z.array(z.number().int().positive()).min(1),
@@ -367,7 +365,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const orgId = await requireOrgId(ctx.cpPartner.id);
+      const orgId = requireOrgId(ctx.payee.orgId);
       const bank = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
         orderBy: { id: "desc" },
@@ -467,10 +465,10 @@ export const partnerCommissionRouter = createTRPCRouter({
     }),
 
   // Tax preview for the wizard (no write).
-  taxPreview: protectedPartnerProcedure
+  taxPreview: payeeProcedure
     .input(z.object({ commissionIds: z.array(z.number().int().positive()), gstin: z.string().optional() }))
     .query(async ({ ctx, input }) => {
-      const orgId = await requireOrgId(ctx.cpPartner.id);
+      const orgId = requireOrgId(ctx.payee.orgId);
       const comms = await db.commission.findMany({
         where: { id: { in: input.commissionIds }, org_id: orgId },
         select: {
@@ -499,10 +497,10 @@ export const partnerCommissionRouter = createTRPCRouter({
     }),
 
   // Per-commission detail for the student modal: payment timeline + its invoice.
-  studentDetail: protectedPartnerProcedure
+  studentDetail: payeeProcedure
     .input(z.object({ commissionId: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
-      const orgId = await requireOrgId(ctx.cpPartner.id);
+      const orgId = requireOrgId(ctx.payee.orgId);
       const c = await db.commission.findFirst({
         where: { id: input.commissionId, org_id: orgId },
         include: {
@@ -546,8 +544,8 @@ export const partnerCommissionRouter = createTRPCRouter({
 
   // Per-financial-year aggregates for the year-over-year card + the loyalty tier
   // (tier is derived from the count of students in the current FY).
-  yearlyStats: protectedPartnerProcedure.query(async ({ ctx }) => {
-    const orgId = await requireOrgId(ctx.cpPartner.id);
+  yearlyStats: payeeProcedure.query(async ({ ctx }) => {
+    const orgId = requireOrgId(ctx.payee.orgId);
     const comms = await db.commission.findMany({
       where: { org_id: orgId },
       select: {
@@ -578,8 +576,8 @@ export const partnerCommissionRouter = createTRPCRouter({
       .sort((a, b) => a.fy - b.fy);
   }),
 
-  invoiceHistory: protectedPartnerProcedure.query(async ({ ctx }) => {
-    const orgId = await requireOrgId(ctx.cpPartner.id);
+  invoiceHistory: payeeProcedure.query(async ({ ctx }) => {
+    const orgId = requireOrgId(ctx.payee.orgId);
     const invoices = await db.invoice.findMany({
       where: { org_id: orgId },
       orderBy: { invoice_date: "desc" },

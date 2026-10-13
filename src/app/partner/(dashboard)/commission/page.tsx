@@ -201,7 +201,23 @@ function InvoiceStatusPill({ status }: { status: number }) {
 type CardFilter = "all" | "not-invoiced" | "invoiced" | "available";
 
 // =============================================================================
+// Commission, claims and payouts belong to the agency, so only its owner (or
+// an independent, for themselves) sees this page; the server refuses agency
+// counsellors too.
 export default function PartnerCommissionPage() {
+  const me = api.auth.me.useQuery(undefined, { retry: false });
+  if (!me.data) return null;
+  if (me.data.kind === "counsellor") {
+    return (
+      <div className="rounded-xl border border-[#E4E7EC] bg-white p-6 text-sm text-[#475467]">
+        Commission and payouts are managed by your agency&apos;s owner.
+      </div>
+    );
+  }
+  return <CommissionContent />;
+}
+
+function CommissionContent() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [wizard, setWizard] = useState(false);
   const [detailFor, setDetailFor] = useState<Claim | null>(null);

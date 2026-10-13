@@ -310,3 +310,25 @@ export const agencyOwnerProcedure = protectedPartnerProcedure.use(async ({ ctx, 
   }
   return next({ ctx: { ...ctx, owner: { id: me.id, orgId: me.org_id } } });
 });
+
+// The partner who is paid commission: an agency owner for their own agency,
+// or an independent counsellor for themselves. Guards everything about
+// commission, claims, invoices and the payout bank account — agency
+// counsellors are refused (the money is the agency's, not theirs). Adds
+// ctx.payee; orgId may still be null for an independent with no org.
+export const payeeProcedure = protectedPartnerProcedure.use(async ({ ctx, next }) => {
+  const me = await ctx.db.user.findUnique({
+    where: { id: ctx.cpPartner.id },
+    select: { id: true, type: true, is_owner: true, org_id: true },
+  });
+  const isOwner =
+    me?.type === UserType.AGENCY_OWNER && me.is_owner === 1 && me.org_id !== null;
+  const isIndependent = me?.type === UserType.INDEPENDENT_COUNSELLOR;
+  if (!me || !(isOwner || isIndependent)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only your agency's owner can view commission or manage payouts.",
+    });
+  }
+  return next({ ctx: { ...ctx, payee: { id: me.id, orgId: me.org_id } } });
+});

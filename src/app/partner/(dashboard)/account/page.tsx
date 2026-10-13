@@ -154,6 +154,8 @@ export default function PartnerAccountPage() {
       : data.partnerType === "counsellor"
         ? ["profile", "notifications"]
         : ["profile", "bank", "documents", "loyalty", "notifications"];
+  // A deep link (?tab=bank) can name a tab this partner doesn't get.
+  const activeTab: TabKey = tabs.includes(tab) ? tab : "profile";
 
   const handlePhotoSelect = async (file: File) => {
     if (!["image/jpeg", "image/png"].includes(file.type)) {
@@ -233,7 +235,7 @@ export default function PartnerAccountPage() {
             type="button"
             onClick={() => setTab(t)}
             className={`-mb-0.5 cursor-pointer border-b-2 bg-transparent px-6 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${
-              tab === t
+              activeTab === t
                 ? "border-[#1570EF] text-[#1570EF]"
                 : "border-transparent text-[#667085] hover:text-[#1570EF]"
             }`}
@@ -243,7 +245,7 @@ export default function PartnerAccountPage() {
         ))}
       </div>
 
-      {tab === "profile" && (
+      {activeTab === "profile" && (
         <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
           {/* Photo */}
           <div className="mb-6 flex items-center gap-5 border-b border-[#F2F4F7] pb-6">
@@ -397,7 +399,7 @@ export default function PartnerAccountPage() {
         </div>
       )}
 
-      {tab === "business" && data.business && (
+      {activeTab === "business" && data.business && (
         <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
           <p className="mb-5 text-xs text-[#98A2B3]">
             Business information is managed by Collegepond. To request changes,
@@ -419,11 +421,11 @@ export default function PartnerAccountPage() {
         </div>
       )}
 
-      {tab === "bank" && <BankDetailsTab onToast={showToast} />}
+      {activeTab === "bank" && <BankDetailsTab onToast={showToast} />}
 
-      {tab === "loyalty" && <LoyaltyTab />}
+      {activeTab === "loyalty" && <LoyaltyTab />}
 
-      {tab === "documents" && (
+      {activeTab === "documents" && (
         <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
           <div className="mb-4">
             <h3 className="text-base font-semibold text-[#101828]">
@@ -544,7 +546,7 @@ export default function PartnerAccountPage() {
         </div>
       )}
 
-      {tab === "notifications" && (
+      {activeTab === "notifications" && (
         <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
           {/* Column header */}
           <div className="mb-4 flex items-center border-b border-[#F2F4F7] pb-3 pl-1">

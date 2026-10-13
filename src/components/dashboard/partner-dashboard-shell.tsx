@@ -26,12 +26,17 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   });
 
   // Managing the team is the agency owner's job; counsellors and independents
-  // don't get the Counsellors page (the server refuses them anyway).
+  // don't get the Counsellors page. Commission is the agency's money, so
+  // agency counsellors don't get it either (the server refuses both anyway).
   const kind = me.data?.kind;
   const sections = PARTNER_NAV_SECTIONS.map((sec) => ({
     ...sec,
-    items: sec.items.filter((i) => i.href !== "/partner/counsellors" || kind === "agency"),
-  }));
+    items: sec.items.filter(
+      (i) =>
+        (i.href !== "/partner/counsellors" || kind === "agency") &&
+        (i.href !== "/partner/commission" || (kind !== undefined && kind !== "counsellor")),
+    ),
+  })).filter((sec) => sec.items.length > 0);
 
   const userName =
     `${me.data?.firstName ?? ""} ${me.data?.lastName ?? ""}`.trim() ||

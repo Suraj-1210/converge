@@ -233,7 +233,10 @@ export default function PartnerDashboardPage() {
         {/* Quick Links — real navigation */}
         <DashboardCard title="Quick Links">
           <div className="grid grid-cols-2 gap-2 text-[13px]">
-            {QUICK_LINKS.map((l) => (
+            {/* Commission is the agency's (owner-only); counsellors don't get it. */}
+            {QUICK_LINKS.filter(
+              (l) => l.href !== "/partner/commission" || me.data?.kind !== "counsellor",
+            ).map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
