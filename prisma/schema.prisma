@@ -580,9 +580,12 @@ model collegepond_user {
   email                                                       String                @unique(map: "email_UNIQUE") @db.VarChar(125)
   phone                                                       String                @db.VarChar(45)
   role                                                        Int                   @db.UnsignedTinyInt
-  department                                                  String?               @db.VarChar(100)
+  // The legacy free-text `department` column still exists in cp_user but is
+  // frozen and deliberately not modelled — see the department_master migration.
+  department_id                                               Int?
   status                                                      Int                   @default(1) @db.UnsignedTinyInt
   last_login_at                                               DateTime?             @db.Timestamp(0)
+  department                                                  department?           @relation(fields: [department_id], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_cp_user_department")
   user_user_approved_by_collegepond_user_idTocollegepond_user user[]                @relation("user_approved_by_collegepond_user_idTocollegepond_user")
   user_user_bdm_idTocollegepond_user                          user[]                @relation("user_bdm_idTocollegepond_user")
   user_user_counsellor_idTocollegepond_user                   user[]                @relation("user_counsellor_idTocollegepond_user")
@@ -597,7 +600,20 @@ model collegepond_user {
   bdm_task_assigned                                           bdm_task[]            @relation("bdm_task_assignee")
   bdm_task_created                                            bdm_task[]            @relation("bdm_task_creator")
 
+  @@index([department_id], map: "fk_cp_user_department_idx")
   @@map("cp_user")
+}
+
+// Department master for internal staff (Settings -> Departments, Super Admin).
+// Organisational only — permissions come from collegepond_user.role.
+model department {
+  id         Int                @id @default(autoincrement())
+  name       String             @unique(map: "uq_department_name") @db.VarChar(100)
+  is_active  Int                @default(1) @db.TinyInt
+  sort_order Int                @default(0)
+  created_at DateTime           @default(now()) @db.Timestamp(0)
+  updated_at DateTime           @default(now()) @updatedAt @db.Timestamp(0)
+  cp_user    collegepond_user[]
 }
 
 // Tasks & Notes tab — one row is either a note (is_task 0) or a task

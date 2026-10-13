@@ -10,15 +10,19 @@ import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { Icon } from "~/components/dashboard/widgets";
 import { AdminRole } from "~/server/db/enums";
+import { DepartmentsPanel } from "./departments-panel";
 
 const SECTIONS = [
   { id: "general", icon: "bolt", label: "General Settings" },
   { id: "notifications", icon: "approvals", label: "Notification Preferences" },
   { id: "data", icon: "applications", label: "Data Management" },
   { id: "fx", icon: "revenue", label: "Exchange Rates" },
+  { id: "departments", icon: "partners", label: "Departments" },
   { id: "system", icon: "globe", label: "System Info" },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"];
+// Master data only a Super Admin may see or manage.
+const SUPER_ADMIN_SECTIONS: readonly SectionId[] = ["departments"];
 
 const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -88,7 +92,13 @@ export default function SettingsPage() {
   const canEdit = !mounted || role === AdminRole.SUPER_ADMIN;
   const canEditFx = !mounted || role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_MANAGER;
 
+  const isSuperAdmin = role === AdminRole.SUPER_ADMIN;
   const [section, setSection] = useState<SectionId>("general");
+  // Gated on `mounted`: the role is only known client-side, and the first
+  // client render must match the server's or hydration fails.
+  const visibleSections = SECTIONS.filter(
+    (s) => (mounted && isSuperAdmin) || !SUPER_ADMIN_SECTIONS.includes(s.id),
+  );
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
   const toast = (m: string) => { setToastMsg(m); setToastOpen(true); };
@@ -145,6 +155,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setMounted(true);
+    // Deep link, e.g. /admin/settings?section=departments from the Users form.
+    const wanted = new URLSearchParams(window.location.search).get("section");
+    const match = SECTIONS.find((s) => s.id === wanted);
+    if (match) setSection(match.id);
     // System info (browser-derived)
     const ua = navigator.userAgent;
     const browser = ua.includes("Edg") ? "Edge" : ua.includes("Chrome") ? "Chrome" : ua.includes("Firefox") ? "Firefox" : ua.includes("Safari") ? "Safari" : "Unknown";
@@ -215,7 +229,7 @@ export default function SettingsPage() {
       <div className="flex flex-col gap-6 lg:flex-row">
         {/* Left nav */}
         <nav className="w-full shrink-0 lg:w-56">
-          {SECTIONS.map((s) => (
+          {visibleSections.map((s) => (
             <button
               key={s.id}
               onClick={() => setSection(s.id)}
@@ -388,6 +402,16 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-[#98A2B3]">Live mid-market from open.er-api.com; effective rate = mid − your bank margin (or a manual override). Booked amounts should use the realized FIRC rate (separate, with the finance module).</p>
             </div>
+          )}
+
+          {section === "departments" && (
+            isSuperAdmin ? (
+              <DepartmentsPanel toast={toast} />
+            ) : (
+              <div className={`${CARD} p-5`}>
+                <AdminNotice show text={meQ.isLoading ? "Loading…" : "Only Super Admins can view or manage departments"} />
+              </div>
+            )
           )}
 
           {section === "system" && (
