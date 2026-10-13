@@ -143,9 +143,14 @@ CREATE TABLE IF NOT EXISTS `user` (
   INDEX `fk_user_collegepond_user1_idx1`     (`lead_counsellor_id` ASC) VISIBLE,
   INDEX `fk_user_collegepond_user2_idx`      (`counsellor_id` ASC) VISIBLE,
   INDEX `fk_user_collegepond_user_bdm_idx`   (`bdm_id` ASC) VISIBLE,
-  CONSTRAINT `fk_user_organization`
+  -- RESTRICT, not CASCADE: MySQL won't CHECK a column with a cascading key,
+  -- and deleting an agency shouldn't silently delete its people.
+  CONSTRAINT `fk_user_org`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
-    ON DELETE CASCADE ON UPDATE CASCADE,
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  -- Agency owner/counsellor ⇔ has an org; independent ⇔ none (admins exempt).
+  CONSTRAINT `chk_user_partner_org`
+    CHECK (`type` NOT IN (0, 1, 2) OR ((`type` = 2) = (`org_id` IS NULL))),
   CONSTRAINT `fk_user_approved_by_collegepond_user`
     FOREIGN KEY (`approved_by_cp_user_id`) REFERENCES `cp_user` (`id`)
     ON DELETE SET NULL ON UPDATE CASCADE,
