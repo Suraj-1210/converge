@@ -35,6 +35,7 @@ const ACTION_STRINGS = [
   "event.created", "event.deleted", "event.updated",
   "export.downloaded",
   "impersonation.ended", "impersonation.started",
+  "partner.documents_approved", "partner.status_updated",
   "student.academics_updated", "student.application_created", "student.cp_counsellor_assigned", "student.document_removed", "student.document_uploaded", "student.profile_updated", "student.shortlist_removed", "student.shortlisted", "student.status_updated", "student.tests_updated", "student.work_experience_updated",
 ];
 

@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { BANK_PROOF_LABELS } from "~/lib/constants/partner-labels";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
@@ -571,7 +572,7 @@ function ReconPanel({
                   </div>
                 )}
                 <div>
-                  {payout.bank.region === "international" ? "Bank letter" : "Cancelled cheque"}:{" "}
+                  {BANK_PROOF_LABELS[payout.bank.region === "international" ? "international" : "domestic"]}:{" "}
                   {payout.bank.proofUrl ? (
                     <a href={payout.bank.proofUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-[#1570EF] hover:underline">
                       {payout.bank.proofFileName ?? "View"}

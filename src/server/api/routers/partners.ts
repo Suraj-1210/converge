@@ -27,7 +27,8 @@ import {
 } from "~/server/applications/store";
 import { normalizePan, panError } from "~/lib/utils/pan";
 import { DocumentStatus, UserStatus, UserType } from "~/server/db/enums";
-import { PARTNER_DOC_SLOTS, partnerDocLabel } from "~/lib/constants/partner-documents";
+import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
 // Who to tell about a rejected document: the uploader for a personal doc, the
 // agency owner(s) for a company doc. Applicants are usually still under
@@ -40,6 +41,14 @@ async function documentRecipients(doc: { user_id: number | null; org_id: number 
     select: { email: true, first_name: true, last_name: true, status: true, organization: { select: { name: true } } },
   });
   return users.filter((u) => u.status !== UserStatus.INACTIVE);
+}
+
+// Which partner type a document belongs to, for its label: company documents
+// are an agency's; a personal one follows its uploader.
+async function docRole(doc: { user_id: number | null; org_id: number | null }) {
+  if (!doc.user_id) return "agency" as const;
+  const u = await db.user.findUnique({ where: { id: doc.user_id }, select: { type: true } });
+  return u?.type === UserType.AGENCY_OWNER ? ("agency" as const) : ("independent" as const);
 }
 
 const partnerStatus = z.enum([
@@ -115,11 +124,14 @@ export const partnersRouter = createTRPCRouter({
         { message: "A reason is required to decline or deactivate a partner.", path: ["reason"] },
       ),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Approving also verifies the partner's pending documents, in the same
+      // transaction (see setApplicationStatus).
       const app = await setApplicationStatus(
         input.email,
         input.status,
         input.reason ?? null,
+        ctx.cpUser.id,
       );
       if (!app) {
         throw new TRPCError({
@@ -238,8 +250,8 @@ export const partnersRouter = createTRPCRouter({
       // doesn't send the partner a second copy.
       let emailSent: boolean | null = null;
       if (before && input.status === "rejected" && before.status !== DocumentStatus.REJECTED) {
-        const label = partnerDocLabel(before.doc_type);
         const recipients = await documentRecipients(before);
+        const label = partnerDocLabel(before.doc_type, await docRole(before));
         emailSent = false;
         for (const u of recipients) {
           try {
@@ -282,23 +294,32 @@ export const partnersRouter = createTRPCRouter({
       });
       if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found" });
       const role = user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
-      const slot = PARTNER_DOC_SLOTS[role].find((s) => s.key === input.slot);
+      const slot = PARTNER_DOC_SLOTS[role].find((s) => s.key === input.slot && s.atSignup);
       if (!slot) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "That document type doesn't apply to this partner." });
       }
       const orgDoc = slot.orgDoc && user.org_id != null;
+      const owner = orgDoc ? { org_id: user.org_id } : { user_id: user.id };
 
-      const doc = await db.document.create({
-        data: {
-          file_name: input.fileName,
-          file_url: input.fileUrl,
-          doc_type: slot.key,
-          status: DocumentStatus.PENDING,
-          is_org_document: orgDoc ? 1 : 0,
-          user_id: orgDoc ? null : user.id,
-          org_id: orgDoc ? user.org_id : null,
-        },
-        select: { id: true },
+      // The new file replaces any earlier one of the same type as the
+      // partner's current document (is_most_recent); the old row is kept.
+      const doc = await db.$transaction(async (tx) => {
+        await tx.document.updateMany({
+          where: { ...owner, doc_type: slot.key, is_most_recent: 1, student_id: null },
+          data: { is_most_recent: 0 },
+        });
+        return tx.document.create({
+          data: {
+            file_name: input.fileName,
+            file_url: input.fileUrl,
+            doc_type: slot.key,
+            status: DocumentStatus.PENDING,
+            is_org_document: orgDoc ? 1 : 0,
+            user_id: orgDoc ? null : user.id,
+            org_id: orgDoc ? user.org_id : null,
+          },
+          select: { id: true },
+        });
       });
       // A logo / profile photo is also the displayed image.
       if (slot.key === "logo" && user.org_id) {

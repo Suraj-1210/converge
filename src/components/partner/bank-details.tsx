@@ -6,6 +6,7 @@ import { FileUpload } from "~/components/ui/file-upload";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { BANK_PROOF_LABELS } from "~/lib/constants/partner-labels";
 
 // The partner's payout bank account: one form and one summary, used by the
 // Account page (Bank Details tab) and the commission invoice wizard.
@@ -49,7 +50,7 @@ export function BankAccountSummary({ bank }: { bank: BankOnFile }) {
     [intl ? "SWIFT / BIC" : "IFSC", intl ? bank.swift : bank.ifsc],
     ...(intl ? ([["Bank country", bank.bankCountry], ["Bank address", bank.bankAddress]] as [string, string | null][]) : []),
     ["Account type", bank.accountType],
-    [intl ? "Bank letter" : "Cancelled cheque", bank.hasProof ? (bank.proofFileName ?? "Uploaded") : "Not uploaded"],
+    [BANK_PROOF_LABELS[intl ? "international" : "domestic"], bank.hasProof ? (bank.proofFileName ?? "Uploaded") : "Not uploaded"],
   ];
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
@@ -227,7 +228,7 @@ export function BankDetailsForm({
       </div>
 
       <FileUpload
-        label={intl ? "Bank Letter or Statement" : "Cancelled Cheque"}
+        label={intl ? "Bank Letter or Statement" : BANK_PROOF_LABELS.domestic}
         required
         hint={
           intl

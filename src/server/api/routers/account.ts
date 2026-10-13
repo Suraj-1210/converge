@@ -10,18 +10,7 @@ import {
   DEFAULT_NOTIFICATION_PREF,
   NOTIFICATION_PREF_ROWS,
 } from "~/lib/constants/notification-prefs";
-
-// Slot key (as stored in document.doc_type) → human label for the docs tab.
-const DOC_TYPE_LABELS: Record<string, string> = {
-  companyPan: "Company PAN Card",
-  pan: "PAN Card",
-  aadhaar: "Aadhaar Card",
-  cancelledCheque: "Cancelled Cheque",
-  partnershipDocs: "Partnership Document",
-  logo: "Company Logo",
-  gst: "GST Certificate",
-  profilePhoto: "Profile Photo",
-};
+import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
 type DocStatusLabel = "pending" | "approved" | "rejected";
 function docStatusLabel(code: number): DocStatusLabel {
@@ -49,7 +38,8 @@ export const accountRouter = createTRPCRouter({
       where: { id: ctx.cpPartner.id },
       include: {
         organization: true,
-        document: true,
+        // Current documents only; a file an admin replaced isn't listed.
+        document: { where: { is_most_recent: 1 } },
       },
     });
     if (!user) {
@@ -64,7 +54,7 @@ export const accountRouter = createTRPCRouter({
     const userDocs = user.document.map((d) => ({
       id: d.id,
       slot: d.doc_type,
-      label: DOC_TYPE_LABELS[d.doc_type] ?? d.doc_type,
+      label: partnerDocLabel(d.doc_type, partnerType),
       fileName: d.file_name,
       fileUrl: resolveStorageUrl(d.file_url),
       status: docStatusLabel(d.status),
@@ -74,12 +64,12 @@ export const accountRouter = createTRPCRouter({
     let orgDocs: typeof userDocs = [];
     if (user.org_id) {
       const docs = await ctx.db.document.findMany({
-        where: { org_id: user.org_id },
+        where: { org_id: user.org_id, is_most_recent: 1 },
       });
       orgDocs = docs.map((d) => ({
         id: d.id,
         slot: d.doc_type,
-        label: DOC_TYPE_LABELS[d.doc_type] ?? d.doc_type,
+        label: partnerDocLabel(d.doc_type, partnerType),
         fileName: d.file_name,
         fileUrl: resolveStorageUrl(d.file_url),
         status: docStatusLabel(d.status),

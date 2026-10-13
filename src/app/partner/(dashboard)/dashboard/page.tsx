@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "~/trpc/react";
@@ -144,8 +144,9 @@ export default function PartnerDashboardPage() {
           )}
         </DashboardCard>
 
-        {/* Your Collegepond team — counsellor, counsellor lead (deliberately
-            unlabelled, counsellor first), then the BDM. */}
+        {/* Your Collegepond team — under a "Counselling Team" heading, the
+            counsellor then the counsellor lead (individually unlabelled), then
+            the BDM under their own heading. */}
         <DashboardCard title="Your Collegepond Team">
           {isLoading ? (
             <div className="space-y-3">
@@ -158,14 +159,19 @@ export default function PartnerDashboardPage() {
             </div>
           ) : contacts.length || bdm ? (
             <div className="space-y-3 text-[13px]">
-              {contacts.map((c) => (
-                <TeamContact key={c.name} name={c.name} phone={c.phone} />
-              ))}
+              {contacts.length > 0 && (
+                <div>
+                  <TeamHeading>Counselling Team</TeamHeading>
+                  <div className="space-y-3">
+                    {contacts.map((c) => (
+                      <TeamContact key={c.name} name={c.name} phone={c.phone} />
+                    ))}
+                  </div>
+                </div>
+              )}
               {bdm && (
                 <div className={contacts.length ? "border-t border-[#EAECF0] pt-3" : ""}>
-                  <div className="mb-2 text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
-                    Business Development Manager
-                  </div>
+                  <TeamHeading>Business Development Manager</TeamHeading>
                   <TeamContact name={bdm.name} phone={bdm.phone} />
                 </div>
               )}
@@ -275,6 +281,14 @@ export default function PartnerDashboardPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function TeamHeading({ children }: { children: ReactNode }) {
+  return (
+    <div className="mb-2 text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+      {children}
+    </div>
   );
 }
 

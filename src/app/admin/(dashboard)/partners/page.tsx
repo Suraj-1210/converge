@@ -4,9 +4,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
-import { AdminRole } from "~/server/db/enums";
+import { AdminRole, counsellorRangeLabel, volumeRangeLabel } from "~/server/db/enums";
 import { normalizePan, panError } from "~/lib/utils/pan";
-import { PARTNER_DOC_SLOTS, partnerDocLabel } from "~/lib/constants/partner-documents";
+import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 
@@ -84,6 +85,13 @@ const REJECT_REASONS = [
   { value: "verification_failed", label: "Verification Failed" },
   { value: "duplicate", label: "Duplicate Account" },
   { value: "policy_violation", label: "Policy Violation" },
+  { value: "invalid_pan", label: "Missing or invalid PAN card" },
+  { value: "invalid_bank", label: "Incorrect or unverifiable bank account details" },
+  { value: "invalid_gst", label: "Incorrect or invalid GST details" },
+  { value: "fake_docs", label: "Fake or unverifiable documents submitted" },
+  { value: "restricted_country", label: "Registration is from a restricted country or region" },
+  { value: "restricted_area", label: "Partner is located in a restricted area" },
+  { value: "unreadable_docs", label: "Unclear or unreadable documents" },
   { value: "other", label: "Other" },
 ];
 
@@ -132,8 +140,8 @@ function formatDate(iso: string): string {
 // Items the admin can request from a partner. Required signup docs are
 // excluded — they're enforced at signup and shouldn't show up here.
 const REQUEST_INFO_ITEMS: { label: string; category: string }[] = [
-  { label: "GST Certificate", category: "Optional Documents" },
-  { label: "Company Logo", category: "Optional Documents" },
+  { label: partnerDocLabel("gst"), category: "Optional Documents" },
+  { label: partnerDocLabel("logo"), category: "Optional Documents" },
   { label: "Company Website URL", category: "Additional Information" },
   { label: "Updated Company Address", category: "Additional Information" },
   { label: "Number of Counselors", category: "Additional Information" },
@@ -647,8 +655,10 @@ export default function PartnersPage() {
           }}
           onUploaded={() => {
             void utils.partners.list.invalidate();
-            showToast("Document added — verify it from the pending review card");
+            showToast("Document added — verify it from the Documents list");
           }}
+          onSetDocStatus={(documentId, status) => setDocStatus.mutate({ documentId, status })}
+          savingDoc={setDocStatus.isPending}
           savingStatus={setStatus.isPending}
           onSendMouReminder={() => mouReminder.mutate({ email: detailPartner.email })}
           sendingMouReminder={mouReminder.isPending}
@@ -994,6 +1004,40 @@ function DocStatusBadge({ status }: { status: DocStatus }) {
   );
 }
 
+// Per-document Verify / Reject, on the pending card and the detail slide-over.
+function DocActions({
+  status,
+  busy,
+  onSet,
+}: {
+  status: DocStatus;
+  busy: boolean;
+  onSet: (status: DocStatus) => void;
+}) {
+  return (
+    <>
+      {status !== "approved" && (
+        <button
+          onClick={() => onSet("approved")}
+          disabled={busy}
+          className="ml-1 cursor-pointer rounded px-2 py-1 text-xs font-semibold text-[#067647] hover:bg-[#ECFDF3] disabled:opacity-50"
+        >
+          Verify
+        </button>
+      )}
+      {status !== "rejected" && (
+        <button
+          onClick={() => onSet("rejected")}
+          disabled={busy}
+          className="ml-1 cursor-pointer rounded px-2 py-1 text-xs font-semibold text-[#F04438] hover:bg-[#FEF3F2] disabled:opacity-50"
+        >
+          Reject
+        </button>
+      )}
+    </>
+  );
+}
+
 // Agency logo, else the person's photo, else initials (also on a broken image).
 function Avatar({ partner }: { partner: Partner }) {
   const src = partner.logoUrl ?? partner.avatarUrl;
@@ -1060,9 +1104,9 @@ function PendingCard({
       </div>
 
       <div className="mb-4 grid grid-cols-1 gap-4 rounded-lg bg-[#F9FAFB] p-4 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailItem label="Contact Email" value={p.email} />
+        <DetailItem label={FIELD.email} value={p.email} />
         <DetailItem
-          label="Phone"
+          label={FIELD.phone}
           value={p.phone ? `${p.countryCode} ${p.phone}` : "—"}
         />
         <DetailItem label="Signup Date" value={formatDate(p.submittedAt)} />
@@ -1095,7 +1139,7 @@ function PendingCard({
               <tbody>
                 {docs.map((d) => (
                   <tr key={d.id} className="border-b border-[#F2F4F7] last:border-b-0">
-                    <td className="px-3 py-2 text-[#344054]">{d.type}</td>
+                    <td className="px-3 py-2 text-[#344054]">{partnerDocLabel(d.type, p.role)}</td>
                     <td className="px-3 py-2 text-[#667085]">{d.fileName}</td>
                     <td className="px-3 py-2">
                       <DocStatusBadge status={d.status} />
@@ -1109,24 +1153,11 @@ function PendingCard({
                       >
                         View
                       </a>
-                      {d.status !== "approved" && (
-                        <button
-                          onClick={() => onSetDocStatus(d.id, "approved")}
-                          disabled={busy}
-                          className="ml-1 cursor-pointer rounded px-2 py-1 text-xs font-semibold text-[#067647] hover:bg-[#ECFDF3] disabled:opacity-50"
-                        >
-                          Verify
-                        </button>
-                      )}
-                      {d.status !== "rejected" && (
-                        <button
-                          onClick={() => onSetDocStatus(d.id, "rejected")}
-                          disabled={busy}
-                          className="ml-1 cursor-pointer rounded px-2 py-1 text-xs font-semibold text-[#F04438] hover:bg-[#FEF3F2] disabled:opacity-50"
-                        >
-                          Reject
-                        </button>
-                      )}
+                      <DocActions
+                        status={d.status}
+                        busy={busy}
+                        onSet={(status) => onSetDocStatus(d.id, status)}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -1296,6 +1327,8 @@ function PartnerDetailSlideOver({
   onReopen,
   onApprove,
   onUploaded,
+  onSetDocStatus,
+  savingDoc,
   savingStatus,
   onSendMouReminder,
   sendingMouReminder,
@@ -1314,6 +1347,8 @@ function PartnerDetailSlideOver({
   onReopen: () => void;
   onApprove: () => void;
   onUploaded: () => void;
+  onSetDocStatus: (documentId: number, status: DocStatus) => void;
+  savingDoc: boolean;
   savingStatus: boolean;
   onSendMouReminder: () => void;
   sendingMouReminder: boolean;
@@ -1359,19 +1394,19 @@ function PartnerDetailSlideOver({
           {/* Contact */}
           <Section title="Contact">
             <div className="grid grid-cols-2 gap-4">
-              <DetailItem label="Email" value={p.email} />
+              <DetailItem label={FIELD.email} value={p.email} />
               <DetailItem
-                label="Phone"
+                label={FIELD.phone}
                 value={`${p.countryCode ?? ""} ${p.phone}`.trim() || "—"}
               />
-              <DetailItem label="City" value={p.city ?? "—"} />
+              <DetailItem label={FIELD.city} value={p.city ?? "—"} />
               <DetailItem
-                label="State / Country"
+                label={`${FIELD.state} / ${FIELD.country}`}
                 value={[p.state, p.country].filter(Boolean).join(", ") || "—"}
               />
               {p.address && (
                 <div className="col-span-2">
-                  <DetailItem label="Address" value={p.address} />
+                  <DetailItem label={isAgency ? FIELD.address : "Address"} value={p.address} />
                 </div>
               )}
             </div>
@@ -1381,29 +1416,25 @@ function PartnerDetailSlideOver({
           {isAgency && (
             <Section title="Company">
               <div className="grid grid-cols-2 gap-4">
-                <DetailItem label="Company" value={p.companyName ?? "—"} />
-                <DetailItem label="Website" value={p.website ?? "—"} />
+                <DetailItem label={FIELD.companyName} value={p.companyName ?? "—"} />
+                <DetailItem label={FIELD.website} value={p.website ?? "—"} />
                 <DetailItem
-                  label="Counsellors"
-                  value={p.numCounsellors != null ? String(p.numCounsellors) : "—"}
+                  label={FIELD.numCounsellors}
+                  value={counsellorRangeLabel(p.numCounsellors) ?? "—"}
                 />
                 <DetailItem
-                  label="Annual Volume"
-                  value={
-                    p.annualStudentVolume != null
-                      ? String(p.annualStudentVolume)
-                      : "—"
-                  }
+                  label={FIELD.annualStudentVolume}
+                  value={volumeRangeLabel(p.annualStudentVolume) ?? "—"}
                 />
                 <DetailItem
-                  label="GST Registered"
+                  label={FIELD.gstRegistered}
                   value={
                     p.gstRegistered == null ? "—" : p.gstRegistered ? "Yes" : "No"
                   }
                 />
                 <DetailItem label="GSTIN" value={p.gstNumber ?? "—"} />
                 <PanEditor
-                  label="Company PAN"
+                  label={FIELD.companyPan}
                   pan={p.pan}
                   holder="agency"
                   saving={savingPan}
@@ -1418,7 +1449,7 @@ function PartnerDetailSlideOver({
             <Section title="Tax">
               <div className="grid grid-cols-2 gap-4">
                 <PanEditor
-                  label="PAN"
+                  label={FIELD.pan}
                   pan={p.pan}
                   holder="individual"
                   saving={savingPan}
@@ -1504,7 +1535,7 @@ function PartnerDetailSlideOver({
                   >
                     <div className="min-w-0">
                       <div className="text-[11px] font-semibold text-[#667085]">
-                        {partnerDocLabel(d.type)}
+                        {partnerDocLabel(d.type, p.role)}
                       </div>
                       <a
                         href={d.url}
@@ -1515,7 +1546,14 @@ function PartnerDetailSlideOver({
                         {d.fileName}
                       </a>
                     </div>
-                    <DocStatusBadge status={d.status} />
+                    <div className="flex shrink-0 items-center">
+                      <DocStatusBadge status={d.status} />
+                      <DocActions
+                        status={d.status}
+                        busy={savingDoc}
+                        onSet={(status) => onSetDocStatus(d.id, status)}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1574,7 +1612,11 @@ function PartnerDetailSlideOver({
 // until approved). Uploads to the admin-only partner-docs folder, then links
 // the file to the partner as the chosen document type.
 function AddDocument({ partner, onUploaded }: { partner: Partner; onUploaded: () => void }) {
-  const slots = PARTNER_DOC_SLOTS[partner.role === "agency" ? "agency" : "independent"];
+  // Only what sign-up collects: the cancelled cheque now belongs with the
+  // partner's bank details (My Account → Financial Details), not here.
+  const slots = PARTNER_DOC_SLOTS[partner.role === "agency" ? "agency" : "independent"].filter(
+    (s) => s.atSignup,
+  );
   const [slot, setSlot] = useState(slots[0]?.key ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

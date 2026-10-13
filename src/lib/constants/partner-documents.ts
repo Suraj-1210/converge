@@ -1,7 +1,9 @@
 // The partner (agency / independent) KYC document slots, in one place so the
 // signup form, the partner status page, admin uploads and emails agree on
-// names and on which documents are required. `document.doc_type` stores the
-// slot key.
+// which documents are required. `document.doc_type` stores the slot key; the
+// display names come from the label dictionary (partner-labels.ts).
+
+import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
 export type PartnerRole = "agency" | "independent";
 
@@ -25,26 +27,17 @@ const never = () => false;
 // cheques uploaded at sign-up before this change still show by name.
 export const PARTNER_DOC_SLOTS: Record<PartnerRole, PartnerDocSlot[]> = {
   agency: [
-    { key: "companyPan", label: "Company PAN Card", orgDoc: true, required: always, atSignup: true },
-    { key: "aadhaar", label: "Aadhaar Card of Director", orgDoc: false, required: always, atSignup: true },
-    { key: "partnershipDocs", label: "Company / Partnership Documents", orgDoc: true, required: always, atSignup: true },
-    { key: "gst", label: "GST Certificate", orgDoc: true, required: (c) => c.gstRegistered === true, atSignup: true },
-    { key: "logo", label: "Company Logo", orgDoc: true, required: never, atSignup: true },
-    { key: "cancelledCheque", label: "Cancelled Cheque", orgDoc: true, required: never, atSignup: false },
+    { key: "companyPan", label: partnerDocLabel("companyPan", "agency"), orgDoc: true, required: always, atSignup: true },
+    { key: "aadhaar", label: partnerDocLabel("aadhaar", "agency"), orgDoc: false, required: always, atSignup: true },
+    { key: "partnershipDocs", label: partnerDocLabel("partnershipDocs", "agency"), orgDoc: true, required: always, atSignup: true },
+    { key: "gst", label: partnerDocLabel("gst", "agency"), orgDoc: true, required: (c) => c.gstRegistered === true, atSignup: true },
+    { key: "logo", label: partnerDocLabel("logo", "agency"), orgDoc: true, required: never, atSignup: true },
+    { key: "cancelledCheque", label: partnerDocLabel("cancelledCheque", "agency"), orgDoc: true, required: never, atSignup: false },
   ],
   independent: [
-    { key: "pan", label: "PAN Card", orgDoc: false, required: always, atSignup: true },
-    { key: "aadhaar", label: "Aadhaar Card", orgDoc: false, required: always, atSignup: true },
-    { key: "profilePhoto", label: "Profile Photo", orgDoc: false, required: never, atSignup: true },
-    { key: "cancelledCheque", label: "Cancelled Cheque", orgDoc: false, required: never, atSignup: false },
+    { key: "pan", label: partnerDocLabel("pan", "independent"), orgDoc: false, required: always, atSignup: true },
+    { key: "aadhaar", label: partnerDocLabel("aadhaar", "independent"), orgDoc: false, required: always, atSignup: true },
+    { key: "profilePhoto", label: partnerDocLabel("profilePhoto", "independent"), orgDoc: false, required: never, atSignup: true },
+    { key: "cancelledCheque", label: partnerDocLabel("cancelledCheque", "independent"), orgDoc: false, required: never, atSignup: false },
   ],
 };
-
-// Any slot key → a label a partner recognises (falls back to the key).
-export function partnerDocLabel(key: string): string {
-  for (const slots of Object.values(PARTNER_DOC_SLOTS)) {
-    const hit = slots.find((s) => s.key === key);
-    if (hit) return hit.label;
-  }
-  return key;
-}

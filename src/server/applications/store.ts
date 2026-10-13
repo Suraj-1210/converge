@@ -403,7 +403,8 @@ function mapDocStatus(code: number): PartnerDocStatus {
 
 // Lists partner applications (any user that isn't an admin). Documents are
 // included with id + status so the admin UI can render Verify / Reject
-// controls per document without an extra round-trip.
+// controls per document without an extra round-trip. Only current documents
+// (is_most_recent) — a file an admin replaced is kept but not listed.
 export async function listApplications(): Promise<PartnerListing[]> {
   const users = await db.user.findMany({
     where: { type: { not: UserType.ADMIN } },
@@ -411,7 +412,7 @@ export async function listApplications(): Promise<PartnerListing[]> {
     take: 500, // M6: defensive cap until cursor pagination lands
     include: {
       organization: true,
-      document: true,
+      document: { where: { is_most_recent: 1 } },
       collegepond_user_user_bdm_idTocollegepond_user: {
         select: { first_name: true, last_name: true },
       },
@@ -423,7 +424,7 @@ export async function listApplications(): Promise<PartnerListing[]> {
     .filter((v): v is number => v !== null);
 
   const orgDocs = orgIds.length
-    ? await db.document.findMany({ where: { org_id: { in: orgIds } } })
+    ? await db.document.findMany({ where: { org_id: { in: orgIds }, is_most_recent: 1 } })
     : [];
   const orgDocsByOrgId = new Map<number, typeof orgDocs>();
   for (const d of orgDocs) {
@@ -526,23 +527,83 @@ export async function setDocumentStatus(
 export async function setApplicationStatus(
   email: string,
   status: ApplicationStatus,
-  reason?: string | null,
+  reason: string | null,
+  byCpUserId: number,
 ): Promise<Application | null> {
   const user = await db.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { id: true },
+    select: { id: true, type: true, org_id: true, status: true },
   });
   if (!user) return null;
 
   // Only rejected/inactive carry a reason; clear it on approve/reactivate so a
   // stale reason never lingers on a now-active partner.
   const keepsReason = status === "rejected" || status === "inactive";
-  await db.user.update({
-    where: { id: user.id },
-    data: {
-      status: statusCodeFromLabel(status),
-      status_reason: keepsReason ? blankToNull(reason) : null,
-    },
+  const to = statusCodeFromLabel(status);
+
+  await db.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        status: to,
+        status_reason: keepsReason ? blankToNull(reason) : null,
+      },
+    });
+    await tx.audit_log.create({
+      data: {
+        user_id: user.id,
+        org_id: user.org_id,
+        action: "partner.status_updated",
+        entity_type: "user",
+        entity_id: user.id,
+        metadata: {
+          from: statusLabelFromCode(user.status),
+          to: status,
+          reason: keepsReason ? blankToNull(reason) : null,
+          byCpUserId,
+        },
+      },
+    });
+
+    // Approving a partner verifies its documents: every current (is_most_recent)
+    // document still pending review — personal ones, plus the company's for an
+    // agency owner — moves to approved with the status change, or neither
+    // happens. Rejected documents stay rejected; declining or deactivating a
+    // partner leaves documents as they are.
+    if (to !== UserStatus.APPROVED) return;
+    const ownsOrgDocs = user.type === UserType.AGENCY_OWNER && user.org_id != null;
+    const pending = await tx.document.findMany({
+      where: {
+        status: DocumentStatus.PENDING,
+        is_most_recent: 1,
+        student_id: null,
+        OR: [
+          { user_id: user.id },
+          ...(ownsOrgDocs ? [{ org_id: user.org_id }] : []),
+        ],
+      },
+      select: { id: true, doc_type: true },
+    });
+    if (pending.length === 0) return;
+    await tx.document.updateMany({
+      where: { id: { in: pending.map((d) => d.id) }, status: DocumentStatus.PENDING },
+      data: { status: DocumentStatus.APPROVED },
+    });
+    await tx.audit_log.create({
+      data: {
+        user_id: user.id,
+        org_id: user.org_id,
+        action: "partner.documents_approved",
+        entity_type: "user",
+        entity_id: user.id,
+        metadata: {
+          reason: "Approved with the partner",
+          documentIds: pending.map((d) => d.id),
+          docTypes: pending.map((d) => d.doc_type),
+          byCpUserId,
+        },
+      },
+    });
   });
 
   return getApplicationByEmail(email);

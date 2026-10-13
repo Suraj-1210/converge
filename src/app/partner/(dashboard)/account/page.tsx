@@ -10,6 +10,7 @@ import {
 } from "~/lib/constants/notification-prefs";
 import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
 import { MouViewer } from "~/components/partner/mou-viewer";
+import { PARTNER_FIELD_LABELS as FIELD } from "~/lib/constants/partner-labels";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
 
@@ -289,7 +290,7 @@ export default function PartnerAccountPage() {
           {/* Form */}
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
             <Field
-              label="First Name"
+              label={FIELD.firstName}
               required
               error={errors.firstName}
             >
@@ -305,7 +306,7 @@ export default function PartnerAccountPage() {
               />
             </Field>
             <Field
-              label="Last Name"
+              label={FIELD.lastName}
               required
               error={errors.lastName}
             >
@@ -321,7 +322,7 @@ export default function PartnerAccountPage() {
               />
             </Field>
             <Field
-              label="Email Address"
+              label={FIELD.email}
               required
               badge={data.profile.isEmailVerified ? "verified" : null}
             >
@@ -333,7 +334,7 @@ export default function PartnerAccountPage() {
               />
             </Field>
             <Field
-              label="Phone Number"
+              label={FIELD.phone}
               required
               badge={data.profile.isPhoneVerified ? "verified" : null}
             >
@@ -389,14 +390,14 @@ export default function PartnerAccountPage() {
             contact your relationship manager.
           </p>
           <dl className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
-            <ReadOnlyRow label="Company / Agency Name" value={data.business.name} />
+            <ReadOnlyRow label={FIELD.companyName} value={data.business.name} />
             <ReadOnlyRow label="GST Number" value={data.business.gstNumber} />
-            <ReadOnlyRow label="Address" value={data.business.address} />
-            <ReadOnlyRow label="City" value={data.business.city} />
-            <ReadOnlyRow label="State" value={data.business.state} />
-            <ReadOnlyRow label="Country" value={data.business.country} />
+            <ReadOnlyRow label={FIELD.address} value={data.business.address} />
+            <ReadOnlyRow label={FIELD.city} value={data.business.city} />
+            <ReadOnlyRow label={FIELD.state} value={data.business.state} />
+            <ReadOnlyRow label={FIELD.country} value={data.business.country} />
             <ReadOnlyRow
-              label="Website"
+              label={FIELD.website}
               value={data.business.website}
               isLink={!!data.business.website}
             />

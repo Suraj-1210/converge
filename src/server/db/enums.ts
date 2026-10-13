@@ -113,6 +113,14 @@ export function volumeRangeToCode(label: string | undefined): number | null {
   return VOLUME_RANGE_CODES[label] ?? null;
 }
 
+// Stored range code → the bucket as worded on the sign-up form ("6 - 10").
+function rangeLabel(codes: Record<string, number>, code: number | null): string | null {
+  if (code == null) return null;
+  return Object.keys(codes).find((k) => codes[k] === code) ?? null;
+}
+export const counsellorRangeLabel = (code: number | null) => rangeLabel(COUNSELLOR_RANGE_CODES, code);
+export const volumeRangeLabel = (code: number | null) => rangeLabel(VOLUME_RANGE_CODES, code);
+
 // ---------------------------------------------------------------------------
 // Students
 // ---------------------------------------------------------------------------
