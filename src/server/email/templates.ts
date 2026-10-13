@@ -15,6 +15,15 @@ const BRAND = "#1570EF";
 const INK = "#101828";
 const MUTED = "#475467";
 
+// Header bar: Collegepond primary blue from the brand guidelines, with the
+// official white logo on the left. Buttons keep BRAND — white 15px text on
+// #0C7BFE is only 4.0:1, below WCAG AA for small text.
+const HEADER_BG = "#0C7BFE";
+// Absolute production URL so every environment's emails load the same file,
+// and it must never move: sent emails reference it forever. The PNG is 2x
+// (400x72) of the 200x36 box; Outlook only honours the width/height attributes.
+const LOGO_URL = "https://portal.convergeapp.co/email/collegepond-logo-white.png";
+
 function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -65,7 +74,9 @@ function renderHtml(heading: string, greeting: string, blocks: Block[], preheade
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${esc(preheader)}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F2F4F7;padding:32px 12px;"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;">
-<tr><td style="background:${BRAND};padding:20px 32px;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:0.2px;">Collegepond</td></tr>
+<tr><td align="left" valign="middle" bgcolor="${HEADER_BG}" style="background:${HEADER_BG};padding:22px 32px;text-align:left;">
+<img src="${LOGO_URL}" width="200" height="36" alt="Collegepond" border="0" style="display:block;border:0;outline:none;text-decoration:none;width:200px;max-width:200px;height:auto;color:#ffffff;font-size:20px;font-weight:700;line-height:36px;">
+</td></tr>
 <tr><td style="padding:32px;">
 <h1 style="margin:0 0 20px;font-size:22px;line-height:30px;color:${INK};">${esc(heading)}</h1>
 <p style="margin:0 0 16px;font-size:15px;line-height:24px;color:${MUTED};">${esc(greeting)}</p>
