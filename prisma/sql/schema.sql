@@ -1100,16 +1100,25 @@ CREATE TABLE IF NOT EXISTS `partner_bank_account` (
   -- it by hand before marking the account verified. Payouts need verified.
   `proof_url`                VARCHAR(500) NULL DEFAULT NULL,
   `proof_file_name`          VARCHAR(255) NULL DEFAULT NULL,
+  -- When the partner last saved these details; orders the Bank Verifications
+  -- queue, and a verify/reject only applies if it's unchanged.
+  `submitted_at`             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `provider_fund_account_id` VARCHAR(100) NULL DEFAULT NULL,
   `provider_contact_id`      VARCHAR(100) NULL DEFAULT NULL,
   `is_verified`              TINYINT NOT NULL DEFAULT 0,
   `verified_at`              TIMESTAMP NULL DEFAULT NULL,
   `verified_by_cp_user_id`   INT NULL DEFAULT NULL,
   `verification_note`        VARCHAR(500) NULL DEFAULT NULL,
+  -- Finance rejected the details; cleared when the partner saves new ones.
+  -- Status: verified (is_verified = 1), rejected (rejected_at set), else pending.
+  `rejected_at`              TIMESTAMP NULL DEFAULT NULL,
+  `rejected_by_cp_user_id`   INT NULL DEFAULT NULL,
+  `rejection_reason`         VARCHAR(500) NULL DEFAULT NULL,
   `created_at`               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `fk_partner_bank_account_org_idx` (`org_id` ASC) VISIBLE,
+  INDEX `idx_partner_bank_account_queue` (`is_verified` ASC, `rejected_at` ASC, `submitted_at` ASC) VISIBLE,
   CONSTRAINT `fk_partner_bank_account_org`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE

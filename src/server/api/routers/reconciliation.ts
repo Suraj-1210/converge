@@ -4,9 +4,7 @@ import {
   createTRPCRouter,
   financeProcedure,
   financeManagerProcedure,
-  superAdminProcedure,
 } from "~/server/api/trpc";
-import { resolveStorageUrl } from "~/server/storage";
 import { db } from "~/server/db";
 import {
   PartnerInvoiceStatus,
@@ -19,16 +17,8 @@ import {
 } from "~/server/db/enums";
 import { appUrl, payoutSentEmail } from "~/server/email";
 import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
-import {
-  razorpayConfigured,
-  razorpayMode,
-  createContact,
-  createBankFundAccount,
-  createValidation,
-  getValidation,
-  createPayout,
-} from "~/server/razorpayx";
-import { decryptSecret } from "~/server/crypto";
+import { razorpayConfigured, razorpayMode, createPayout } from "~/server/razorpayx";
+import { adminBankSelect, bankActorNames, toAdminBankView } from "~/server/bank-accounts";
 
 // PayoutMethod code → RazorpayX payout mode (INTERNATIONAL_WIRE has no RazorpayX mode).
 const RZP_MODE: Record<number, string | undefined> = { 0: "NEFT", 1: "RTGS", 2: undefined, 3: "IMPS", 4: "UPI" };
@@ -86,27 +76,7 @@ export const reconciliationRouter = createTRPCRouter({
             net_payable: true,
             total_amount: true,
             organization: { select: { name: true } },
-            bank_account: {
-              select: {
-                id: true,
-                region: true,
-                account_holder: true,
-                account_number_last4: true,
-                ifsc: true,
-                swift: true,
-                iban: true,
-                bank_name: true,
-                branch: true,
-                bank_country: true,
-                bank_address: true,
-                proof_url: true,
-                proof_file_name: true,
-                is_verified: true,
-                verified_at: true,
-                verification_note: true,
-                verified_by_cp_user_id: true,
-              },
-            },
+            bank_account: { select: adminBankSelect },
             invoice_item: {
               select: {
                 amount: true,
@@ -134,9 +104,9 @@ export const reconciliationRouter = createTRPCRouter({
         },
       },
     });
-    const names = await userNameMap([
-      ...payouts.map((p) => p.ops_approved_by_cp_user_id),
-      ...payouts.map((p) => p.invoice.bank_account?.verified_by_cp_user_id ?? null),
+    const [names, bankNames] = await Promise.all([
+      userNameMap(payouts.map((p) => p.ops_approved_by_cp_user_id)),
+      bankActorNames(payouts.flatMap((p) => (p.invoice.bank_account ? [p.invoice.bank_account] : []))),
     ]);
     return payouts.map((p) => ({
       id: p.id,
@@ -152,30 +122,9 @@ export const reconciliationRouter = createTRPCRouter({
       gstin: p.invoice.gstin,
       pan: p.invoice.pan,
       bankAccountId: p.bank_account_id ?? p.invoice.bank_account?.id ?? null,
-      bank: p.invoice.bank_account
-        ? {
-            region: p.invoice.bank_account.region === 1 ? ("international" as const) : ("domestic" as const),
-            accountHolder: p.invoice.bank_account.account_holder,
-            // Masked for everyone; Super Admin can reveal via revealAccountNumber.
-            last4: p.invoice.bank_account.account_number_last4,
-            ifsc: p.invoice.bank_account.ifsc,
-            swift: p.invoice.bank_account.swift,
-            ibanLast4: p.invoice.bank_account.iban ? p.invoice.bank_account.iban.slice(-4) : null,
-            bankName: p.invoice.bank_account.bank_name,
-            branch: p.invoice.bank_account.branch,
-            bankCountry: p.invoice.bank_account.bank_country,
-            bankAddress: p.invoice.bank_account.bank_address,
-            proofUrl: resolveStorageUrl(p.invoice.bank_account.proof_url),
-            proofFileName: p.invoice.bank_account.proof_file_name,
-            verified: p.invoice.bank_account.is_verified === 1,
-            verifiedAt: p.invoice.bank_account.verified_at?.toISOString() ?? null,
-            verifiedBy:
-              p.invoice.bank_account.verified_by_cp_user_id != null
-                ? (names.get(p.invoice.bank_account.verified_by_cp_user_id) ?? null)
-                : null,
-            verificationNote: p.invoice.bank_account.verification_note,
-          }
-        : null,
+      // Same masked view and verify/reject path as the Bank Verifications
+      // queue (bankVerification router).
+      bank: p.invoice.bank_account ? toAdminBankView(p.invoice.bank_account, bankNames) : null,
       checks: {
         bankConfirmed: p.verify_bank_confirmed === 1,
         invoiceVerified: p.verify_invoice_verified === 1,
@@ -402,156 +351,8 @@ export const reconciliationRouter = createTRPCRouter({
       return { success: true as const, provider: provider ? { id: provider.id, status: provider.status } : null };
     }),
 
-  // Finance has checked the cancelled cheque / bank letter against the details
-  // and confirms the account. Required before any payout to it.
-  markBankVerified: financeProcedure
-    .input(
-      z.object({
-        bankAccountId: z.number().int().positive(),
-        note: z.string().trim().min(5, "Note how you verified the account").max(500),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const bank = await db.partner_bank_account.findUnique({
-        where: { id: input.bankAccountId },
-        select: { id: true, org_id: true, proof_url: true },
-      });
-      if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
-      if (!bank.proof_url) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "No cancelled cheque / bank letter on file. Ask the partner to re-enter their bank details with the proof.",
-        });
-      }
-      await db.partner_bank_account.update({
-        where: { id: bank.id },
-        data: {
-          is_verified: 1,
-          verified_at: new Date(),
-          verified_by_cp_user_id: ctx.cpUser.id,
-          verification_note: input.note,
-        },
-      });
-      await db.audit_log.create({
-        data: {
-          org_id: bank.org_id,
-          action: "bank.verified_manually",
-          entity_type: "partner_bank_account",
-          entity_id: bank.id,
-          metadata: { byCpUserId: ctx.cpUser.id, note: input.note },
-        },
-      });
-      return { success: true as const };
-    }),
-
-  // Super Admin only: the full account number, for checking against the
-  // cheque or a bank enquiry. Every reveal is logged.
-  revealAccountNumber: superAdminProcedure
-    .input(z.object({ bankAccountId: z.number().int().positive() }))
-    .mutation(async ({ ctx, input }) => {
-      const bank = await db.partner_bank_account.findUnique({
-        where: { id: input.bankAccountId },
-        select: { id: true, org_id: true, account_number_enc: true, iban: true, provider_fund_account_id: true },
-      });
-      if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
-      await db.audit_log.create({
-        data: {
-          org_id: bank.org_id,
-          action: "bank.account_number_revealed",
-          entity_type: "partner_bank_account",
-          entity_id: bank.id,
-          metadata: { byCpUserId: ctx.cpUser.id },
-        },
-      });
-      if (!bank.account_number_enc) {
-        // After RazorpayX tokenization the number lives only with RazorpayX.
-        return {
-          accountNumber: null,
-          iban: bank.iban,
-          note: bank.provider_fund_account_id
-            ? "Held by RazorpayX after verification — not stored by Collegepond."
-            : "No account number on file.",
-        };
-      }
-      return { accountNumber: decryptSecret(bank.account_number_enc), iban: bank.iban, note: null };
-    }),
-
   // Payments config for the UI (is RazorpayX wired, and is it test/live?).
   paymentsConfig: financeProcedure.query(() => ({ configured: razorpayConfigured(), mode: razorpayMode() })),
-
-  // RazorpayX bank-account verification (penny-drop). Creates the contact + fund
-  // account (storing their ids) and runs a ₹1 validation; sets is_verified on success.
-  verifyBankAccount: financeProcedure
-    .input(z.object({ bankAccountId: z.number().int().positive() }))
-    .mutation(async ({ ctx, input }) => {
-      if (!razorpayConfigured()) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "RazorpayX is not configured — verify the bank manually." });
-      }
-      const bank = await db.partner_bank_account.findUnique({ where: { id: input.bankAccountId } });
-      if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
-      if (bank.region === 1) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "International accounts can't be checked by RazorpayX — verify the bank letter by hand." });
-      }
-      if (!bank.ifsc) throw new TRPCError({ code: "BAD_REQUEST", message: "Bank account is missing its IFSC." });
-      try {
-        let contactId = bank.provider_contact_id;
-        let fundAccountId = bank.provider_fund_account_id;
-        // First time: create the RazorpayX contact + fund account from the raw
-        // (decrypted) number, then TOKENIZE — null our stored copy so RazorpayX
-        // becomes the vault (payouts go to the fund-account token, not the number).
-        if (!fundAccountId) {
-          if (!bank.account_number_enc) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Account number is missing — re-enter the bank details." });
-          }
-          const accountNumber = decryptSecret(bank.account_number_enc);
-          contactId ??= (await createContact({ name: bank.account_holder, referenceId: `bank_${bank.id}` })).id;
-          fundAccountId = (await createBankFundAccount({ contactId, name: bank.account_holder, ifsc: bank.ifsc, accountNumber })).id;
-          await db.partner_bank_account.update({
-            where: { id: bank.id },
-            data: { provider_contact_id: contactId, provider_fund_account_id: fundAccountId, account_number_enc: null },
-          });
-        }
-        // Penny-drop validation on the (tokenized) fund account.
-        let validation = await createValidation(fundAccountId);
-        for (let i = 0; i < 4 && validation.status !== "completed"; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          validation = await getValidation(validation.id);
-        }
-        const active = validation.results?.account_status === "active";
-        await db.partner_bank_account.update({
-          where: { id: bank.id },
-          data: {
-            is_verified: active ? 1 : 0,
-            verified_at: active ? new Date() : null,
-            verified_by_cp_user_id: active ? ctx.cpUser.id : null,
-            verification_note: active ? "RazorpayX penny-drop: account active" : null,
-          },
-        });
-        await db.audit_log.create({
-          data: {
-            action: "partner.bank_verified",
-            entity_type: "user",
-            entity_id: bank.org_id,
-            metadata: {
-              byCpUserId: ctx.cpUser.id,
-              bankAccountId: bank.id,
-              verified: active,
-              fundAccountId,
-              registeredName: validation.results?.registered_name ?? null,
-            },
-          },
-        });
-        return {
-          verified: active,
-          status: validation.status,
-          accountStatus: validation.results?.account_status ?? null,
-          registeredName: validation.results?.registered_name ?? null,
-        };
-      } catch (e) {
-        if (e instanceof TRPCError) throw e;
-        throw new TRPCError({ code: "BAD_GATEWAY", message: e instanceof Error ? e.message : "Bank verification failed" });
-      }
-    }),
 
   hold: financeProcedure
     .input(z.object({ payoutId: z.number().int().positive(), reason: z.string().trim().min(1).max(500) }))

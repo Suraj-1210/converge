@@ -10,6 +10,11 @@ import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
+import {
+  BankAccountDetails,
+  BankDecisionControls,
+  BankStatusPill,
+} from "~/components/admin/bank-account-review";
 
 type Tab = "all" | "pending" | "deactivated";
 
@@ -1522,6 +1527,9 @@ function PartnerDetailSlideOver({
             </Section>
           )}
 
+          {/* Bank details (finance roles only) */}
+          <PartnerBankSection email={p.email} />
+
           {/* Documents */}
           <Section title={`Documents (${p.documents.length})`}>
             {p.documents.length === 0 ? (
@@ -1605,6 +1613,39 @@ function PartnerDetailSlideOver({
         </div>
       </div>
     </div>
+  );
+}
+
+// The partner's payout bank account, masked, with its verification status and
+// the same verify / reject controls as Bank Verifications. Finance roles only
+// (the server refuses everyone else too); others don't see the section.
+const BANK_VIEW_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.FINANCE_MANAGER, AdminRole.FINANCE_EXECUTIVE];
+function PartnerBankSection({ email }: { email: string }) {
+  const meQ = api.authSession.me.useQuery();
+  const role = meQ.data?.role;
+  const allowed = role != null && BANK_VIEW_ROLES.includes(role);
+  const bankQ = api.bankVerification.forPartner.useQuery({ email }, { enabled: allowed });
+  const paymentsQ = api.reconciliation.paymentsConfig.useQuery(undefined, { enabled: allowed });
+  const [msg, setMsg] = useState("");
+  if (!allowed) return null;
+  const bank = bankQ.data;
+  return (
+    <Section title="Bank Details">
+      {bankQ.isLoading ? (
+        <div className="text-sm text-[#98A2B3]">Loading…</div>
+      ) : bankQ.error ? (
+        <div className="text-sm text-[#B42318]">{bankQ.error.message}</div>
+      ) : !bank ? (
+        <div className="text-sm text-[#98A2B3]">No bank account on file yet.</div>
+      ) : (
+        <div className="space-y-3">
+          <BankStatusPill status={bank.status} />
+          <BankAccountDetails bank={bank} canReveal={role === AdminRole.SUPER_ADMIN} />
+          <BankDecisionControls bank={bank} razorpayConfigured={paymentsQ.data?.configured ?? false} onDone={setMsg} compact />
+          {msg && <div className="text-xs font-medium text-[#067647]">{msg}</div>}
+        </div>
+      )}
+    </Section>
   );
 }
 

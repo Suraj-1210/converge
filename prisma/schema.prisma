@@ -996,12 +996,18 @@ model partner_bank_account {
   // Cancelled cheque / bank letter; checked by finance before verification.
   proof_url                String?          @db.VarChar(500)
   proof_file_name          String?          @db.VarChar(255)
+  // When the partner last saved the details (orders the verification queue).
+  submitted_at             DateTime         @default(now()) @db.Timestamp(0)
   provider_fund_account_id String?          @db.VarChar(100)
   provider_contact_id      String?          @db.VarChar(100)
   is_verified              Int              @default(0) @db.TinyInt
   verified_at              DateTime?        @db.Timestamp(0)
   verified_by_cp_user_id   Int?
   verification_note        String?          @db.VarChar(500)
+  // Finance rejected the details; cleared when the partner saves new ones.
+  rejected_at              DateTime?        @db.Timestamp(0)
+  rejected_by_cp_user_id   Int?
+  rejection_reason         String?          @db.VarChar(500)
   created_at               DateTime         @default(now()) @db.Timestamp(0)
   updated_at               DateTime         @default(now()) @db.Timestamp(0)
   organization             organization     @relation(fields: [org_id], references: [id], onDelete: Cascade, map: "fk_partner_bank_account_org")
@@ -1009,6 +1015,7 @@ model partner_bank_account {
   partner_payout           partner_payout[]
 
   @@index([org_id], map: "fk_partner_bank_account_org_idx")
+  @@index([is_verified, rejected_at, submitted_at], map: "idx_partner_bank_account_queue")
 }
 
 // The reconciliation/release record for a partner invoice (1:1). Ops approval →

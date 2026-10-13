@@ -8,7 +8,12 @@ import {
   DEFAULT_NOTIFICATION_PREF,
   NOTIFICATION_PREF_GROUPS,
 } from "~/lib/constants/notification-prefs";
-import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
+import {
+  BankAccountSummary,
+  BankDetailsForm,
+  BankRejectionNotice,
+  BankVerificationBadge,
+} from "~/components/partner/bank-details";
 import { MouViewer } from "~/components/partner/mou-viewer";
 import { PARTNER_FIELD_LABELS as FIELD } from "~/lib/constants/partner-labels";
 
@@ -76,6 +81,11 @@ export default function PartnerAccountPage() {
   }, [me.data?.redirectUrl, router]);
 
   const [tab, setTab] = useState<TabKey>("profile");
+  // Deep link from notifications / emails, e.g. /partner/account?tab=bank.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && t in TAB_LABELS) setTab(t as TabKey);
+  }, []);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -634,11 +644,11 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
         <div>
           <h3 className="flex items-center gap-2 text-base font-semibold text-[#101828]">
             Bank Details
-            {bank?.hasAccount && !editing && <BankVerificationBadge verified={bank.verified} />}
+            {bank?.hasAccount && !editing && <BankVerificationBadge status={bank.status} />}
           </h3>
           <p className="mt-1 text-xs text-[#667085]">
-            The account Collegepond pays your commission into. Our finance team verifies it against your
-            cancelled cheque (or bank letter) before the first payment.
+            The account Collegepond pays your commission into. Our finance team checks it against your
+            cancelled cheque (or bank letter) after you save it; we can only pay into a verified account.
           </p>
         </div>
         {!editing && (
@@ -652,6 +662,7 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
         )}
       </div>
 
+      {bank?.hasAccount && <BankRejectionNotice bank={bank} />}
       {editing ? (
         <BankDetailsForm
           bank={bank}
@@ -659,7 +670,7 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
           pan={bank?.pan ?? undefined}
           onSaved={() => {
             setEditing(false);
-            onToast("Bank details saved — we'll verify them before your next payment");
+            onToast("Bank details saved — our finance team will verify them shortly");
           }}
           onCancel={() => setEditing(false)}
         />

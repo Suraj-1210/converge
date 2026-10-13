@@ -1,6 +1,8 @@
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
+import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
 import {
+  AdminRole,
   PartnerInvoiceStatus,
   PayoutStatus,
   UserStatus,
@@ -28,8 +30,15 @@ export interface AdminNotification {
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
+// Who verifies partner bank details (same roles as financeProcedure).
+const BANK_VERIFIER_ROLES: number[] = [
+  AdminRole.SUPER_ADMIN,
+  AdminRole.FINANCE_MANAGER,
+  AdminRole.FINANCE_EXECUTIVE,
+];
+
 export const notificationsRouter = createTRPCRouter({
-  list: protectedAdminProcedure.query(async () => {
+  list: protectedAdminProcedure.query(async ({ ctx }) => {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const [
@@ -38,6 +47,7 @@ export const notificationsRouter = createTRPCRouter({
       payoutsReady,
       invoicesPending,
       newStudents,
+      bankPending,
     ] = await Promise.all([
         db.user.count({
           where: {
@@ -70,6 +80,11 @@ export const notificationsRouter = createTRPCRouter({
           },
         }),
         db.student.count({ where: { created_at: { gte: weekAgo } } }),
+        // A partner saved new or changed bank details: finance's alert, shown
+        // only to the roles that can verify them.
+        BANK_VERIFIER_ROLES.includes(ctx.cpUser.role)
+          ? db.partner_bank_account.count({ where: PENDING_BANK_WHERE })
+          : Promise.resolve(0),
       ]);
 
     const notifications: AdminNotification[] = [];
@@ -104,6 +119,16 @@ export const notificationsRouter = createTRPCRouter({
         href: "/admin/reconciliation",
       });
     }
+    if (bankPending > 0) {
+      notifications.push({
+        id: "bank-verifications",
+        title: `${plural(bankPending, "partner bank account")} awaiting verification`,
+        time: "Finance",
+        tone: "orange",
+        unread: true,
+        href: "/admin/bank-verifications",
+      });
+    }
     if (invoicesPending > 0) {
       notifications.push({
         id: "invoices",
@@ -127,7 +152,11 @@ export const notificationsRouter = createTRPCRouter({
 
     return {
       notifications,
-      badges: { approvals: pendingApprovals, partners: pendingPartners },
+      badges: {
+        approvals: pendingApprovals,
+        partners: pendingPartners,
+        bankVerifications: bankPending,
+      },
     };
   }),
 });

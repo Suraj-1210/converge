@@ -11,7 +11,12 @@ import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { normalizePan, panError } from "~/lib/utils/pan";
-import { BankAccountSummary, BankDetailsForm, BankVerificationBadge } from "~/components/partner/bank-details";
+import {
+  BankAccountSummary,
+  BankDetailsForm,
+  BankRejectionNotice,
+  BankVerificationBadge,
+} from "~/components/partner/bank-details";
 import {
   DashboardCard,
   StatCard,
@@ -627,7 +632,8 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
 
   const generate = api.partnerCommission.generateInvoice.useMutation();
   const busy = generate.isPending;
-  const bankReady = Boolean(bank?.hasAccount && bank.hasProof);
+  // Rejected details can't be paid into; the server refuses the claim too.
+  const bankReady = Boolean(bank?.hasAccount && bank.hasProof && bank.status !== "rejected");
 
   const next = () => {
     setErr("");
@@ -638,7 +644,13 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
         const panMsg = panError(pan, "agency");
         if (panMsg) return setErr(panMsg);
       }
-      if (!bankReady) return setErr("Add your bank details and upload a cancelled cheque (or bank letter) to continue");
+      if (!bankReady) {
+        return setErr(
+          bank?.status === "rejected"
+            ? "Our finance team couldn't verify your bank details. Update them to continue."
+            : "Add your bank details and upload a cancelled cheque (or bank letter) to continue",
+        );
+      }
       if (editingBank) return setErr("Save your bank details first");
       if (!signed) return setErr("Please apply your digital signature");
     }
@@ -784,7 +796,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
             <div className="mb-3 flex items-center justify-between gap-2">
               <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[#667085] uppercase">
                 Bank details (for payout)
-                {bank?.hasAccount && !editingBank && <BankVerificationBadge verified={bank.verified} />}
+                {bank?.hasAccount && !editingBank && <BankVerificationBadge status={bank.status} />}
               </span>
               {!editingBank && (
                 <button type="button" onClick={() => setEditingBank(true)} className="text-xs font-semibold text-[#1570EF] hover:underline">
@@ -802,6 +814,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
               />
             ) : bank?.hasAccount ? (
               <>
+                <BankRejectionNotice bank={bank} />
                 <BankAccountSummary bank={bank} />
                 {!bank.hasProof && (
                   <p className="mt-2 text-xs font-medium text-[#B54708]">

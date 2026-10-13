@@ -125,6 +125,19 @@ export function ReconciliationIcon(props: IconProps) {
   );
 }
 
+export function BankIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 10l9-6 9 6" />
+      <line x1="5" y1="10" x2="5" y2="18" />
+      <line x1="10" y1="10" x2="10" y2="18" />
+      <line x1="14" y1="10" x2="14" y2="18" />
+      <line x1="19" y1="10" x2="19" y2="18" />
+      <line x1="3" y1="21" x2="21" y2="21" />
+    </svg>
+  );
+}
+
 export function CalendarIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>

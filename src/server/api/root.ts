@@ -18,6 +18,7 @@ import { commissionsRouter } from "~/server/api/routers/commissions";
 import { partnerCommissionRouter } from "~/server/api/routers/partner-commission";
 import { partnerPayoutsRouter } from "~/server/api/routers/partner-payouts";
 import { reconciliationRouter } from "~/server/api/routers/reconciliation";
+import { bankVerificationRouter } from "~/server/api/routers/bank-verification";
 import { settingsRouter } from "~/server/api/routers/settings";
 import { auditRouter } from "~/server/api/routers/audit";
 import { bdmRouter } from "~/server/api/routers/bdm";
@@ -53,6 +54,7 @@ export const appRouter = createTRPCRouter({
   partnerCommission: partnerCommissionRouter,
   partnerPayouts: partnerPayoutsRouter,
   reconciliation: reconciliationRouter,
+  bankVerification: bankVerificationRouter,
   settings: settingsRouter,
   audit: auditRouter,
   bdm: bdmRouter,

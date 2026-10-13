@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure, protectedPartnerProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
+import { BANK_AUDIT_ACTIONS } from "~/server/bank-accounts";
 
 // Audit logs are a compliance surface — restricted to Super Admin + Finance.
 const VIEW_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.FINANCE_MANAGER, AdminRole.FINANCE_EXECUTIVE];
@@ -22,6 +23,7 @@ const MODULE_BY_ENTITY: Record<string, string> = {
   user: "Partners",
   cp_user: "Users",
   export: "Exports",
+  partner_bank_account: "Bank Details",
 };
 const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
   Object.entries(MODULE_BY_ENTITY).map(([k, v]) => [v, k]),
@@ -30,6 +32,7 @@ const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
 // Every action string the app writes today (entity.verb). Used to back the
 // Action-type filter (category → action IN (...)).
 const ACTION_STRINGS = [
+  ...BANK_AUDIT_ACTIONS,
   "application.credential_saved", "application.credential_viewed", "application.removed", "application.status_updated", "application.uni_id_saved", "application.vendor_selected",
   "counsellor.approved", "counsellor.invited", "counsellor.rejected",
   "event.created", "event.deleted", "event.updated",
@@ -41,6 +44,8 @@ const ACTION_STRINGS = [
 
 function categoryOf(action: string): string {
   if (action.startsWith("impersonation.")) return "Impersonation";
+  if (action.startsWith("bank.verified")) return "Approval";
+  if (action.includes("revealed")) return "View";
   if (action.startsWith("export.")) return "Export";
   if (action.includes("status")) return "Status Change";
   if (action.includes("approved")) return "Approval";
@@ -80,6 +85,7 @@ function humanize(action: string, entityId: number | null, metadata: unknown): s
     const who = `${s(meta.targetName) || `#${s(meta.targetId)}`}${meta.targetRole ? ` (${s(meta.targetRole)})` : ""}`;
     return action === "impersonation.started" ? `Started impersonating ${who}` : `Stopped impersonating ${who}`;
   }
+  if (action.startsWith("bank.")) return humanizeBank(action, meta) + asPart;
   if (action === "export.downloaded") {
     const rows = typeof meta.rows === "number" ? ` — ${meta.rows} rows` : "";
     return `Exported ${s(meta.file)}${rows}${asPart}`;
@@ -91,6 +97,29 @@ function humanize(action: string, entityId: number | null, metadata: unknown): s
     typeof meta.fileName === "string" ? ` — ${meta.fileName}` :
     typeof meta.reason === "string" && meta.reason ? ` — ${meta.reason}` : "";
   return `${base}${idPart}${extra}${asPart}`;
+}
+
+// Bank-detail rows carry last-4 digits only (never a full account number).
+function humanizeBank(action: string, meta: Record<string, unknown>): string {
+  const acct = (v: unknown) => (typeof v === "string" && v ? `••${v}` : "—");
+  switch (action) {
+    case "bank.details_saved":
+      return meta.hadAccount === true
+        ? `Bank details changed: ${acct(meta.oldLast4)} → ${acct(meta.newLast4)}`
+        : `Bank details added: ${acct(meta.newLast4)}`;
+    case "bank.verified_manually":
+      return `Bank account ${acct(meta.last4)} verified by hand${meta.note ? ` — ${s(meta.note)}` : ""}`;
+    case "bank.verified_razorpayx":
+      return `Bank account ${acct(meta.last4)} verified via RazorpayX${meta.registeredName ? ` — ${s(meta.registeredName)}` : ""}`;
+    case "bank.razorpayx_check_failed":
+      return `RazorpayX check on ${acct(meta.last4)} did not pass (${s(meta.accountStatus) || s(meta.validationStatus) || "unknown"})`;
+    case "bank.rejected":
+      return `Bank account ${acct(meta.last4)} rejected${meta.reason ? ` — ${s(meta.reason)}` : ""}`;
+    case "bank.account_number_revealed":
+      return `Full account number for ${acct(meta.last4)} revealed`;
+    default:
+      return action;
+  }
 }
 
 const exportInput = z.object({
@@ -128,20 +157,40 @@ function buildWhere(input: AuditFilter) {
   };
 }
 
-async function resolveActors(metas: unknown[]) {
-  const ids = Array.from(new Set(metas.map(actorIdOf).filter((x): x is number => x != null)));
-  const actors = ids.length
-    ? await db.collegepond_user.findMany({ where: { id: { in: ids } }, select: { id: true, first_name: true, last_name: true } })
-    : [];
-  return new Map(actors.map((a) => [a.id, `${a.first_name} ${a.last_name}`.trim()]));
+interface Actors { staff: Map<number, string>; partners: Map<number, string> }
+async function resolveActors(rows: { metadata: unknown; user_id: number | null }[]): Promise<Actors> {
+  const ids = Array.from(new Set(rows.map((r) => actorIdOf(r.metadata)).filter((x): x is number => x != null)));
+  // Partner-portal actions (e.g. a partner saving bank details) have no staff
+  // actor; they name the partner user instead.
+  const partnerIds = Array.from(
+    new Set(rows.filter((r) => actorIdOf(r.metadata) == null && r.user_id != null).map((r) => r.user_id!)),
+  );
+  const [actors, partners] = await Promise.all([
+    ids.length
+      ? db.collegepond_user.findMany({ where: { id: { in: ids } }, select: { id: true, first_name: true, last_name: true } })
+      : [],
+    partnerIds.length
+      ? db.user.findMany({ where: { id: { in: partnerIds } }, select: { id: true, first_name: true, last_name: true } })
+      : [],
+  ]);
+  return {
+    staff: new Map(actors.map((a) => [a.id, `${a.first_name} ${a.last_name}`.trim()])),
+    partners: new Map(partners.map((u) => [u.id, `${u.first_name} ${u.last_name}`.trim()])),
+  };
 }
-function mapRow(r: { id: number; created_at: Date; action: string; entity_type: string | null; entity_id: number | null; metadata: unknown }, actorMap: Map<number, string>) {
+function mapRow(r: { id: number; created_at: Date; action: string; entity_type: string | null; entity_id: number | null; user_id: number | null; metadata: unknown }, actorMap: Actors) {
   const actorId = actorIdOf(r.metadata);
+  const partnerName = actorId == null && r.user_id != null ? actorMap.partners.get(r.user_id) : undefined;
   return {
     id: r.id,
     timestamp: r.created_at.toISOString(),
     actorId,
-    actor: actorId != null ? (actorMap.get(actorId) ?? `Admin #${actorId}`) : "System",
+    actor:
+      actorId != null
+        ? (actorMap.staff.get(actorId) ?? `Admin #${actorId}`)
+        : partnerName
+          ? `${partnerName} (partner)`
+          : "System",
     action: r.action,
     category: categoryOf(r.action),
     module: r.entity_type ? (MODULE_BY_ENTITY[r.entity_type] ?? r.entity_type) : "—",
@@ -189,7 +238,7 @@ export const auditRouter = createTRPCRouter({
         db.audit_log.count(),
       ]);
 
-      const actorMap = await resolveActors(rows.map((r) => r.metadata));
+      const actorMap = await resolveActors(rows);
       return {
         page: input.page,
         pageSize: PAGE_SIZE,
@@ -205,7 +254,7 @@ export const auditRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       assertCanView(ctx.cpUser.role);
       const rows = await db.audit_log.findMany({ where: buildWhere(input), orderBy: { created_at: "desc" }, take: 5000 });
-      const actorMap = await resolveActors(rows.map((r) => r.metadata));
+      const actorMap = await resolveActors(rows);
       return rows.map((r) => mapRow(r, actorMap));
     }),
 

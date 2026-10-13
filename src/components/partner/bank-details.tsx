@@ -13,7 +13,8 @@ import { BANK_PROOF_LABELS } from "~/lib/constants/partner-labels";
 // Domestic accounts give an IFSC + cancelled cheque; international ones a
 // SWIFT/BIC, bank country and address + a bank letter or statement. Saving
 // sends the account back to "verification pending" — finance checks the
-// proof by hand before any payout. Partners only ever see the last 4 digits.
+// proof before any payout, and either verifies it or rejects it with a
+// reason the partner sees here. Partners only ever see the last 4 digits.
 
 export type BankOnFile = RouterOutputs["partnerCommission"]["bankAccount"];
 
@@ -30,11 +31,28 @@ async function uploadProof(file: File): Promise<string> {
   return body.url;
 }
 
-export function BankVerificationBadge({ verified }: { verified: boolean }) {
-  return verified ? (
-    <span className="rounded-full bg-[#ECFDF3] px-2 py-0.5 text-[11px] font-semibold text-[#067647]">✓ Verified</span>
-  ) : (
-    <span className="rounded-full bg-[#FFFAEB] px-2 py-0.5 text-[11px] font-semibold text-[#B54708]">Verification pending</span>
+export function BankVerificationBadge({ status }: { status: BankOnFile["status"] }) {
+  if (status === "verified") {
+    return <span className="rounded-full bg-[#ECFDF3] px-2 py-0.5 text-[11px] font-semibold text-[#067647]">✓ Verified</span>;
+  }
+  if (status === "rejected") {
+    return <span className="rounded-full bg-[#FEF3F2] px-2 py-0.5 text-[11px] font-semibold text-[#B42318]">Rejected</span>;
+  }
+  return <span className="rounded-full bg-[#FFFAEB] px-2 py-0.5 text-[11px] font-semibold text-[#B54708]">Pending verification</span>;
+}
+
+// Finance rejected the details: why, and what to do about it.
+export function BankRejectionNotice({ bank }: { bank: BankOnFile }) {
+  if (bank.status !== "rejected") return null;
+  return (
+    <div className="mb-4 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-3.5 py-3 text-sm text-[#B42318]">
+      <div className="font-semibold">Our finance team couldn&apos;t verify these bank details.</div>
+      {bank.rejectionReason && <div className="mt-1">Reason: {bank.rejectionReason}</div>}
+      <div className="mt-1 text-xs">
+        Update your bank details and upload a clear {bank.region === "international" ? "bank letter" : "cancelled cheque"}.
+        We can&apos;t pay commission until the account is verified.
+      </div>
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import {
   ApprovalsIcon,
   AuditLogIcon,
+  BankIcon,
   BarChartIcon,
   BillingIcon,
   CalendarIcon,
@@ -183,6 +184,13 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Reconciliation",
         href: "/admin/reconciliation",
         icon: <ReconciliationIcon />,
+        roles: FINANCE_NAV_ROLES,
+      },
+      {
+        label: "Bank Verifications",
+        href: "/admin/bank-verifications",
+        icon: <BankIcon />,
+        badgeKey: "bankVerifications",
         roles: FINANCE_NAV_ROLES,
       },
     ],

@@ -7,6 +7,7 @@ import {
 import { db } from "~/server/db";
 import { encryptSecret } from "~/server/crypto";
 import { optionalPanSchema } from "~/lib/utils/pan";
+import { auditBank, bankStatusOf, wholeSecondNow } from "~/server/bank-accounts";
 import {
   PartnerInvoiceStatus,
   TrancheStatus,
@@ -223,8 +224,12 @@ export const partnerCommissionRouter = createTRPCRouter({
       accountType: acct?.account_type ?? null,
       hasProof: Boolean(acct?.proof_url),
       proofFileName: acct?.proof_file_name ?? null,
-      // Finance checks the proof before any payout; partners see the state.
+      // Finance checks the proof before any payout; partners see the state
+      // (pending / verified / rejected, with finance's reason).
       verified: acct?.is_verified === 1,
+      status: acct ? bankStatusOf(acct) : null,
+      rejectionReason: acct?.rejected_at ? acct.rejection_reason : null,
+      submittedAt: acct?.submitted_at ?? null,
       // GSTIN/PAN are shown on the tax invoice — kept here for the wizard. (The
       // org's gst_number is the non-encrypted source; the encrypted copy on the
       // account is for the payout side.)
@@ -237,8 +242,10 @@ export const partnerCommissionRouter = createTRPCRouter({
 
   // Domestic accounts need an IFSC and a cancelled cheque; international ones
   // a SWIFT/BIC, bank country and address, and a bank letter or statement.
-  // Any save puts the account back to "unverified": finance re-checks the
-  // proof before the next payout.
+  // Any save puts the account back to "pending": it joins finance's Bank
+  // Verifications queue (and the admin bell), and no payout goes to it until
+  // finance verifies it. Every save is audit-logged with the old and new
+  // last 4 digits.
   saveBankAccount: protectedPartnerProcedure
     .input(
       z
@@ -303,24 +310,39 @@ export const partnerCommissionRouter = createTRPCRouter({
         proof_file_name: orNull(input.proofFileName),
         gstin_enc: input.gstin?.trim() ? encryptSecret(input.gstin.trim()) : null,
         pan_enc: input.pan ? encryptSecret(input.pan) : null,
-        // New details → not verified until finance checks them again, and any
-        // RazorpayX token for the old account no longer applies.
+        // New details → pending until finance checks them again (a previous
+        // rejection no longer applies), and any RazorpayX token for the old
+        // account no longer applies either.
+        submitted_at: wholeSecondNow(),
         is_verified: 0,
         verified_at: null,
         verified_by_cp_user_id: null,
         verification_note: null,
+        rejected_at: null,
+        rejected_by_cp_user_id: null,
+        rejection_reason: null,
         provider_contact_id: null,
         provider_fund_account_id: null,
       };
       const existing = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
-        select: { id: true },
+        select: { id: true, account_number_last4: true, is_verified: true, rejected_at: true },
       });
-      if (existing) {
-        await db.partner_bank_account.update({ where: { id: existing.id }, data });
-      } else {
-        await db.partner_bank_account.create({ data: { org_id: orgId, ...data } });
-      }
+      const saved = existing
+        ? await db.partner_bank_account.update({ where: { id: existing.id }, data, select: { id: true, org_id: true } })
+        : await db.partner_bank_account.create({ data: { org_id: orgId, ...data }, select: { id: true, org_id: true } });
+      await auditBank(
+        "bank.details_saved",
+        saved,
+        {
+          hadAccount: existing != null,
+          oldLast4: existing?.account_number_last4 ?? null,
+          newLast4: last4,
+          region: data.region === 1 ? "international" : "domestic",
+          previousStatus: existing ? bankStatusOf(existing) : null,
+        },
+        ctx.cpPartner.id,
+      );
       return { success: true as const };
     }),
 
@@ -349,7 +371,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       const bank = await db.partner_bank_account.findFirst({
         where: { org_id: orgId },
         orderBy: { id: "desc" },
-        select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true, proof_url: true },
+        select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true, proof_url: true, rejected_at: true, rejection_reason: true },
       });
       // A claim is paid into the account on file, so it needs one — with the
       // cheque / bank letter finance will check before paying.
@@ -357,6 +379,14 @@ export const partnerCommissionRouter = createTRPCRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Add your bank details and upload a cancelled cheque (or bank letter) before submitting a claim.",
+        });
+      }
+      // Finance rejected these details: they can't be paid into, so the claim
+      // would only stall at release.
+      if (bank.rejected_at) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Our finance team couldn't verify your bank details${bank.rejection_reason ? ` (${bank.rejection_reason})` : ""}. Update them in My Account before submitting a claim.`,
         });
       }
 

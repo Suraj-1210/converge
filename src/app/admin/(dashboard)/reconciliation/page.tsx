@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
-import { BANK_PROOF_LABELS } from "~/lib/constants/partner-labels";
+import { BankAccountDetails, BankDecisionControls, BankStatusPill } from "~/components/admin/bank-account-review";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
@@ -120,18 +120,6 @@ export default function ReconciliationPage() {
   });
   const paymentsQ = api.reconciliation.paymentsConfig.useQuery(undefined, { enabled: canVerify });
   const payments = paymentsQ.data ?? { configured: false, mode: null };
-  const verifyBank = api.reconciliation.verifyBankAccount.useMutation({
-    onSuccess: (r) => { refetch(); showToast(r.verified ? `Bank verified${r.registeredName ? ` — ${r.registeredName}` : ""}` : `Verification ${r.status}: ${r.accountStatus ?? "pending"}`); },
-    onError: (e) => showToast(e.message),
-  });
-
-  const markBankVerified = api.reconciliation.markBankVerified.useMutation({
-    onSuccess: () => { refetch(); showToast("Bank account marked verified"); },
-    onError: (e) => showToast(e.message),
-  });
-  const revealAccount = api.reconciliation.revealAccountNumber.useMutation({
-    onError: (e) => showToast(e.message),
-  });
 
   const allPending = useMemo(() => pendingQ.data ?? [], [pendingQ.data]);
   const allCompleted = useMemo(() => completedQ.data ?? [], [completedQ.data]);
@@ -301,21 +289,10 @@ export default function ReconciliationPage() {
                             payments={payments}
                             verifying={verify.isPending}
                             releasing={release.isPending}
-                            verifyingBank={verifyBank.isPending}
                             onVerify={(checks) => verify.mutate({ payoutId: p.id, ...checks })}
                             onRelease={(payment) => release.mutate({ payoutId: p.id, ...payment })}
-                            onVerifyBank={p.bankAccountId != null ? () => verifyBank.mutate({ bankAccountId: p.bankAccountId! }) : undefined}
-                            markingBank={markBankVerified.isPending}
-                            onMarkBankVerified={
-                              p.bankAccountId != null
-                                ? (note) => markBankVerified.mutate({ bankAccountId: p.bankAccountId!, note })
-                                : undefined
-                            }
-                            onRevealAccount={
-                              isSuperAdmin && p.bankAccountId != null
-                                ? () => revealAccount.mutateAsync({ bankAccountId: p.bankAccountId! })
-                                : undefined
-                            }
+                            isSuperAdmin={isSuperAdmin}
+                            onBankDecision={showToast}
                             onHold={() => setReasonFor({ payout: p, kind: "hold" })}
                             onSendBack={() => setReasonFor({ payout: p, kind: "sendBack" })}
                           />
@@ -423,29 +400,23 @@ function ReconPanel({
   payments,
   verifying,
   releasing,
-  verifyingBank,
   onVerify,
   onRelease,
-  onVerifyBank,
   onHold,
   onSendBack,
-  markingBank,
-  onMarkBankVerified,
-  onRevealAccount,
+  isSuperAdmin,
+  onBankDecision,
 }: {
   payout: Payout;
-  markingBank: boolean;
-  onMarkBankVerified?: (note: string) => void;
-  onRevealAccount?: () => Promise<{ accountNumber: string | null; iban: string | null; note: string | null }>;
+  isSuperAdmin: boolean;
+  onBankDecision: (message: string) => void;
   canVerify: boolean;
   canRelease: boolean;
   payments: { configured: boolean; mode: string | null };
   verifying: boolean;
   releasing: boolean;
-  verifyingBank: boolean;
   onVerify: (checks: { bankConfirmed: boolean; invoiceVerified: boolean; commissionVerified: boolean; duplicateCheck: boolean }) => void;
   onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string }) => void;
-  onVerifyBank?: () => void;
   onHold: () => void;
   onSendBack: () => void;
 }) {
@@ -462,8 +433,6 @@ function ReconPanel({
   const [date, setDate] = useState(todayInput());
   const [amount, setAmount] = useState(String(payout.amountInr));
   const [notes, setNotes] = useState("");
-  const [verifyNote, setVerifyNote] = useState("");
-  const [revealed, setRevealed] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
   const readyToPay = payout.status === PayoutStatus.READY_TO_PAY;
@@ -533,91 +502,14 @@ function ReconPanel({
           </div>
           {payout.bank ? (
             <div className="mt-3 border-t border-[#F2F4F7] pt-3">
-              <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">
-                Bank Account · {payout.bank.region === "international" ? "International" : "Domestic"}
-                {payout.bank.verified ? (
-                  <span className="rounded-full bg-[#ECFDF3] px-2 py-0.5 text-[10px] font-bold text-[#067647] normal-case">✓ Verified</span>
-                ) : (
-                  <span className="rounded-full bg-[#FFF6ED] px-2 py-0.5 text-[10px] font-bold text-[#B54708] normal-case">Unverified</span>
-                )}
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">
+                Bank Account
+                <span className="normal-case"><BankStatusPill status={payout.bank.status} /></span>
               </div>
-              <div className="space-y-0.5 text-xs text-[#667085]">
-                <div>
-                  <span className="font-medium text-[#344054]">{payout.bank.accountHolder}</span> ·{" "}
-                  {revealed ?? `••••${payout.bank.last4 ?? "—"}`}
-                  {onRevealAccount && !revealed && (
-                    <button
-                      type="button"
-                      className="ml-1.5 font-semibold text-[#1570EF] hover:underline"
-                      onClick={() =>
-                        void onRevealAccount().then((r) =>
-                          setRevealed(r.accountNumber ?? r.note ?? "Not available"),
-                        )
-                      }
-                    >
-                      Reveal
-                    </button>
-                  )}
-                </div>
-                <div>
-                  {payout.bank.bankName ?? "—"}
-                  {payout.bank.branch ? ` · ${payout.bank.branch}` : ""} ·{" "}
-                  {payout.bank.region === "international"
-                    ? `SWIFT ${payout.bank.swift ?? "—"}${payout.bank.ibanLast4 ? ` · IBAN ••••${payout.bank.ibanLast4}` : ""}`
-                    : `IFSC ${payout.bank.ifsc ?? "—"}`}
-                </div>
-                {payout.bank.region === "international" && (
-                  <div>
-                    {payout.bank.bankCountry ?? "—"} · {payout.bank.bankAddress ?? "—"}
-                  </div>
-                )}
-                <div>
-                  {BANK_PROOF_LABELS[payout.bank.region === "international" ? "international" : "domestic"]}:{" "}
-                  {payout.bank.proofUrl ? (
-                    <a href={payout.bank.proofUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-[#1570EF] hover:underline">
-                      {payout.bank.proofFileName ?? "View"}
-                    </a>
-                  ) : (
-                    <span className="font-semibold text-[#B42318]">not uploaded — ask the partner to re-enter bank details</span>
-                  )}
-                </div>
-                {payout.bank.verified && (
-                  <div className="text-[#067647]">
-                    Verified{payout.bank.verifiedBy ? ` by ${payout.bank.verifiedBy}` : ""}
-                    {payout.bank.verifiedAt ? ` on ${new Date(payout.bank.verifiedAt).toLocaleDateString("en-IN")}` : ""}
-                    {payout.bank.verificationNote ? ` — ${payout.bank.verificationNote}` : ""}
-                  </div>
-                )}
-              </div>
-              {!payout.bank.verified && canVerify && (
-                <div className="mt-2.5 space-y-2 rounded-lg border border-[#FEDF89] bg-[#FFFCF5] p-2.5">
-                  <p className="text-[11px] text-[#B54708]">
-                    Check the {payout.bank.region === "international" ? "bank letter" : "cancelled cheque"} against the
-                    holder name, account number and {payout.bank.region === "international" ? "SWIFT" : "IFSC"} above. Payment can&apos;t be released until the account is verified.
-                  </p>
-                  {onMarkBankVerified && payout.bank.proofUrl && (
-                    <>
-                      <input
-                        value={verifyNote}
-                        onChange={(e) => setVerifyNote(e.target.value)}
-                        placeholder="How you verified it (e.g. cheque matches name, a/c and IFSC)"
-                        className="h-8 w-full rounded-md border border-[#D0D5DD] px-2 text-xs outline-none focus:border-[#1570EF]"
-                      />
-                      <Button
-                        className="!h-8 !text-[12px]"
-                        disabled={verifyNote.trim().length < 5}
-                        loading={markingBank}
-                        onClick={() => onMarkBankVerified(verifyNote.trim())}
-                      >
-                        Mark bank verified
-                      </Button>
-                    </>
-                  )}
-                  {payout.bank.region === "domestic" && payments.configured && onVerifyBank && (
-                    <Button variant="secondary" className="!h-8 !text-[12px]" loading={verifyingBank} onClick={onVerifyBank}>
-                      Or verify via RazorpayX (₹1 penny-drop)
-                    </Button>
-                  )}
+              <BankAccountDetails bank={payout.bank} canReveal={isSuperAdmin} />
+              {canVerify && (
+                <div className="mt-2.5">
+                  <BankDecisionControls bank={payout.bank} razorpayConfigured={payments.configured} onDone={onBankDecision} compact />
                 </div>
               )}
             </div>

@@ -374,6 +374,49 @@ export function payoutSentEmail(
   );
 }
 
+// 14a. Finance verified the partner's payout bank account.
+export function bankDetailsVerifiedEmail(
+  p: PartnerRef,
+  b: { accountLast4: string | null; bankName: string | null },
+  appUrl: string,
+): EmailMessage {
+  const account = [b.bankName, b.accountLast4 ? `account ending ${b.accountLast4}` : null]
+    .filter(Boolean)
+    .join(", ");
+  return build(
+    "Your Bank Details Are Verified",
+    "Bank details verified",
+    hello(p.name),
+    [
+      { p: `Our finance team has verified the bank details you saved${account ? ` (${account})` : ""}.` },
+      { p: "Your commission payments will be made to this account. If you change these details later, we will verify them again before the next payment." },
+      { button: { label: "View Bank Details", url: portal(appUrl, "/partner/account?tab=bank") } },
+    ],
+  );
+}
+
+// 14b. Finance rejected the partner's bank details; they must resubmit.
+export function bankDetailsRejectedEmail(
+  p: PartnerRef,
+  b: { accountLast4: string | null; reason: string },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    "Action Needed: Please Update Your Bank Details",
+    "We couldn't verify your bank details",
+    hello(p.name),
+    [
+      {
+        p: `Our finance team couldn't verify the bank details you saved${b.accountLast4 ? ` (account ending ${b.accountLast4})` : ""}.`,
+      },
+      { quote: b.reason, label: "Reason" },
+      { p: "Please update your bank details and upload a clear cancelled cheque (or bank letter) in My Account. We can't release commission payments until the account is verified." },
+      { button: { label: "Update Bank Details", url: portal(appUrl, "/partner/account?tab=bank") } },
+      { p: "If you have questions, simply reply to this email." },
+    ],
+  );
+}
+
 // ─── Agency counsellors & MOU ────────────────────────────────────────────────
 
 // 15. An agency owner added this person as a counsellor (pending approval).

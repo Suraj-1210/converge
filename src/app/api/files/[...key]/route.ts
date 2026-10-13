@@ -8,9 +8,17 @@ import {
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
 import { presignGetUrl, spacesConfigured } from "~/server/storage/spaces";
+import { AdminRole } from "~/server/db/enums";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// Same roles as financeProcedure (bank-detail verification).
+const BANK_PROOF_ADMIN_ROLES: number[] = [
+  AdminRole.SUPER_ADMIN,
+  AdminRole.FINANCE_MANAGER,
+  AdminRole.FINANCE_EXECUTIVE,
+];
 
 // Gated proxy for PRIVATE Spaces objects (student docs, partner KYC, avatars).
 // The object key is stored in the DB; this route verifies the caller may see it,
@@ -31,10 +39,12 @@ export async function GET(
 
   const jar = await cookies();
 
-  // Admins (collegepond staff) may read any document.
+  // Admins (collegepond staff) may read any document, except partners'
+  // cancelled cheques / bank letters, which are for finance roles only.
   const adminToken = jar.get(SESSION_COOKIE_NAME)?.value;
   const admin = adminToken ? await verifySessionJwt(adminToken) : null;
-  let allowed = Boolean(admin);
+  let allowed =
+    admin != null && (!key.startsWith("bank-proofs/") || BANK_PROOF_ADMIN_ROLES.includes(admin.role));
 
   // Partners may only read files attached to their own user/org (or to a
   // student in their org).
