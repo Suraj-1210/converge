@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
 import {
@@ -117,6 +118,17 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
   const email = input.email.toLowerCase();
 
   return db.$transaction(async (tx) => {
+    // Never overwrite an account from the public signup form: anyone can call
+    // it, and the upsert below let them rewrite a partner's type, agency and
+    // documents (it also turned agency counsellors into independents). The
+    // update branch is now unreachable; staging removes it.
+    const taken = await tx.user.findUnique({ where: { email }, select: { id: true } });
+    if (taken) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "An account with this email already exists. Please log in to check your application status.",
+      });
+    }
     const existing = await tx.user.findUnique({ where: { email } });
 
     let orgId: number | null = null;
