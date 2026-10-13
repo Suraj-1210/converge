@@ -126,7 +126,7 @@ export function StudentDocuments({
   // Current files only: a superseded single-slot upload stays as history.
   const current = (docs.data ?? []).filter((d) => {
     const t = STUDENT_DOC_TYPES.find((x) => x.key === d.docType);
-    return t?.multiple || d.isMostRecent;
+    return d.isMostRecent || t?.multiple === true;
   });
 
   async function upload() {

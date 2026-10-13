@@ -302,7 +302,7 @@ export const agencyOwnerProcedure = protectedPartnerProcedure.use(async ({ ctx, 
     where: { id: ctx.cpPartner.id },
     select: { id: true, type: true, is_owner: true, org_id: true },
   });
-  if (!me || me.type !== UserType.AGENCY_OWNER || me.is_owner !== 1 || me.org_id === null) {
+  if (me?.type !== UserType.AGENCY_OWNER || me.is_owner !== 1 || me.org_id === null) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Only the agency owner can do this.",
