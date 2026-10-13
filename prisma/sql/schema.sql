@@ -131,6 +131,8 @@ CREATE TABLE IF NOT EXISTS `user` (
   `mou_version`                     VARCHAR(20)  NULL DEFAULT NULL,
   `mou_pdf_url`                     VARCHAR(500) NULL DEFAULT NULL,  -- frozen PDF rendered at signing
   `last_login_at`                   TIMESTAMP NULL DEFAULT NULL,
+  -- Soft delete (counsellor removed by their agency); see migration 20261013103000.
+  `deleted_at`                      TIMESTAMP NULL DEFAULT NULL,
   `created_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

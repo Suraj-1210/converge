@@ -19,7 +19,7 @@ import {
 import { signPartnerSessionJwt } from "~/server/auth/jwt";
 import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/auth/cookies";
 import { endImpersonationFromLogout } from "~/server/auth/impersonation";
-import { DocumentStatus, UserType } from "~/server/db/enums";
+import { DocumentStatus, UserType, partnerKindOf } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { MOU_VERSION, MouSignatureKind } from "~/lib/constants/mou";
 import { MOU_USER_SELECT, executedMouFor, renderExecutedMou } from "~/server/mou-pdf";
@@ -167,6 +167,8 @@ export const authRouter = createTRPCRouter({
       lastName: user.last_name,
       avatarUrl: resolveStorageUrl(user.avatar_url),
       applicationId: user.tracking_id ?? "",
+      // agency (owner) / counsellor / independent: what the portal may offer.
+      kind: partnerKindOf(user.type),
       status,
       mouSigned: !!mouSignedAt,
       redirectUrl: partnerRedirectFor(
@@ -197,7 +199,10 @@ export const authRouter = createTRPCRouter({
     });
     if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
 
-    const role = user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
+    // An agency counsellor files no KYC of their own: Collegepond approves
+    // them against their agency, which the owner has already documented.
+    const kind = partnerKindOf(user.type);
+    const slots = kind === "counsellor" ? [] : PARTNER_DOC_SLOTS[kind];
     const docs = await ctx.db.document.findMany({
       where: {
         OR: [{ user_id: user.id }, ...(user.org_id ? [{ org_id: user.org_id }] : [])],
@@ -208,7 +213,7 @@ export const authRouter = createTRPCRouter({
     const gstRegistered =
       user.organization?.gst_registered == null ? null : user.organization.gst_registered === 1;
 
-    const documents = PARTNER_DOC_SLOTS[role]
+    const documents = slots
       .map((slot) => {
         const latest = docs.find((d) => d.doc_type === slot.key); // newest first
         const required = slot.required({ gstRegistered });

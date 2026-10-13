@@ -139,6 +139,24 @@ export function signupOtpEmail(code: string): EmailMessage {
   );
 }
 
+// 1b. An agency owner is adding this person as a counsellor and verifies their
+// email on the spot (the counsellor reads the code out to the owner).
+export function counsellorVerifyOtpEmail(code: string): EmailMessage {
+  return build(
+    "Confirm Your Email – Collegepond Partner Portal",
+    "Confirm your email address",
+    hello(),
+    [
+      { p: "An agency is adding you as a counsellor on the Collegepond Partner Portal and needs to confirm this email address belongs to you." },
+      { p: "If you are expecting this, give the code below to the person setting up your account:" },
+      { code },
+      { p: "This code is valid for 5 minutes. You will also receive a code on your mobile number." },
+      { p: "If you are not expecting this, do not share the code with anyone and simply ignore this email." },
+    ],
+    `Your Collegepond verification code is ${code}`,
+  );
+}
+
 // 2. Partner portal login (sent on every login).
 export function partnerLoginOtpEmail(code: string): EmailMessage {
   return build(

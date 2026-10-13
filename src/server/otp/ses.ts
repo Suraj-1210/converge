@@ -1,5 +1,6 @@
 import {
   adminLoginOtpEmail,
+  counsellorVerifyOtpEmail,
   partnerLoginOtpEmail,
   sendEmail,
   signupOtpEmail,
@@ -9,12 +10,13 @@ import { checkEmailOtp, discardEmailOtp, issueEmailOtp } from "./email-store";
 // Email OTP: we own the code (DB-backed ./email-store — survives restarts,
 // works across instances, caps verify attempts); SES just delivers it.
 
-export type EmailOtpPurpose = "signup" | "partner_login" | "admin_login";
+export type EmailOtpPurpose = "signup" | "partner_login" | "admin_login" | "counsellor_verify";
 
 const TEMPLATE = {
   signup: signupOtpEmail,
   partner_login: partnerLoginOtpEmail,
   admin_login: adminLoginOtpEmail,
+  counsellor_verify: counsellorVerifyOtpEmail,
 } as const;
 
 export async function sendEmailOtp(email: string, purpose: EmailOtpPurpose): Promise<void> {

@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  agencyOwnerProcedure,
   createTRPCRouter,
   protectedAdminProcedure,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
+import { createNotifications } from "~/server/notify";
+import { partnerScope, requireOrgCounsellor, requireVisibleStudent } from "~/server/partner-access";
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
@@ -174,6 +177,7 @@ function toApi(s: DbStudent) {
     applyThroughCp: s.apply_through_cp === null ? null : s.apply_through_cp === 1,
     orgId: s.org_id,
     orgName: s.organization?.name ?? "Independent",
+    counsellorId: s.counsellor_id,
     counsellorName: s.user ? fullName(s.user) : null,
     cpCounsellorId: s.cp_counsellor_id,
     cpCounsellorName: s.cp_counsellor ? fullName(s.cp_counsellor) : null,
@@ -402,32 +406,6 @@ function toPartnerApi(s: DbStudent) {
   void cpCounsellorName;
   void bdmName;
   return rest;
-}
-
-// Resolves the partner session to its user row and the student-visibility
-// filter for that user:
-//   owner / org member → whole org; agency counsellor → only assigned or
-//   self-created; independent (no org) → only self-created.
-async function partnerScope(partnerUserId: number) {
-  const user = await db.user.findUnique({
-    where: { id: partnerUserId },
-    select: { id: true, type: true, org_id: true },
-  });
-  if (!user) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "Account not found" });
-  }
-  let where: Record<string, unknown>;
-  if (user.org_id === null) {
-    where = { created_by_user_id: user.id };
-  } else if (user.type === UserType.AGENCY_COUNSELLOR) {
-    where = {
-      org_id: user.org_id,
-      OR: [{ counsellor_id: user.id }, { created_by_user_id: user.id }],
-    };
-  } else {
-    where = { org_id: user.org_id };
-  }
-  return { user, where };
 }
 
 // ---------------------------------------------------------------------------
@@ -1829,5 +1807,80 @@ export const studentsRouter = createTRPCRouter({
         }
         throw e;
       }
+    }),
+
+  // A student's documents, for anyone who can see the student (owner, the
+  // assigned counsellor, the independent who created them). Uploads go
+  // through /api/partner/student-doc with the same check.
+  partnerDocuments: protectedPartnerProcedure
+    .input(z.object({ studentId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const docs = await db.document.findMany({
+        where: { student_id: input.studentId },
+        orderBy: { created_at: "desc" },
+      });
+      return docs.map((d) => ({
+        id: d.id,
+        docType: d.doc_type,
+        fileName: d.file_name,
+        fileUrl: resolveStorageUrl(d.file_url),
+        sizeBytes: d.size_bytes,
+        isMostRecent: d.is_most_recent === 1,
+        createdAt: d.created_at.toISOString(),
+      }));
+    }),
+
+  // Route students to one of the owner's own counsellors, or back to the owner
+  // (counsellorId null). Only students of the owner's org, only active
+  // counsellors of the same org; anything else is refused as not found.
+  partnerAssignCounsellor: agencyOwnerProcedure
+    .input(
+      z.object({
+        studentIds: z.array(z.number().int().positive()).min(1).max(100),
+        counsellorId: z.number().int().positive().nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const ids = [...new Set(input.studentIds)];
+      const students = await db.student.findMany({
+        where: { id: { in: ids }, org_id: ctx.owner.orgId },
+        select: { id: true, counsellor_id: true },
+      });
+      if (students.length !== ids.length) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
+      }
+      const counsellor =
+        input.counsellorId === null
+          ? null
+          : await requireOrgCounsellor(ctx.owner.orgId, input.counsellorId, { assignable: true });
+
+      const changed = students.filter((s) => s.counsellor_id !== input.counsellorId);
+      if (changed.length > 0) {
+        await db.student.updateMany({
+          where: { id: { in: changed.map((s) => s.id) }, org_id: ctx.owner.orgId },
+          data: { counsellor_id: input.counsellorId },
+        });
+        await db.audit_log.createMany({
+          data: changed.map((s) => ({
+            action: "student.counsellor_assigned",
+            entity_type: "student",
+            entity_id: s.id,
+            metadata: { byPartnerUserId: ctx.owner.id, from: s.counsellor_id, to: input.counsellorId },
+          })),
+        });
+        if (counsellor) {
+          await createNotifications([counsellor.id], {
+            type: "student.assigned",
+            title: `${changed.length} student${changed.length === 1 ? " was" : "s were"} assigned to you`,
+            link: "/partner/students",
+            tone: "blue",
+          });
+        }
+      }
+      return {
+        updated: changed.length,
+        counsellorName: counsellor ? fullName(counsellor) : null,
+      };
     }),
 });

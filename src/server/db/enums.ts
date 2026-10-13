@@ -12,6 +12,22 @@ export const UserType = {
 } as const;
 export type UserType = (typeof UserType)[keyof typeof UserType];
 
+// How a partner user presents in the portal. Only the owner speaks for the
+// agency; an agency counsellor belongs to one but is not it; everyone else is
+// independent. (Treating "not the owner" as independent is what made agency
+// counsellors show up as Independent Counsellors.)
+export type PartnerKind = "agency" | "counsellor" | "independent";
+export function partnerKindOf(type: number): PartnerKind {
+  if (type === UserType.AGENCY_OWNER) return "agency";
+  if (type === UserType.AGENCY_COUNSELLOR) return "counsellor";
+  return "independent";
+}
+export const PartnerKindLabel: Record<PartnerKind, string> = {
+  agency: "Agency Owner",
+  counsellor: "Agency Counsellor",
+  independent: "Independent Counsellor",
+};
+
 export const AdminRole = {
   SUPER_ADMIN: 0,
   FINANCE_MANAGER: 1,
@@ -231,14 +247,19 @@ export const GenderLabel: Record<Gender, string> = {
 export const GENDER_CODES = Object.values(Gender) as Gender[];
 
 // Student-profile document slots (cp-student-profile Documents tab).
+export type StudentDocSection = "identity" | "academic" | "enrollment";
+
 export interface StudentDocType {
   key: string;
   label: string;
   multiple: boolean;
-  section: "academic" | "enrollment";
+  section: StudentDocSection;
 }
 
 export const STUDENT_DOC_TYPES: StudentDocType[] = [
+  // Identity / compliance documents, uploaded by Collegepond or the partner.
+  { key: "passport", label: "Passport", multiple: false, section: "identity" },
+  { key: "national_id", label: "National ID (e.g. Aadhaar)", multiple: false, section: "identity" },
   { key: "sop", label: "Statement of Purpose (SOP)", multiple: false, section: "academic" },
   { key: "lor", label: "Letter of Recommendation (LOR)", multiple: true, section: "academic" },
   { key: "resume", label: "Resume / CV", multiple: false, section: "academic" },

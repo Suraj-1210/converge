@@ -13,7 +13,7 @@ import {
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 
 type Counsellor = RouterOutputs["counsellors"]["list"][number];
-type Tab = "pending" | "approved" | "rejected";
+type Tab = "pending" | "approved" | "rejected" | "inactive";
 
 const REASONS = [
   "Incomplete documentation",
@@ -152,6 +152,32 @@ function PendingRow({
   );
 }
 
+// Deactivated by the agency, or removed (soft-deleted) by it. A removed
+// counsellor can be restored: they come back deactivated, for the agency (or an
+// approval here) to bring back to work.
+function InactiveCell({ c, onChanged }: { c: Counsellor; onChanged: () => void }) {
+  const restore = api.counsellors.restoreRemoved.useMutation({ onSuccess: onChanged });
+  return (
+    <td className="px-4 py-3">
+      {c.removedAt ? (
+        <div className="flex items-center gap-2">
+          <span className="text-[#B42318]">Removed by agency · {formatDate(c.removedAt)}</span>
+          <button
+            type="button"
+            disabled={restore.isPending}
+            onClick={() => restore.mutate({ userId: c.id })}
+            className="rounded-md border border-[#D0D5DD] bg-white px-2 py-1 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB] disabled:opacity-40"
+          >
+            Restore
+          </button>
+        </div>
+      ) : (
+        <span className="text-[#475467]">Deactivated by agency</span>
+      )}
+    </td>
+  );
+}
+
 const TH =
   "px-4 py-2.5 text-left text-[11px] font-semibold tracking-wide text-[#667085] uppercase";
 
@@ -181,16 +207,26 @@ export default function CounselorApprovalsPage() {
   const rows = data ?? [];
   const countByOrg = new Map<number, number>();
   for (const r of rows) {
-    if (r.orgId != null) {
+    // A counsellor the agency removed no longer counts towards its team.
+    if (r.orgId != null && !r.removedAt) {
       countByOrg.set(r.orgId, (countByOrg.get(r.orgId) ?? 0) + 1);
     }
   }
   const pending = rows.filter((r) => r.status === UserStatus.UNDER_REVIEW);
   const approved = rows.filter((r) => r.status === UserStatus.APPROVED);
   const rejected = rows.filter((r) => r.status === UserStatus.REJECTED);
+  // Deactivated or removed by their agency (they left).
+  const inactive = rows.filter((r) => r.status === UserStatus.INACTIVE);
 
   const partners = [...new Set(rows.map((r) => r.partner))].sort();
-  const list = tab === "pending" ? pending : tab === "approved" ? approved : rejected;
+  const list =
+    tab === "pending"
+      ? pending
+      : tab === "approved"
+        ? approved
+        : tab === "rejected"
+          ? rejected
+          : inactive;
   const filtered = list.filter((c) => {
     const q = search.toLowerCase();
     if (
@@ -207,6 +243,7 @@ export default function CounselorApprovalsPage() {
     { key: "pending", label: "Pending", count: pending.length },
     { key: "approved", label: "Approved", count: approved.length },
     { key: "rejected", label: "Rejected", count: rejected.length },
+    { key: "inactive", label: "Inactive", count: inactive.length },
   ];
 
   // Batch-approve selection (pending tab only).
@@ -384,7 +421,8 @@ export default function CounselorApprovalsPage() {
                   <th className={TH}>Signed Up</th>
                   {tab === "pending" && <th className={TH}>Verification</th>}
                   {tab === "pending" && <th className={TH}>Actions</th>}
-                  {tab !== "pending" && <th className={TH}>Decided By</th>}
+                  {tab !== "pending" && tab !== "inactive" && <th className={TH}>Decided By</th>}
+                  {tab === "inactive" && <th className={TH}>Status</th>}
                 </tr>
               </thead>
               <tbody>
@@ -416,7 +454,11 @@ export default function CounselorApprovalsPage() {
                         <td className="px-4 py-3 text-[#475467]">
                           {formatDate(c.createdAt)}
                         </td>
-                        <td className="px-4 py-3 text-[#475467]">{c.decidedBy ?? "—"}</td>
+                        {tab === "inactive" ? (
+                          <InactiveCell c={c} onChanged={refresh} />
+                        ) : (
+                          <td className="px-4 py-3 text-[#475467]">{c.decidedBy ?? "—"}</td>
+                        )}
                       </tr>
                     ))}
               </tbody>

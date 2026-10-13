@@ -21,7 +21,7 @@ import {
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { runWithImpersonation } from "~/server/auth/impersonation-context";
-import { AdminRole, UserStatus } from "~/server/db/enums";
+import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
 
 // `id`/`role` are the EFFECTIVE user: while a Super Admin impersonates a staff
 // user they are the impersonated user's, and `realId` is the admin's. Use
@@ -241,13 +241,16 @@ export const partnerSelfProcedure = publicProcedure.use(async ({ ctx, next }) =>
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
   const cpPartner = ctx.cpPartner;
-  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
-
   const row = await ctx.db.user.findUnique({
     where: { id: cpPartner.id },
-    select: { first_name: true, last_name: true },
+    select: { first_name: true, last_name: true, deleted_at: true },
   });
-  if (!row) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
+  // A counsellor removed by their agency has no account left to look at.
+  if (!row || row.deleted_at) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
+  }
+  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
+
   await assertActiveImpersonator(ctx.db, cpPartner.impersonatorId);
   return runWithImpersonation(
     {
@@ -265,10 +268,11 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
   // Block immediately if the partner was deactivated/rejected mid-session.
   const row = await ctx.db.user.findUnique({
     where: { id: ctx.cpPartner.id },
-    select: { status: true, first_name: true, last_name: true },
+    select: { status: true, first_name: true, last_name: true, deleted_at: true },
   });
   if (
     !row ||
+    row.deleted_at ||
     row.status === UserStatus.REJECTED ||
     row.status === UserStatus.INACTIVE
   ) {
@@ -288,4 +292,21 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
     },
     () => next({ ctx: { ...ctx, cpPartner } }),
   );
+});
+
+// An agency owner acting on their own agency: managing counsellors, routing
+// students. Adds ctx.owner with the owner's org id, which every query in the
+// procedure must scope by — counsellors and independents are refused here.
+export const agencyOwnerProcedure = protectedPartnerProcedure.use(async ({ ctx, next }) => {
+  const me = await ctx.db.user.findUnique({
+    where: { id: ctx.cpPartner.id },
+    select: { id: true, type: true, is_owner: true, org_id: true },
+  });
+  if (!me || me.type !== UserType.AGENCY_OWNER || me.is_owner !== 1 || me.org_id === null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only the agency owner can do this.",
+    });
+  }
+  return next({ ctx: { ...ctx, owner: { id: me.id, orgId: me.org_id } } });
 });

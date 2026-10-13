@@ -138,17 +138,21 @@ export async function resolvePartnerSession(
 const SIGNUP_PROOF_TTL = "2h";
 
 export type SignupProofChannel = "email" | "phone";
+// "counsellor": an agency owner verified a counsellor's contact while adding
+// them. Kept distinct so that proof can't be replayed into a public signup.
+export type SignupProofPurpose = "signup" | "counsellor";
 
-function signupProofKind(channel: SignupProofChannel) {
-  return `signup_${channel}_verified`;
+function signupProofKind(channel: SignupProofChannel, purpose: SignupProofPurpose) {
+  return `${purpose}_${channel}_verified`;
 }
 
 /** `subject` is the lower-cased email or the E.164 digits of the phone. */
 export async function signSignupProof(
   channel: SignupProofChannel,
   subject: string,
+  purpose: SignupProofPurpose = "signup",
 ): Promise<string> {
-  return new SignJWT({ kind: signupProofKind(channel) })
+  return new SignJWT({ kind: signupProofKind(channel, purpose) })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(subject)
     .setIssuedAt()
@@ -160,10 +164,11 @@ export async function verifySignupProof(
   token: string,
   channel: SignupProofChannel,
   subject: string,
+  purpose: SignupProofPurpose = "signup",
 ): Promise<boolean> {
   try {
     const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
-    return payload.kind === signupProofKind(channel) && payload.sub === subject;
+    return payload.kind === signupProofKind(channel, purpose) && payload.sub === subject;
   } catch {
     return false;
   }

@@ -47,7 +47,7 @@ export function verifyPhoneOtp(phoneE164: string, code: string): Promise<boolean
   return smsProvider().verifyPhoneOtp(phoneE164, code);
 }
 // `purpose` picks the email wording (signup verification / partner login /
-// admin login); the code itself is the same kind for all three.
+// admin login / counsellor verification); the code itself is the same kind.
 export function sendEmailOtp(email: string, purpose: EmailOtpPurpose): Promise<void> {
   return emailProvider().sendEmailOtp(email, purpose);
 }

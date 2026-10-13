@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
 import {
@@ -114,61 +115,56 @@ function fileNameFromUrl(url: string): string {
   return last.split("?")[0] ?? last;
 }
 
+// Files a NEW partner application. Never updates an existing account: it
+// used to upsert by email, so an agency counsellor who later filled in the
+// public signup form was silently turned into an Independent Counsellor (or
+// into an owner who renamed their agency and wiped its documents). The signup
+// router refuses registered emails/phones first; this is the backstop.
 export async function saveApplication(input: ApplicationInput): Promise<Application> {
   const email = input.email.toLowerCase();
+  // An agency owner without an organization would be an orphan owner.
+  if (input.role === "agency" && !input.companyName?.trim()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Company name is required for an agency." });
+  }
 
   return db.$transaction(async (tx) => {
-    const existing = await tx.user.findUnique({ where: { email } });
+    const existing = await tx.user.findUnique({ where: { email }, select: { id: true } });
+    if (existing) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "An account with this email already exists. Please log in to check your application status.",
+      });
+    }
 
     let orgId: number | null = null;
 
     if (input.role === "agency" && input.companyName) {
-      if (existing?.org_id) {
-        await tx.organization.update({
-          where: { id: existing.org_id },
-          data: {
-            name: input.companyName,
-            website: input.companyWebsite ?? null,
-            address: input.companyAddress ?? null,
-            city: input.city ?? null,
-            state: input.state ?? null,
-            country: input.country ?? null,
-            num_counsellors: counsellorRangeToCode(input.numCounselors),
-            annual_student_volume: volumeRangeToCode(input.annualVolume),
-            gst_registered: boolToTinyint(input.gstRegistered),
-            // Re-applying without a PAN keeps the one already on file.
-            ...(input.pan ? { pan: input.pan } : {}),
-          },
-        });
-        orgId = existing.org_id;
-      } else {
-        let urlIdentifier = slugify(input.companyName);
-        if (!urlIdentifier) urlIdentifier = `org-${randomSuffix()}`;
-        const taken = await tx.organization.findUnique({
-          where: { url_identifier: urlIdentifier },
-          select: { id: true },
-        });
-        if (taken) urlIdentifier = `${urlIdentifier}-${randomSuffix()}`;
+      let urlIdentifier = slugify(input.companyName);
+      if (!urlIdentifier) urlIdentifier = `org-${randomSuffix()}`;
+      const taken = await tx.organization.findUnique({
+        where: { url_identifier: urlIdentifier },
+        select: { id: true },
+      });
+      if (taken) urlIdentifier = `${urlIdentifier}-${randomSuffix()}`;
 
-        const newOrg = await tx.organization.create({
-          data: {
-            name: input.companyName,
-            type: OrganizationType.AGENCY,
-            url_identifier: urlIdentifier,
-            website: input.companyWebsite ?? null,
-            address: input.companyAddress ?? null,
-            city: input.city ?? null,
-            state: input.state ?? null,
-            country: input.country ?? null,
-            num_counsellors: counsellorRangeToCode(input.numCounselors),
-            annual_student_volume: volumeRangeToCode(input.annualVolume),
-            gst_registered: boolToTinyint(input.gstRegistered) ?? null,
-            pan: input.pan ?? null,
-            is_verified: 0,
-          },
-        });
-        orgId = newOrg.id;
-      }
+      const newOrg = await tx.organization.create({
+        data: {
+          name: input.companyName,
+          type: OrganizationType.AGENCY,
+          url_identifier: urlIdentifier,
+          website: input.companyWebsite ?? null,
+          address: input.companyAddress ?? null,
+          city: input.city ?? null,
+          state: input.state ?? null,
+          country: input.country ?? null,
+          num_counsellors: counsellorRangeToCode(input.numCounselors),
+          annual_student_volume: volumeRangeToCode(input.annualVolume),
+          gst_registered: boolToTinyint(input.gstRegistered) ?? null,
+          pan: input.pan ?? null,
+          is_verified: 0,
+        },
+      });
+      orgId = newOrg.id;
     }
 
     const userType =
@@ -191,33 +187,23 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
       state: input.state ?? "",
       city: input.city ?? "",
       address: input.companyAddress ?? "",
-      // BDMs are assigned internally after signup, never by the applicant, so
-      // a re-application leaves any existing assignment alone.
+      // No bdm_id: BDMs are assigned internally after signup, never by the
+      // applicant.
       ...(input.role === "independent" && input.pan ? { pan: input.pan } : {}),
     };
 
-    const user = existing
-      ? await tx.user.update({
-          where: { id: existing.id },
-          data: baseUserFields,
-        })
-      : await tx.user.create({
-          data: {
-            ...baseUserFields,
-            email,
-            tracking_id: generateTrackingId(),
-            status: UserStatus.UNDER_REVIEW,
-            is_email_verified: 1,
-            is_phone_verified: 1,
-          },
-        });
+    const user = await tx.user.create({
+      data: {
+        ...baseUserFields,
+        email,
+        tracking_id: generateTrackingId(),
+        status: UserStatus.UNDER_REVIEW,
+        is_email_verified: 1,
+        is_phone_verified: 1,
+      },
+    });
 
     if (input.documents) {
-      await tx.document.deleteMany({ where: { user_id: user.id } });
-      if (orgId) {
-        await tx.document.deleteMany({ where: { org_id: orgId } });
-      }
-
       const rows = Object.entries(input.documents)
         .filter(([, url]) => !!url)
         .map(([slot, url]) => {
@@ -267,7 +253,8 @@ export async function getApplicationByEmail(
       document: true,
     },
   });
-  if (!user) return null;
+  // A counsellor their agency removed can no longer sign in.
+  if (!user || user.deleted_at) return null;
 
   const docs: Record<string, string> = {};
   for (const d of user.document) docs[d.doc_type] = resolveStorageUrl(d.file_url);
@@ -401,13 +388,15 @@ function mapDocStatus(code: number): PartnerDocStatus {
   return "pending";
 }
 
-// Lists partner applications (any user that isn't an admin). Documents are
+// Lists partner applications (agency owners and independents). Documents are
 // included with id + status so the admin UI can render Verify / Reject
 // controls per document without an extra round-trip. Only current documents
 // (is_most_recent) — a file an admin replaced is kept but not listed.
 export async function listApplications(): Promise<PartnerListing[]> {
   const users = await db.user.findMany({
-    where: { type: { not: UserType.ADMIN } },
+    // Agency counsellors are not partners in their own right: they're
+    // reviewed on Counselor Approvals and belong to their agency's record.
+    where: { type: { notIn: [UserType.ADMIN, UserType.AGENCY_COUNSELLOR] } },
     orderBy: { created_at: "desc" },
     take: 500, // M6: defensive cap until cursor pagination lands
     include: {

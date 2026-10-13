@@ -11,7 +11,7 @@ import {
 import { saveApplication } from "~/server/applications/store";
 import { notifyAdminOfSignup } from "~/server/notifications";
 import { checkLocation } from "~/server/geo";
-import { db } from "~/server/db";
+import { findPartnerByContact } from "~/server/partner-contact";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
 import { signSignupProof, verifySignupProof } from "~/server/auth/jwt";
 import { PARTNER_DOC_SLOTS, type PartnerRole } from "~/lib/constants/partner-documents";
@@ -29,26 +29,18 @@ function signupDocuments(
 }
 
 // One account per email and per phone number. A partner who signed up before
-// (pending, rejected, deactivated…) must log in, not apply again — a second
-// signup would otherwise overwrite their record or create a duplicate.
+// (pending, rejected, deactivated…), or a counsellor an agency already added,
+// must log in, not apply again: a second signup would otherwise duplicate them
+// or (before saveApplication became create-only) overwrite their record.
 async function assertNotRegistered(email: string, phone: string, countryCode: string) {
-  // Signup stores countryCode + the digits (older rows: spaces removed); match
-  // both forms so a stray dash doesn't dodge the check.
-  const phones = [
-    `${countryCode}${phone.replace(/\s/g, "")}`,
-    `${countryCode}${phone.replace(/\D/g, "")}`,
-  ];
-  const existing = await db.user.findFirst({
-    where: { OR: [{ email: email.toLowerCase() }, { phone: { in: phones } }] },
-    select: { email: true },
-  });
+  const existing = await findPartnerByContact(email, countryCode, phone);
   if (existing) {
-    const byEmail = existing.email.toLowerCase() === email.toLowerCase();
     throw new TRPCError({
       code: "CONFLICT",
-      message: byEmail
-        ? "An account with this email already exists. Please log in to check your application status."
-        : "An account with this phone number already exists. Please log in to check your application status.",
+      message:
+        existing.matchedOn === "email"
+          ? "An account with this email already exists. Please log in to check your application status."
+          : "An account with this phone number already exists. Please log in to check your application status.",
     });
   }
 }
