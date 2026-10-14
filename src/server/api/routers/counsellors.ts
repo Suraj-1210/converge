@@ -19,6 +19,7 @@ import {
   verifyPhoneOtp,
 } from "~/server/otp";
 import { requireOrgCounsellor } from "~/server/partner-access";
+import { notifyStudentsAssigned } from "~/server/student-assignment";
 import { findPartnerByContact, splitStoredPhone } from "~/server/partner-contact";
 import { countryCodes } from "~/lib/constants/location-data";
 import { getExpectedPhoneDigits, isValidEmail, isValidPhone } from "~/lib/utils/validation";
@@ -253,34 +254,35 @@ function rethrowEmailTaken(e: unknown): never {
 
 // Takes a counsellor off duty (deactivate / remove) and hands their students
 // to `reassignTo` (an active counsellor of the same org) or, when null, back
-// to the owner. One transaction: nobody is left holding students they can no
-// longer see. Returns how many students moved.
+// to the owner (stored as the owner's id: "You", not "Unassigned"). One
+// transaction: nobody is left holding students they can no longer see.
+// Returns how many students moved.
 async function releaseCounsellor(
-  orgId: number,
+  owner: { id: number; orgId: number },
   counsellorId: number,
   reassignTo: number | null,
   data: { status: number; deleted_at?: Date },
 ): Promise<number> {
-  if (reassignTo !== null) {
-    if (reassignTo === counsellorId) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Choose someone else to take over their students." });
-    }
-    await requireOrgCounsellor(orgId, reassignTo, { assignable: true });
+  const orgId = owner.orgId;
+  if (reassignTo === counsellorId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Choose someone else to take over their students." });
   }
+  const taker =
+    reassignTo === null ? null : await requireOrgCounsellor(orgId, reassignTo, { assignable: true });
+  const moving = await db.student.findMany({
+    where: { org_id: orgId, counsellor_id: counsellorId },
+    select: { id: true },
+  });
+  const ids = moving.map((m) => m.id);
   const [moved] = await db.$transaction([
     db.student.updateMany({
-      where: { org_id: orgId, counsellor_id: counsellorId },
-      data: { counsellor_id: reassignTo },
+      where: { id: { in: ids }, org_id: orgId, counsellor_id: counsellorId },
+      data: { counsellor_id: taker?.id ?? owner.id },
     }),
     db.user.update({ where: { id: counsellorId }, data }),
   ]);
-  if (reassignTo !== null && moved.count > 0) {
-    await createNotifications([reassignTo], {
-      type: "student.assigned",
-      title: `${moved.count} student${moved.count === 1 ? " was" : "s were"} assigned to you`,
-      link: "/partner/students",
-      tone: "blue",
-    });
+  if (taker && moved.count > 0) {
+    void notifyStudentsAssigned({ ownerId: owner.id, counsellor: taker, studentIds: ids });
   }
   return moved.count;
 }
@@ -689,7 +691,7 @@ export const counsellorsRouter = createTRPCRouter({
       if (c.status === UserStatus.INACTIVE) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This counsellor is already deactivated." });
       }
-      const moved = await releaseCounsellor(ctx.owner.orgId, c.id, input.reassignTo, {
+      const moved = await releaseCounsellor(ctx.owner, c.id, input.reassignTo, {
         status: UserStatus.INACTIVE,
       });
       await logLifecycle("counsellor.deactivated", ctx.owner.id, c.id, input.reassignTo, moved);
@@ -719,7 +721,7 @@ export const counsellorsRouter = createTRPCRouter({
     .input(lifecycleInput)
     .mutation(async ({ ctx, input }) => {
       const c = await requireOrgCounsellor(ctx.owner.orgId, input.counsellorId);
-      const moved = await releaseCounsellor(ctx.owner.orgId, c.id, input.reassignTo, {
+      const moved = await releaseCounsellor(ctx.owner, c.id, input.reassignTo, {
         status: UserStatus.INACTIVE,
         deleted_at: new Date(),
       });

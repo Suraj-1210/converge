@@ -9,7 +9,9 @@ import { resolveStorageUrl } from "~/server/storage";
 import {
   DEFAULT_NOTIFICATION_PREF,
   NOTIFICATION_PREF_ROWS,
+  type NotificationPref,
 } from "~/lib/constants/notification-prefs";
+import { isAgencyOwner } from "~/server/partner-access";
 import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
 type DocStatusLabel = "pending" | "approved" | "rejected";
@@ -154,17 +156,20 @@ export const accountRouter = createTRPCRouter({
     }),
 
   // The partner's notification preferences, keyed like the toggle screen.
-  // No saved row = the default (email on). Email is the only channel.
+  // No saved row = the default (every channel on). Owner-only settings are
+  // returned to agency owners only.
   notificationPrefs: protectedPartnerProcedure.query(async ({ ctx }) => {
+    const isOwner = await isAgencyOwner(ctx.cpPartner.id);
     const rows = await ctx.db.notification_preference.findMany({
       where: { user_id: ctx.cpPartner.id },
-      select: { notification_type: true, via_email: true, via_sms: true },
+      select: { notification_type: true, via_email: true, via_in_app: true },
     });
-    const prefs: Record<string, { email: boolean }> = {};
+    const prefs: Record<string, NotificationPref> = {};
     for (const r of NOTIFICATION_PREF_ROWS) {
+      if (r.ownerOnly && !isOwner) continue;
       const saved = rows.find((x) => x.notification_type === r.code);
       prefs[r.key] = saved
-        ? { email: saved.via_email === 1 }
+        ? { email: saved.via_email === 1, inApp: saved.via_in_app === 1 }
         : { ...DEFAULT_NOTIFICATION_PREF };
     }
     return prefs;
@@ -173,15 +178,26 @@ export const accountRouter = createTRPCRouter({
   saveNotificationPrefs: protectedPartnerProcedure
     .input(
       z
-        .array(z.object({ key: z.string(), email: z.boolean() }))
+        .array(z.object({ key: z.string(), email: z.boolean(), inApp: z.boolean().optional() }))
         .max(50),
     )
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.cpPartner.id;
+      const ownerOnly = input.some(
+        (p) => NOTIFICATION_PREF_ROWS.find((r) => r.key === p.key)?.ownerOnly,
+      );
+      if (ownerOnly && !(await isAgencyOwner(userId))) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only the agency owner can change this." });
+      }
       for (const p of input) {
         const row = NOTIFICATION_PREF_ROWS.find((r) => r.key === p.key);
         if (!row) continue; // retired / unknown keys are ignored
-        const data = { via_email: p.email ? 1 : 0, via_sms: 0 };
+        const data = {
+          via_email: p.email ? 1 : 0,
+          // Types without an in-app toggle keep the default.
+          via_in_app: row.inApp && p.inApp === false ? 0 : 1,
+          via_sms: 0,
+        };
         await ctx.db.notification_preference.upsert({
           where: { user_id_notification_type: { user_id: userId, notification_type: row.code } },
           create: { user_id: userId, notification_type: row.code, ...data },

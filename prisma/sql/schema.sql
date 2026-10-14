@@ -588,6 +588,7 @@ CREATE TABLE IF NOT EXISTS `notification_preference` (
   `user_id`           INT NOT NULL,
   `notification_type` TINYINT(5) UNSIGNED NOT NULL,
   `via_email`         TINYINT NOT NULL DEFAULT 1,
+  `via_in_app`        TINYINT NOT NULL DEFAULT 1,
   `via_sms`           TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   INDEX `fk_notification_preference_user1_idx` (`user_id` ASC) VISIBLE,

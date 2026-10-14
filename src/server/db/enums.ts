@@ -254,22 +254,43 @@ export interface StudentDocType {
   label: string;
   multiple: boolean;
   section: StudentDocSection;
+  // On the standard checklist every student is expected to complete (partner
+  // portal → Upload documents, "4 of 7 documents"). The rest stay available
+  // as optional uploads. Agreed with Collegepond on 14 Oct 2026.
+  expected: boolean;
 }
 
 export const STUDENT_DOC_TYPES: StudentDocType[] = [
   // Identity / compliance documents, uploaded by Collegepond or the partner.
-  { key: "passport", label: "Passport", multiple: false, section: "identity" },
-  { key: "national_id", label: "National ID (e.g. Aadhaar)", multiple: false, section: "identity" },
-  { key: "sop", label: "Statement of Purpose (SOP)", multiple: false, section: "academic" },
-  { key: "lor", label: "Letter of Recommendation (LOR)", multiple: true, section: "academic" },
-  { key: "resume", label: "Resume / CV", multiple: false, section: "academic" },
-  { key: "backlog", label: "Backlog Certificate", multiple: false, section: "academic" },
-  { key: "additional", label: "Additional Documents", multiple: true, section: "academic" },
-  { key: "offer_letter", label: "Offer Letter", multiple: true, section: "enrollment" },
-  { key: "visa", label: "Visa Copy", multiple: false, section: "enrollment" },
-  { key: "deposit_receipt", label: "Deposit Receipt", multiple: false, section: "enrollment" },
-  { key: "tuition_receipt", label: "Tuition Payment Receipts", multiple: true, section: "enrollment" },
+  { key: "passport", label: "Passport", multiple: false, section: "identity", expected: true },
+  { key: "national_id", label: "National ID (e.g. Aadhaar)", multiple: false, section: "identity", expected: true },
+  { key: "marksheet_10th", label: "10th Marksheet", multiple: true, section: "academic", expected: true },
+  { key: "marksheet_12th", label: "12th Marksheet", multiple: true, section: "academic", expected: true },
+  { key: "resume", label: "Resume / CV", multiple: false, section: "academic", expected: true },
+  { key: "sop", label: "Statement of Purpose (SOP)", multiple: false, section: "academic", expected: true },
+  { key: "lor", label: "Letter of Recommendation (LOR)", multiple: true, section: "academic", expected: true },
+  { key: "transcript_bachelors", label: "Bachelor's Transcripts", multiple: true, section: "academic", expected: false },
+  { key: "english_test", label: "English Test Score Report", multiple: true, section: "academic", expected: false },
+  { key: "backlog", label: "Backlog Certificate", multiple: false, section: "academic", expected: false },
+  { key: "additional", label: "Additional Documents", multiple: true, section: "academic", expected: false },
+  { key: "offer_letter", label: "Offer Letter", multiple: true, section: "enrollment", expected: false },
+  { key: "visa", label: "Visa Copy", multiple: false, section: "enrollment", expected: false },
+  { key: "deposit_receipt", label: "Deposit Receipt", multiple: false, section: "enrollment", expected: false },
+  { key: "tuition_receipt", label: "Tuition Payment Receipts", multiple: true, section: "enrollment", expected: false },
 ];
+
+export const EXPECTED_STUDENT_DOC_TYPES = STUDENT_DOC_TYPES.filter((d) => d.expected);
+
+// The checklist slot an uploaded document fills. Collegepond's own profile
+// uploads (per-level transcripts, per-attempt English test reports) count
+// toward the matching standard item so it isn't shown as missing.
+export function studentDocSlot(docType: string): string {
+  if (docType === "edu_10th_transcript") return "marksheet_10th";
+  if (docType === "edu_12th_transcript") return "marksheet_12th";
+  if (docType === "edu_ug_transcript") return "transcript_bachelors";
+  if (/^test_(IELTS|TOEFL|TOEFL2026|PTE|Duolingo)_\d+$/.test(docType)) return "english_test";
+  return docType;
+}
 
 export const STUDENT_DOC_TYPE_KEYS = STUDENT_DOC_TYPES.map((d) => d.key);
 

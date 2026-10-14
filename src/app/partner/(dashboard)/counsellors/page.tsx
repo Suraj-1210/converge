@@ -314,7 +314,8 @@ function AddCounsellorCard({ onAdded }: { onAdded: (name: string) => void }) {
   const verified = !!proofs.email && !!proofs.phone;
 
   return (
-    <div className="mb-6 rounded-xl border border-[#E4E7EC] bg-white p-5">
+    // #add-counsellor: the Students page's Assign dialog links here.
+    <div id="add-counsellor" className="mb-6 scroll-mt-6 rounded-xl border border-[#E4E7EC] bg-white p-5">
       <h2 className="mb-1 text-sm font-semibold text-[#101828]">Add a counsellor</h2>
       <p className="mb-4 text-[12px] text-[#667085]">
         Fields marked <Req /> are required. Have the counsellor with you: they&apos;ll receive a

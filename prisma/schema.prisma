@@ -357,6 +357,7 @@ model notification_preference {
   user_id           Int
   notification_type Int  @db.UnsignedTinyInt
   via_email         Int  @default(1) @db.TinyInt
+  via_in_app        Int  @default(1) @db.TinyInt
   via_sms           Int  @default(0) @db.TinyInt
   user              user @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notification_preference_user")
 

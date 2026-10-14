@@ -535,6 +535,33 @@ export function mouReminderEmail(p: PartnerRef, appUrl: string): EmailMessage {
   );
 }
 
+// 20. Agency counsellor: the owner assigned students to them. One email per
+// assignment action, listing every student moved to this counsellor.
+export function studentsAssignedEmail(
+  p: PartnerRef,
+  a: { assignedBy: string; students: string[]; link: string },
+  appUrl: string,
+): EmailMessage {
+  const n = a.students.length;
+  const one = n === 1 ? a.students[0]! : null;
+  const shown = a.students.slice(0, 20);
+  const more = n - shown.length;
+  return build(
+    one ? `New Student Assigned to You: ${one}` : `${n} Students Assigned to You`,
+    one ? "A student was assigned to you" : `${n} students were assigned to you`,
+    hello(p.name),
+    [
+      {
+        p: one
+          ? `${a.assignedBy} has assigned ${one} to you on the Collegepond Partner Portal.`
+          : `${a.assignedBy} has assigned these ${n} students to you on the Collegepond Partner Portal:`,
+      },
+      ...(one ? [] : [{ list: more > 0 ? [...shown, `…and ${more} more`] : shown } as Block]),
+      { button: { label: one ? "View Student" : "View Your Students", url: portal(appUrl, a.link) } },
+    ],
+  );
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).

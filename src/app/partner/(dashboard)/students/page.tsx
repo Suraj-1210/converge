@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "~/components/ui/button";
 import { StatCard } from "~/components/ui/stat-card";
 import { Toast } from "~/components/ui/toast";
@@ -25,7 +25,9 @@ import {
   COUNTRY_NAME,
   type CreatedStudent,
 } from "./add-student-modal";
-import { StudentCounsellor, StudentDocuments } from "./student-panel-extras";
+import { AssignModal } from "./assign-modal";
+import { UploadDocumentsModal, expectedProgress } from "./upload-documents-modal";
+import { assigneeOf, type Viewer } from "./assignee";
 
 type PartnerStudent = RouterOutputs["students"]["partnerList"][number];
 
@@ -111,9 +113,37 @@ const emptyFilters = (): Filters => ({
 
 // ----- Page --------------------------------------------------------------------
 
+// useSearchParams needs a Suspense boundary in the App Router.
 export default function PartnerStudentsPage() {
+  return (
+    <Suspense>
+      <StudentsPage />
+    </Suspense>
+  );
+}
+
+// "Pills" above the table: a student status code, or the owner's Unassigned
+// filter. null = All.
+type Pill = number | "unassigned" | null;
+
+function StudentsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const me = api.auth.me.useQuery(undefined, { retry: false });
+  const isOwner = me.data?.kind === "agency";
+  // Owner only: who they can assign to (also tells whether "no counsellor"
+  // means Unassigned or simply theirs).
+  const assignees = api.students.partnerAssignees.useQuery(undefined, {
+    enabled: isOwner,
+    retry: false,
+  });
+  const meId = me.data?.id;
+  const meKind = me.data?.kind;
+  const hasCounsellors = (assignees.data?.counsellors.length ?? 0) > 0;
+  const viewer = useMemo<Viewer | null>(
+    () => (meId !== undefined && meKind ? { id: meId, kind: meKind, hasCounsellors } : null),
+    [meId, meKind, hasCounsellors],
+  );
 
   // Bounce away if approval state shifted (mirrors /partner/dashboard).
   useEffect(() => {
@@ -128,7 +158,7 @@ export default function PartnerStudentsPage() {
 
   const [filters, setFilters] = useState<Filters>(emptyFilters());
   // null = "All". Reset whenever the filter bar changes (mock behaviour).
-  const [activePill, setActivePill] = useState<number | null>(null);
+  const [activePill, setActivePill] = useState<Pill>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [addOpen, setAddOpen] = useState(false);
 
@@ -136,6 +166,19 @@ export default function PartnerStudentsPage() {
   const [toastOpen, setToastOpen] = useState(false);
   const [slideOverId, setSlideOverId] = useState<number | null>(null);
   const [morphId, setMorphId] = useState<number | null>(null);
+  // Row checkboxes (owner only) and the two actions' dialogs.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [assignIds, setAssignIds] = useState<number[] | null>(null);
+  const [uploadId, setUploadId] = useState<number | null>(null);
+
+  // Deep link from an assignment notification / email: ?student=<id> opens
+  // that student's panel, then the param is dropped.
+  const deepLinkId = Number(searchParams.get("student")) || null;
+  useEffect(() => {
+    if (deepLinkId === null || !students.data) return;
+    if (students.data.some((s) => s.id === deepLinkId)) setSlideOverId(deepLinkId);
+    router.replace("/partner/students", { scroll: false });
+  }, [deepLinkId, students.data, router]);
 
   // Native View Transition: morph the clicked row's avatar into the slide-over.
   const openStudent = (id: number) => {
@@ -248,17 +291,46 @@ export default function PartnerStudentsPage() {
     [statusCounts],
   );
 
+  const isUnassigned = useCallback(
+    (s: PartnerStudent) => viewer !== null && assigneeOf(s, viewer).kind === "unassigned",
+    [viewer],
+  );
+  const unassignedCount = baseFiltered.filter(isUnassigned).length;
+  // The pill only means something to an owner with counsellors to route to.
+  const showUnassignedPill = isOwner && (viewer?.hasCounsellors ?? false);
+
   const tableRows = useMemo(() => {
     const filtered =
       activePill === null
         ? baseFiltered
-        : baseFiltered.filter((s) => s.status === activePill);
+        : activePill === "unassigned"
+          ? baseFiltered.filter(isUnassigned)
+          : baseFiltered.filter((s) => s.status === activePill);
     return [...filtered].sort((a, b) => {
       const diff =
         new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
       return sortDir === "asc" ? diff : -diff;
     });
-  }, [baseFiltered, activePill, sortDir]);
+  }, [baseFiltered, activePill, sortDir, isUnassigned]);
+
+  // Selection applies to what's on screen: rows hidden by a filter drop out.
+  const visibleSelected = tableRows.filter((s) => selected.has(s.id));
+  const allSelected = tableRows.length > 0 && visibleSelected.length === tableRows.length;
+  const toggleOne = (id: number) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(tableRows.map((s) => s.id)));
+  const canAssign = isOwner && viewer !== null;
+  const showCounsellor = me.data?.kind === "agency" || me.data?.kind === "counsellor";
+  const assignStudents = assignIds
+    ? rows.filter((s) => assignIds.includes(s.id))
+    : [];
+  const uploadStudent = uploadId === null ? null : (rows.find((s) => s.id === uploadId) ?? null);
 
   // ---- Filter options (distinct values from the full visible set) ----
   const intakeOptions = useMemo(() => {
@@ -314,7 +386,7 @@ export default function PartnerStudentsPage() {
         <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-4 text-sm text-[#B42318]">
           {students.error.message}
         </div>
-      ) : students.isLoading ? (
+      ) : students.isLoading || (isOwner && assignees.isLoading) ? (
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -420,6 +492,14 @@ export default function PartnerStudentsPage() {
               active={activePill === null}
               onClick={() => setActivePill(null)}
             />
+            {showUnassignedPill && (
+              <StatusPill
+                label={`Unassigned (${unassignedCount})`}
+                active={activePill === "unassigned"}
+                onClick={() => setActivePill("unassigned")}
+                tone="orange"
+              />
+            )}
             {pillCodes.map((code) => (
               <StatusPill
                 key={code}
@@ -432,17 +512,31 @@ export default function PartnerStudentsPage() {
 
           {/* Students table */}
           <div className="overflow-x-auto rounded-2xl border border-[#E4E7EC] bg-white">
-            <table className="w-full min-w-[920px] border-collapse text-left">
+            <table className="w-full min-w-[1040px] border-collapse text-left">
               <thead>
                 <tr className="border-b border-[#E4E7EC] bg-[#F9FAFB]">
+                  {canAssign && (
+                    <th className="w-10 py-3 pr-0 pl-4">
+                      <input
+                        type="checkbox"
+                        aria-label={allSelected ? "Clear selection" : "Select all students shown"}
+                        checked={allSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = visibleSelected.length > 0 && !allSelected;
+                        }}
+                        onChange={toggleAll}
+                        className="h-4 w-4 cursor-pointer accent-[#1570EF]"
+                      />
+                    </th>
+                  )}
                   <Th>Student</Th>
-                  <Th>University</Th>
-                  <Th>Program</Th>
+                  {showCounsellor && <Th>Counsellor</Th>}
+                  {/* Paired columns keep the row buttons and Status on screen. */}
+                  <Th>University / Program</Th>
                   <Th>Level</Th>
-                  <Th>Country</Th>
-                  <Th>Intake</Th>
+                  <Th>Country / Intake</Th>
                   <Th>Status</Th>
-                  <th className="px-4 py-3">
+                  <th className="px-3 py-3">
                     <button
                       type="button"
                       onClick={() =>
@@ -467,13 +561,17 @@ export default function PartnerStudentsPage() {
                       </svg>
                     </button>
                   </th>
+                  {/* Pinned right so the row buttons stay visible when the table scrolls. */}
+                  <th className="sticky right-0 bg-[#F9FAFB] px-3 py-3 text-right text-xs font-semibold whitespace-nowrap text-[#667085] shadow-[-8px_0_12px_-10px_rgba(16,24,40,0.25)]">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {tableRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={7 + (canAssign ? 1 : 0) + (showCounsellor ? 1 : 0)}
                       className="px-4 py-12 text-center text-sm text-[#98A2B3]"
                     >
                       No students match the current filters
@@ -484,7 +582,14 @@ export default function PartnerStudentsPage() {
                     <StudentRow
                       key={s.id}
                       student={s}
+                      viewer={viewer}
+                      showCounsellor={showCounsellor}
+                      selectable={canAssign}
+                      selected={selected.has(s.id)}
+                      onToggle={() => toggleOne(s.id)}
                       onView={() => openStudent(s.id)}
+                      onUpload={() => setUploadId(s.id)}
+                      onAssign={canAssign ? () => setAssignIds([s.id]) : undefined}
                       morphing={morphId === s.id}
                     />
                   ))
@@ -495,11 +600,54 @@ export default function PartnerStudentsPage() {
         </>
       )}
 
+      {/* Sticky bulk bar while any row is ticked. */}
+      {canAssign && visibleSelected.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[150] flex justify-center px-4">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-xl bg-[#101828] py-2.5 pr-2.5 pl-4 text-sm text-white shadow-[0_12px_32px_rgba(16,24,40,0.3)]">
+            <span className="font-semibold">{visibleSelected.length} selected</span>
+            <span className="text-[#667085]">·</span>
+            <button
+              type="button"
+              onClick={() => setAssignIds(visibleSelected.map((s) => s.id))}
+              className="h-8 cursor-pointer rounded-lg bg-[#1570EF] px-3 text-[13px] font-semibold hover:bg-[#1260d4]"
+            >
+              Assign to counsellor
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="h-8 cursor-pointer rounded-lg px-3 text-[13px] font-semibold text-[#D0D5DD] hover:bg-[#1D2939] hover:text-white"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       <AddStudentModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreated={handleCreated}
       />
+      {assignIds && viewer && assignStudents.length > 0 && (
+        <AssignModal
+          students={assignStudents}
+          ownerId={viewer.id}
+          onClose={() => setAssignIds(null)}
+          onDone={(msg) => {
+            setAssignIds(null);
+            setSelected(new Set());
+            showToast(msg);
+          }}
+        />
+      )}
+      {uploadStudent && (
+        <UploadDocumentsModal
+          student={uploadStudent}
+          onClose={() => setUploadId(null)}
+          onUploaded={showToast}
+        />
+      )}
       <Toast
         message={toastMsg}
         open={toastOpen}
@@ -509,8 +657,10 @@ export default function PartnerStudentsPage() {
       {slideStudent && (
         <PartnerStudentSlideOver
           student={slideStudent}
-          isOwner={me.data?.kind === "agency"}
-          onMessage={showToast}
+          viewer={viewer}
+          canAssign={canAssign}
+          onAssign={() => setAssignIds([slideStudent.id])}
+          onUpload={() => setUploadId(slideStudent.id)}
           onClose={() => setSlideOverId(null)}
         />
       )}
@@ -520,21 +670,73 @@ export default function PartnerStudentsPage() {
 
 // ----- Table row --------------------------------------------------------------
 
+// "You", the counsellor's name, or an orange Unassigned badge.
+function AssigneeLabel({ student, viewer }: { student: PartnerStudent; viewer: Viewer | null }) {
+  if (!viewer) return <span className="text-[#98A2B3]">—</span>;
+  const a = assigneeOf(student, viewer);
+  if (a.kind === "unassigned") {
+    return (
+      <span className="inline-flex items-center rounded-full border border-[#FEDF89] bg-[#FFFAEB] px-2 py-0.5 text-[12px] font-semibold text-[#B54708]">
+        Unassigned
+      </span>
+    );
+  }
+  if (a.kind === "you") return <span className="font-medium text-[#101828]">You</span>;
+  return (
+    <span className="block max-w-[150px] truncate text-[#344054]" title={a.name}>
+      {a.name}
+    </span>
+  );
+}
+
+const rowBtn =
+  "h-8 cursor-pointer rounded-lg border px-2.5 text-[12px] font-semibold whitespace-nowrap transition-colors";
+
 function StudentRow({
   student: s,
+  viewer,
+  showCounsellor,
+  selectable,
+  selected,
+  onToggle,
   onView,
+  onUpload,
+  onAssign,
   morphing,
 }: {
   student: PartnerStudent;
+  viewer: Viewer | null;
+  showCounsellor: boolean;
+  selectable: boolean;
+  selected: boolean;
+  onToggle: () => void;
   onView: () => void;
+  onUpload: () => void;
+  // Owner only; counsellors can't assign or reassign.
+  onAssign?: () => void;
   morphing: boolean;
 }) {
   const { university, program } = derivedApplication(s);
   const initials =
     `${s.firstName.charAt(0)}${s.lastName.charAt(0)}`.toUpperCase();
   return (
-    <tr className="border-b border-[#F2F4F7] transition-colors last:border-b-0 hover:bg-[#F9FAFB]">
-      <td className="px-4 py-3">
+    <tr
+      className={`group border-b border-[#F2F4F7] transition-colors last:border-b-0 ${
+        selected ? "bg-[#F5F9FF]" : "hover:bg-[#F9FAFB]"
+      }`}
+    >
+      {selectable && (
+        <td className="w-10 py-3 pr-0 pl-4">
+          <input
+            type="checkbox"
+            aria-label={`Select ${s.firstName} ${s.lastName}`}
+            checked={selected}
+            onChange={onToggle}
+            className="h-4 w-4 cursor-pointer accent-[#1570EF]"
+          />
+        </td>
+      )}
+      <td className="px-3 py-3">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -556,36 +758,66 @@ function StudentRow({
           </div>
         </div>
       </td>
-      <td className="px-4 py-3">
-        <div className="max-w-[200px] truncate text-sm text-[#344054]">
+      {showCounsellor && (
+        <td className="px-3 py-3 text-sm whitespace-nowrap">
+          <AssigneeLabel student={s} viewer={viewer} />
+        </td>
+      )}
+      <td className="px-3 py-3">
+        <div
+          className="max-w-[220px] truncate text-sm text-[#344054]"
+          title={university}
+        >
           {university}
         </div>
-      </td>
-      <td className="px-4 py-3">
         <div
-          className="max-w-[180px] truncate text-sm text-[#344054]"
+          className="max-w-[220px] truncate text-xs text-[#98A2B3]"
           title={program}
         >
           {program}
         </div>
       </td>
-      <td className="px-4 py-3 text-sm whitespace-nowrap text-[#344054]">
+      <td className="px-3 py-3 text-sm whitespace-nowrap text-[#344054]">
         {levelShort(s.courseLevel)}
       </td>
-      <td className="px-4 py-3 text-sm whitespace-nowrap text-[#344054]">
-        {s.country ? (COUNTRY_NAME[s.country] ?? s.country) : "—"}
+      <td className="px-3 py-3 whitespace-nowrap">
+        <div className="text-sm text-[#344054]">
+          {s.country ? (COUNTRY_NAME[s.country] ?? s.country) : "—"}
+        </div>
+        <div className="text-xs text-[#98A2B3]">{s.intake ?? "—"}</div>
       </td>
-      <td className="px-4 py-3 text-sm whitespace-nowrap text-[#344054]">
-        {s.intake ?? "—"}
-      </td>
-      <td className="px-4 py-3">
+      <td className="px-3 py-3">
         <StudentStatusBadge status={s.status} />
       </td>
       <td
-        className="px-4 py-3 text-sm whitespace-nowrap text-[#667085]"
+        className="px-3 py-3 text-sm whitespace-nowrap text-[#667085]"
         title={new Date(s.updatedAt).toLocaleString("en-IN")}
       >
         {relativeTime(s.updatedAt)}
+      </td>
+      <td
+        className={`sticky right-0 px-3 py-3 shadow-[-8px_0_12px_-10px_rgba(16,24,40,0.25)] transition-colors ${
+          selected ? "bg-[#F5F9FF]" : "bg-white group-hover:bg-[#F9FAFB]"
+        }`}
+      >
+        <div className="flex justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={onUpload}
+            className={`${rowBtn} border-[#D0D5DD] bg-white text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF]`}
+          >
+            Upload documents
+          </button>
+          {onAssign && (
+            <button
+              type="button"
+              onClick={onAssign}
+              className={`${rowBtn} border-[#B2CCFF] bg-[#F5F9FF] text-[#175CD3] hover:bg-[#EFF4FF]`}
+            >
+              Assign
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -607,15 +839,21 @@ function SlideDetail({ label, value }: { label: string; value: string }) {
 // into this header (see openStudent in the page component).
 function PartnerStudentSlideOver({
   student: s,
-  isOwner,
-  onMessage,
+  viewer,
+  canAssign,
+  onAssign,
+  onUpload,
   onClose,
 }: {
   student: PartnerStudent;
-  isOwner: boolean;
-  onMessage: (msg: string) => void;
+  viewer: Viewer | null;
+  canAssign: boolean;
+  onAssign: () => void;
+  onUpload: () => void;
   onClose: () => void;
 }) {
+  const docs = api.students.partnerDocuments.useQuery({ studentId: s.id });
+  const progress = expectedProgress(docs.data);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -676,6 +914,61 @@ function PartnerStudentSlideOver({
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          {/* The two things partners come here to do, up front. */}
+          <div className="mb-5 divide-y divide-[#F2F4F7] rounded-xl border border-[#E4E7EC]">
+            <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+                  Documents
+                </div>
+                <div className="mt-0.5 text-sm text-[#344054]">
+                  {docs.isLoading ? (
+                    "…"
+                  ) : (
+                    <>
+                      <span className="font-semibold text-[#101828]">
+                        {progress.done} of {progress.total}
+                      </span>{" "}
+                      documents
+                      {progress.done < progress.total && (
+                        <span className="text-[#B54708]"> · {progress.total - progress.done} missing</span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onUpload}
+                className="h-9 shrink-0 cursor-pointer rounded-lg bg-[#1570EF] px-3.5 text-[13px] font-semibold text-white hover:bg-[#1260d4]"
+              >
+                Upload documents
+              </button>
+            </div>
+            {/* Agency students only: an independent has no team to route to. */}
+            {s.orgId !== null && viewer?.kind !== "independent" && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+                    Counsellor
+                  </div>
+                  <div className="mt-0.5 text-sm">
+                    <AssigneeLabel student={s} viewer={viewer} />
+                  </div>
+                </div>
+                {canAssign && (
+                  <button
+                    type="button"
+                    onClick={onAssign}
+                    className="h-9 shrink-0 cursor-pointer rounded-lg border border-[#B2CCFF] bg-[#F5F9FF] px-3.5 text-[13px] font-semibold text-[#175CD3] hover:bg-[#EFF4FF]"
+                  >
+                    Assign
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="space-y-2.5 text-sm">
             <div className="flex items-center gap-2.5">
               <span className="w-14 shrink-0 text-[#98A2B3]">Email</span>
@@ -732,17 +1025,6 @@ function PartnerStudentSlideOver({
             </div>
           )}
 
-          {/* Agency students only: an independent has no team to route to. */}
-          {s.orgId !== null && (
-            <StudentCounsellor
-              studentId={s.id}
-              counsellorId={s.counsellorId}
-              counsellorName={s.counsellorName}
-              isOwner={isOwner}
-              onChanged={onMessage}
-            />
-          )}
-          <StudentDocuments studentId={s.id} onUploaded={onMessage} />
         </div>
       </aside>
     </div>
@@ -751,7 +1033,7 @@ function PartnerStudentSlideOver({
 
 function Th({ children }: { children: React.ReactNode }) {
   return (
-    <th className="px-4 py-3 text-xs font-semibold whitespace-nowrap text-[#667085]">
+    <th className="px-3 py-3 text-xs font-semibold whitespace-nowrap text-[#667085]">
       {children}
     </th>
   );
@@ -763,20 +1045,26 @@ function StatusPill({
   label,
   active,
   onClick,
+  tone = "blue",
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
+  tone?: "blue" | "orange";
 }) {
+  const look =
+    tone === "orange"
+      ? active
+        ? "border-[#DC6803] bg-[#DC6803] text-white"
+        : "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708] hover:border-[#DC6803]"
+      : active
+        ? "border-[#1570EF] bg-[#1570EF] text-white"
+        : "border-[#D0D5DD] bg-white text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF]";
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`h-[34px] cursor-pointer rounded-full border px-3.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
-        active
-          ? "border-[#1570EF] bg-[#1570EF] text-white"
-          : "border-[#D0D5DD] bg-white text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF]"
-      }`}
+      className={`h-[34px] cursor-pointer rounded-full border px-3.5 text-[13px] font-medium whitespace-nowrap transition-colors ${look}`}
     >
       {label}
     </button>

@@ -6,7 +6,7 @@ import {
   protectedAdminProcedure,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
-import { createNotifications } from "~/server/notify";
+import { notifyStudentsAssigned } from "~/server/student-assignment";
 import { partnerScope, requireOrgCounsellor, requireVisibleStudent } from "~/server/partner-access";
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
@@ -30,6 +30,7 @@ import {
   UNI_APP_STATUS_CODES,
   UniApplicationStatus,
   UniApplicationStatusLabel,
+  UserStatus,
   UserType,
   type CourseLevel,
   type EducationLevel,
@@ -1831,13 +1832,56 @@ export const studentsRouter = createTRPCRouter({
       }));
     }),
 
-  // Route students to one of the owner's own counsellors, or back to the owner
-  // (counsellorId null). Only students of the owner's org, only active
-  // counsellors of the same org; anything else is refused as not found.
+  // Who the owner can route students to, with how many each holds now, so the
+  // Assign dialog can show the workload: the owner ("Me"), every active
+  // counsellor, and how many are still unassigned.
+  partnerAssignees: agencyOwnerProcedure.query(async ({ ctx }) => {
+    const [owner, counsellors, counts] = await Promise.all([
+      db.user.findUnique({
+        where: { id: ctx.owner.id },
+        select: { first_name: true, last_name: true },
+      }),
+      db.user.findMany({
+        where: {
+          type: UserType.AGENCY_COUNSELLOR,
+          org_id: ctx.owner.orgId,
+          status: UserStatus.APPROVED,
+          deleted_at: null,
+        },
+        orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
+        select: { id: true, first_name: true, last_name: true },
+      }),
+      db.student.groupBy({
+        by: ["counsellor_id"],
+        where: { org_id: ctx.owner.orgId },
+        _count: { _all: true },
+      }),
+    ]);
+    const count = new Map(counts.map((c) => [c.counsellor_id, c._count._all]));
+    return {
+      owner: {
+        id: ctx.owner.id,
+        name: owner ? fullName(owner) : "Me",
+        studentCount: count.get(ctx.owner.id) ?? 0,
+      },
+      counsellors: counsellors.map((c) => ({
+        id: c.id,
+        name: fullName(c),
+        studentCount: count.get(c.id) ?? 0,
+      })),
+      unassigned: count.get(null) ?? 0,
+    };
+  }),
+
+  // Route students to one of the owner's own counsellors, or to the owner
+  // themselves (counsellorId null → stored as the owner's id, shown as "You";
+  // a student with no one at all is "Unassigned"). Only students of the
+  // owner's org, only active counsellors of the same org; anything else is
+  // refused as not found. Counsellors can't call this (agencyOwnerProcedure).
   partnerAssignCounsellor: agencyOwnerProcedure
     .input(
       z.object({
-        studentIds: z.array(z.number().int().positive()).min(1).max(100),
+        studentIds: z.array(z.number().int().positive()).min(1).max(500),
         counsellorId: z.number().int().positive().nullable(),
       }),
     )
@@ -1851,30 +1895,31 @@ export const studentsRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
       }
       const counsellor =
-        input.counsellorId === null
+        input.counsellorId === null || input.counsellorId === ctx.owner.id
           ? null
           : await requireOrgCounsellor(ctx.owner.orgId, input.counsellorId, { assignable: true });
+      const target = counsellor?.id ?? ctx.owner.id;
 
-      const changed = students.filter((s) => s.counsellor_id !== input.counsellorId);
+      const changed = students.filter((s) => s.counsellor_id !== target);
       if (changed.length > 0) {
         await db.student.updateMany({
           where: { id: { in: changed.map((s) => s.id) }, org_id: ctx.owner.orgId },
-          data: { counsellor_id: input.counsellorId },
+          data: { counsellor_id: target },
         });
         await db.audit_log.createMany({
           data: changed.map((s) => ({
             action: "student.counsellor_assigned",
             entity_type: "student",
             entity_id: s.id,
-            metadata: { byPartnerUserId: ctx.owner.id, from: s.counsellor_id, to: input.counsellorId },
+            metadata: { byPartnerUserId: ctx.owner.id, from: s.counsellor_id, to: target },
           })),
         });
         if (counsellor) {
-          await createNotifications([counsellor.id], {
-            type: "student.assigned",
-            title: `${changed.length} student${changed.length === 1 ? " was" : "s were"} assigned to you`,
-            link: "/partner/students",
-            tone: "blue",
+          // Fire-and-forget: the assignment is saved whatever happens here.
+          void notifyStudentsAssigned({
+            ownerId: ctx.owner.id,
+            counsellor,
+            studentIds: changed.map((s) => s.id),
           });
         }
       }

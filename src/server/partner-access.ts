@@ -37,6 +37,16 @@ export async function partnerScope(partnerUserId: number) {
   return { user, where: studentScopeFor(user) };
 }
 
+// The agency owner of an org: same test as agencyOwnerProcedure, for code
+// that serves every partner but has owner-only parts.
+export async function isAgencyOwner(partnerUserId: number): Promise<boolean> {
+  const u = await db.user.findUnique({
+    where: { id: partnerUserId },
+    select: { type: true, is_owner: true, org_id: true },
+  });
+  return u?.type === UserType.AGENCY_OWNER && u.is_owner === 1 && u.org_id !== null;
+}
+
 // The student if this partner may see it, else null. Another agency's
 // student looks exactly like a missing one.
 export async function findVisibleStudent(partnerUserId: number, studentId: number) {

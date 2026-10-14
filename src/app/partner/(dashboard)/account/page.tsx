@@ -6,7 +6,8 @@ import Image from "next/image";
 import { api } from "~/trpc/react";
 import {
   DEFAULT_NOTIFICATION_PREF,
-  NOTIFICATION_PREF_GROUPS,
+  notificationPrefGroupsFor,
+  type NotificationPref,
 } from "~/lib/constants/notification-prefs";
 import {
   BankAccountSummary,
@@ -100,7 +101,7 @@ export default function PartnerAccountPage() {
   // Notification preferences: loaded from and saved to the server, where they
   // decide whether the matching partner emails are sent.
   const notifQ = api.account.notificationPrefs.useQuery();
-  const [notifPrefs, setNotifPrefs] = useState<Record<string, { email: boolean }>>({});
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, NotificationPref>>({});
   const [notifDirty, setNotifDirty] = useState(false);
   useEffect(() => {
     if (notifQ.data && !notifDirty) setNotifPrefs(notifQ.data);
@@ -154,6 +155,8 @@ export default function PartnerAccountPage() {
       : data.partnerType === "counsellor"
         ? ["profile", "notifications"]
         : ["profile", "bank", "documents", "loyalty", "notifications"];
+  // Owner-only settings (e.g. notifying counsellors) are hidden from others.
+  const prefGroups = notificationPrefGroupsFor(data.partnerType === "agency");
   // A deep link (?tab=bank) can name a tab this partner doesn't get.
   const activeTab: TabKey = tabs.includes(tab) ? tab : "profile";
 
@@ -556,41 +559,69 @@ export default function PartnerAccountPage() {
             </div>
           </div>
 
-          {NOTIFICATION_PREF_GROUPS.map((cat) => (
-            <div key={cat.title} className="mb-6 last:mb-0">
-              <h4 className="mb-2 text-sm font-semibold text-[#101828]">
-                {cat.title}
-              </h4>
-              <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#F2F4F7]">
-                {cat.rows.map((row) => {
-                  const pref = notifPrefs[row.key] ?? DEFAULT_NOTIFICATION_PREF;
-                  return (
-                    <div
-                      key={row.key}
-                      className="flex items-center px-4 py-3"
-                    >
-                      <div className="flex-1 text-sm text-[#344054]">
-                        {row.label}
-                      </div>
-                      <div className="flex w-20 justify-center">
-                        <Toggle
-                          checked={pref.email}
-                          disabled={notifQ.isLoading}
-                          onChange={(v) => {
-                            setNotifDirty(true);
-                            setNotifPrefs((prev) => ({
-                              ...prev,
-                              [row.key]: { ...pref, email: v },
-                            }));
-                          }}
-                        />
-                      </div>
+          {prefGroups.map((cat) => {
+            // In-app is a choice only for the owner's team setting.
+            const hasInApp = cat.rows.some((r) => r.inApp);
+            return (
+              <div key={cat.title} className="mb-6 last:mb-0">
+                <div className="mb-2 flex items-end">
+                  <h4 className="flex-1 text-sm font-semibold text-[#101828]">
+                    {cat.title}
+                  </h4>
+                  {hasInApp && (
+                    <div className="w-20 text-center text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
+                      In-app
                     </div>
-                  );
-                })}
+                  )}
+                  {hasInApp && (
+                    <div className="w-20 text-center text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
+                      Email
+                    </div>
+                  )}
+                </div>
+                <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#F2F4F7]">
+                  {cat.rows.map((row) => {
+                    const pref = notifPrefs[row.key] ?? DEFAULT_NOTIFICATION_PREF;
+                    const set = (patch: Partial<NotificationPref>) => {
+                      setNotifDirty(true);
+                      setNotifPrefs((prev) => ({ ...prev, [row.key]: { ...pref, ...patch } }));
+                    };
+                    return (
+                      <div
+                        key={row.key}
+                        className="flex items-center px-4 py-3"
+                      >
+                        <div className="flex-1 text-sm text-[#344054]">
+                          {row.label}
+                          {row.hint && (
+                            <div className="mt-0.5 text-xs text-[#98A2B3]">{row.hint}</div>
+                          )}
+                        </div>
+                        {hasInApp && (
+                          <div className="flex w-20 justify-center">
+                            {row.inApp && (
+                              <Toggle
+                                checked={pref.inApp}
+                                disabled={notifQ.isLoading}
+                                onChange={(v) => set({ inApp: v })}
+                              />
+                            )}
+                          </div>
+                        )}
+                        <div className="flex w-20 justify-center">
+                          <Toggle
+                            checked={pref.email}
+                            disabled={notifQ.isLoading}
+                            onChange={(v) => set({ email: v })}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           <div className="mt-6 flex items-center gap-4 border-t border-[#F2F4F7] pt-5">
             <button
@@ -598,7 +629,7 @@ export default function PartnerAccountPage() {
               disabled={!notifDirty || saveNotif.isPending}
               onClick={() =>
                 saveNotif.mutate(
-                  Object.entries(notifPrefs).map(([key, p]) => ({ key, email: p.email })),
+                  Object.entries(notifPrefs).map(([key, p]) => ({ key, email: p.email, inApp: p.inApp })),
                 )
               }
               className="cursor-pointer rounded-lg border-none bg-[#1570EF] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#1260d4] disabled:cursor-default disabled:opacity-50"

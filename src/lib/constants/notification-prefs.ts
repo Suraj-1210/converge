@@ -4,8 +4,12 @@
 // renumber one; retired types just disappear from the list.
 //
 // `email` says whether an email is actually sent for this today; the other
-// toggles are saved and take effect once their email exists. Email is the only
-// channel (no WhatsApp notifications), so via_sms stays 0.
+// toggles are saved and take effect once their email exists. via_sms stays 0
+// (no WhatsApp notifications).
+//
+// `inApp` rows also get an in-app toggle (via_in_app); every other in-app
+// notification is always shown. `ownerOnly` rows are agency-owner settings,
+// hidden from (and refused for) counsellors and independents.
 // Account-critical emails (login codes, application decisions, document and
 // more-info requests, deactivation) are always sent and have no toggle.
 
@@ -14,6 +18,9 @@ export interface NotificationPrefRow {
   code: number;
   label: string;
   email: boolean;
+  inApp?: boolean;
+  ownerOnly?: boolean;
+  hint?: string;
 }
 
 export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRow[] }[] = [
@@ -39,6 +46,21 @@ export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRo
     rows: [{ key: "evt.reminder", code: 7, label: "Upcoming Event Reminder", email: false }],
   },
   {
+    // Read on the owner's account, but the notifications go to counsellors.
+    title: "My Team",
+    rows: [
+      {
+        key: "team.assign",
+        code: 11,
+        label: "Notify my counsellors when students are assigned to them",
+        email: true,
+        inApp: true,
+        ownerOnly: true,
+        hint: "One notification per assignment, listing the students. Applies to all your counsellors.",
+      },
+    ],
+  },
+  {
     title: "System",
     rows: [
       { key: "sys.feature", code: 8, label: "New Feature Announcements", email: false },
@@ -54,6 +76,7 @@ export type NotificationPrefKey =
   | "app.new" | "app.status" | "app.doc" | "app.offer"
   | "fin.commission" | "fin.invoice" | "fin.payment"
   | "evt.reminder"
+  | "team.assign"
   | "sys.feature" | "sys.maintenance" | "sys.report";
 
 export function notificationPrefCode(key: NotificationPrefKey): number {
@@ -62,5 +85,16 @@ export function notificationPrefCode(key: NotificationPrefKey): number {
   return row.code;
 }
 
-// With no saved row, email is on.
-export const DEFAULT_NOTIFICATION_PREF = { email: true } as const;
+// With no saved row, every channel is on.
+export const DEFAULT_NOTIFICATION_PREF = { email: true, inApp: true } as const;
+
+export type NotificationPref = { email: boolean; inApp: boolean };
+
+// The groups a partner of this kind sees: owner-only rows are dropped for
+// everyone but agency owners, and a group left empty disappears.
+export function notificationPrefGroupsFor(isOwner: boolean) {
+  return NOTIFICATION_PREF_GROUPS.map((g) => ({
+    ...g,
+    rows: g.rows.filter((r) => isOwner || !r.ownerOnly),
+  })).filter((g) => g.rows.length > 0);
+}
