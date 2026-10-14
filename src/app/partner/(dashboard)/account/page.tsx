@@ -157,10 +157,14 @@ export default function PartnerAccountPage() {
   }
 
   const data = account.data;
+  // Payouts, loyalty and KYC belong to the agency (its owner), so an agency
+  // counsellor only manages their own profile and notifications.
   const tabs: TabKey[] =
     data.partnerType === "agency"
       ? ["profile", "business", "bank", "documents", "loyalty", "notifications"]
-      : ["profile", "bank", "documents", "loyalty", "notifications"];
+      : data.partnerType === "counsellor"
+        ? ["profile", "notifications"]
+        : ["profile", "bank", "documents", "loyalty", "notifications"];
 
   const handlePhotoSelect = async (file: File) => {
     if (!["image/jpeg", "image/png"].includes(file.type)) {

@@ -265,7 +265,8 @@ export async function getApplicationByEmail(
       document: true,
     },
   });
-  if (!user) return null;
+  // A counsellor their agency removed can no longer sign in.
+  if (!user || user.deleted_at) return null;
 
   const docs: Record<string, string> = {};
   for (const d of user.document) docs[d.doc_type] = resolveStorageUrl(d.file_url);
@@ -377,12 +378,14 @@ function mapDocStatus(code: number): PartnerDocStatus {
   return "pending";
 }
 
-// Lists partner applications (any user that isn't an admin). Documents are
+// Lists partner applications (agency owners and independents). Documents are
 // included with id + status so the admin UI can render Verify / Reject
 // controls per document without an extra round-trip.
 export async function listApplications(): Promise<PartnerListing[]> {
   const users = await db.user.findMany({
-    where: { type: { not: UserType.ADMIN } },
+    // Agency counsellors are not partners in their own right: they're
+    // reviewed on Counselor Approvals and belong to their agency's record.
+    where: { type: { notIn: [UserType.ADMIN, UserType.AGENCY_COUNSELLOR] } },
     orderBy: { created_at: "desc" },
     take: 500, // M6: defensive cap until cursor pagination lands
     include: {

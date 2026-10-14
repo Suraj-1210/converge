@@ -7,6 +7,7 @@ import {
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
+import { findVisibleStudent } from "~/server/partner-access";
 import { presignGetUrl, spacesConfigured } from "~/server/storage/spaces";
 
 export const runtime = "nodejs";
@@ -37,7 +38,7 @@ export async function GET(
   let allowed = Boolean(admin);
 
   // Partners may only read files attached to their own user/org (or to a
-  // student in their org).
+  // student they can see).
   if (!allowed) {
     const partnerToken = jar.get(PARTNER_SESSION_COOKIE_NAME)?.value;
     const partner = partnerToken
@@ -63,12 +64,10 @@ export async function GET(
         doc.org_id === me.org_id
       ) {
         allowed = true;
-      } else if (doc.student_id !== null && me.org_id !== null) {
-        const student = await db.student.findUnique({
-          where: { id: doc.student_id },
-          select: { org_id: true },
-        });
-        allowed = student?.org_id === me.org_id;
+      } else if (doc.student_id !== null) {
+        // Same rule as the student list: the owner sees their agency's
+        // students, a counsellor their own, an independent theirs.
+        allowed = (await findVisibleStudent(me.id, doc.student_id)) !== null;
       }
     }
     if (!allowed) {

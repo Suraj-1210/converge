@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { STUDENT_DOC_TYPES, type StudentDocType } from "~/server/db/enums";
+import { STUDENT_DOC_TYPES, type StudentDocSection, type StudentDocType } from "~/server/db/enums";
 import { api } from "~/trpc/react";
 import { type AdminStudentFull } from "../lib";
 
@@ -28,13 +28,23 @@ export function DocumentsTab({
   return (
     <div className="rounded-[14px] border border-[#E4E7EC] bg-white p-7">
       <DocSection
-        title="Academic Documents"
-        icon={<CapIcon />}
-        section="academic"
+        title="Identity Documents"
+        icon={<BriefcaseIcon />}
+        section="identity"
         student={student}
         onToast={onToast}
         invalidate={invalidate}
       />
+      <div className="mt-8">
+        <DocSection
+          title="Academic Documents"
+          icon={<CapIcon />}
+          section="academic"
+          student={student}
+          onToast={onToast}
+          invalidate={invalidate}
+        />
+      </div>
       <div className="mt-8">
         <DocSection
           title="Enrollment Documents"
@@ -59,7 +69,7 @@ function DocSection({
 }: {
   title: string;
   icon: React.ReactNode;
-  section: "academic" | "enrollment";
+  section: StudentDocSection;
   student: AdminStudentFull;
   onToast: (msg: string) => void;
   invalidate: () => void;

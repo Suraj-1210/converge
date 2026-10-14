@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS `user` (
   `tier`                            TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
   `mou_signed_at`                   TIMESTAMP NULL DEFAULT NULL,
   `last_login_at`                   TIMESTAMP NULL DEFAULT NULL,
+  -- Soft delete (counsellor removed by their agency); see migration 20261013103000.
+  `deleted_at`                      TIMESTAMP NULL DEFAULT NULL,
   `created_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`                      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

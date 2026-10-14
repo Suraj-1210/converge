@@ -11,7 +11,24 @@ import {
 import { saveApplication } from "~/server/applications/store";
 import { notifyAdminOfSignup } from "~/server/notifications";
 import { db } from "~/server/db";
+import { findPartnerByContact } from "~/server/partner-contact";
 import { AdminRole } from "~/server/db/enums";
+
+// One account per email and per phone number, across every agency and
+// independent. A partner who signed up before, or a counsellor an agency
+// already added, must log in, not apply again.
+async function assertNotRegistered(email: string, phone: string, countryCode: string) {
+  const existing = await findPartnerByContact(email, countryCode, phone);
+  if (existing) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        existing.matchedOn === "email"
+          ? "An account with this email already exists. Please log in to check your application status."
+          : "An account with this phone number already exists. Please log in to check your application status.",
+    });
+  }
+}
 
 export const signupRouter = createTRPCRouter({
   // Public BDM list for the signup form. Returns only id + display name —
@@ -37,6 +54,9 @@ export const signupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      // Before any codes go out: a returning partner (or a counsellor an
+      // agency already added) is sent to login.
+      await assertNotRegistered(input.email, input.phone, input.countryCode);
       const phoneE164 = toE164(input.phone, input.countryCode);
       const results = await Promise.allSettled([
         sendEmailOtp(input.email),
@@ -121,6 +141,8 @@ export const signupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      // Re-checked here: this endpoint is public and can be called directly.
+      await assertNotRegistered(input.email, input.phone, input.countryCode);
       const app = await saveApplication({
         email: input.email,
         role: input.role,

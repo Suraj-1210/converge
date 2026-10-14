@@ -6,6 +6,7 @@ import { Topbar } from "./topbar";
 import { MobileGate } from "./mobile-gate";
 import { PARTNER_NAV_SECTIONS } from "./partner-nav-config";
 import { api } from "~/trpc/react";
+import { PartnerKindLabel } from "~/server/db/enums";
 
 export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const me = api.auth.me.useQuery(undefined, { retry: false });
@@ -20,6 +21,14 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const markAllRead = api.partnerNotifications.markAllRead.useMutation({
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
+
+  // Managing the team is the agency owner's job; counsellors and independents
+  // don't get the Counsellors page (the server refuses them anyway).
+  const kind = me.data?.kind;
+  const sections = PARTNER_NAV_SECTIONS.map((sec) => ({
+    ...sec,
+    items: sec.items.filter((i) => i.href !== "/partner/counsellors" || kind === "agency"),
+  }));
 
   const userName =
     `${me.data?.firstName ?? ""} ${me.data?.lastName ?? ""}`.trim() ||
@@ -49,7 +58,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
     <MobileGate>
     <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]">
       <Sidebar
-        sections={PARTNER_NAV_SECTIONS}
+        sections={sections}
         logoSubtitle="Partner Portal"
         onLogout={handleLogout}
         logoUrl={branding?.partnerLogoUrl}
@@ -57,7 +66,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       <Topbar
         userName={userName}
         userInitials={initials}
-        roleLabel="Partner"
+        roleLabel={kind ? PartnerKindLabel[kind] : "Partner"}
         searchPlaceholder="Search students, applications…"
         accountHref="/partner/account"
         notifications={feed.data?.notifications ?? []}

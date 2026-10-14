@@ -25,6 +25,7 @@ import {
   COUNTRY_NAME,
   type CreatedStudent,
 } from "./add-student-modal";
+import { StudentCounsellor, StudentDocuments } from "./student-panel-extras";
 
 type PartnerStudent = RouterOutputs["students"]["partnerList"][number];
 
@@ -508,6 +509,8 @@ export default function PartnerStudentsPage() {
       {slideStudent && (
         <PartnerStudentSlideOver
           student={slideStudent}
+          isOwner={me.data?.kind === "agency"}
+          onMessage={showToast}
           onClose={() => setSlideOverId(null)}
         />
       )}
@@ -604,9 +607,13 @@ function SlideDetail({ label, value }: { label: string; value: string }) {
 // into this header (see openStudent in the page component).
 function PartnerStudentSlideOver({
   student: s,
+  isOwner,
+  onMessage,
   onClose,
 }: {
   student: PartnerStudent;
+  isOwner: boolean;
+  onMessage: (msg: string) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -724,6 +731,18 @@ function PartnerStudentSlideOver({
               ))}
             </div>
           )}
+
+          {/* Agency students only: an independent has no team to route to. */}
+          {s.orgId !== null && (
+            <StudentCounsellor
+              studentId={s.id}
+              counsellorId={s.counsellorId}
+              counsellorName={s.counsellorName}
+              isOwner={isOwner}
+              onChanged={onMessage}
+            />
+          )}
+          <StudentDocuments studentId={s.id} onUploaded={onMessage} />
         </div>
       </aside>
     </div>

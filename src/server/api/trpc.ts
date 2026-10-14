@@ -18,7 +18,7 @@ import {
   verifyPartnerSessionJwt,
   verifySessionJwt,
 } from "~/server/auth/jwt";
-import { AdminRole, UserStatus } from "~/server/db/enums";
+import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
 
 interface CpUser {
   id: number;
@@ -194,11 +194,13 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
   // Block immediately if the partner was deactivated/rejected mid-session.
   const row = await ctx.db.user.findUnique({
     where: { id: ctx.cpPartner.id },
-    select: { status: true },
+    select: { status: true, deleted_at: true },
   });
   if (
-    row?.status === UserStatus.REJECTED ||
-    row?.status === UserStatus.INACTIVE
+    !row ||
+    row.deleted_at ||
+    row.status === UserStatus.REJECTED ||
+    row.status === UserStatus.INACTIVE
   ) {
     throw new TRPCError({
       code: "UNAUTHORIZED",
@@ -206,4 +208,21 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
     });
   }
   return next({ ctx: { ...ctx, cpPartner: ctx.cpPartner } });
+});
+
+// An agency owner acting on their own agency: managing counsellors, routing
+// students. Adds ctx.owner with the owner's org id, which every query in the
+// procedure must scope by; counsellors and independents are refused here.
+export const agencyOwnerProcedure = protectedPartnerProcedure.use(async ({ ctx, next }) => {
+  const me = await ctx.db.user.findUnique({
+    where: { id: ctx.cpPartner.id },
+    select: { id: true, type: true, is_owner: true, org_id: true },
+  });
+  if (me?.type !== UserType.AGENCY_OWNER || me.is_owner !== 1 || me.org_id === null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only the agency owner can do this.",
+    });
+  }
+  return next({ ctx: { ...ctx, owner: { id: me.id, orgId: me.org_id } } });
 });

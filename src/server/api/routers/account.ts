@@ -4,7 +4,7 @@ import {
   createTRPCRouter,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
-import { DocumentStatus, UserType } from "~/server/db/enums";
+import { DocumentStatus, PartnerKindLabel, partnerKindOf } from "~/server/db/enums";
 import { resolveStorageUrl } from "~/server/storage";
 
 // Slot key (as stored in document.doc_type) → human label for the docs tab.
@@ -52,8 +52,7 @@ export const accountRouter = createTRPCRouter({
       throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
     }
 
-    const partnerType: "agency" | "independent" =
-      user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
+    const partnerType = partnerKindOf(user.type);
 
     const phone = splitPhone(user.phone);
 
@@ -67,8 +66,10 @@ export const accountRouter = createTRPCRouter({
       uploadedAt: d.created_at.toISOString(),
     }));
 
+    // The agency's KYC documents (cancelled cheque, company PAN...) are the
+    // owner's business, not every counsellor's.
     let orgDocs: typeof userDocs = [];
-    if (user.org_id) {
+    if (user.org_id && partnerType === "agency") {
       const docs = await ctx.db.document.findMany({
         where: { org_id: user.org_id },
       });
@@ -98,8 +99,7 @@ export const accountRouter = createTRPCRouter({
         avatarUrl: resolveStorageUrl(user.avatar_url),
         isEmailVerified: user.is_email_verified === 1,
         isPhoneVerified: user.is_phone_verified === 1,
-        roleLabel:
-          partnerType === "agency" ? "Agency Owner" : "Independent Counsellor",
+        roleLabel: PartnerKindLabel[partnerType],
         joinedAt: user.created_at.toISOString(),
       },
       business: user.organization

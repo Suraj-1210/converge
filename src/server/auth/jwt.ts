@@ -73,3 +73,52 @@ export async function verifyPartnerSessionJwt(
     return null;
   }
 }
+
+// =============================================================================
+// Contact verification proofs
+// =============================================================================
+//
+// An agency owner adding a counsellor verifies the counsellor's email and phone
+// OTPs in separate calls; each successful verify returns one of these, and
+// addCounsellor / updateCounsellor require them, so a counsellor can only be
+// saved with an email and phone that person controls. Bound to the exact
+// address/number; never a session. (Staging also uses these for signup.)
+
+const SIGNUP_PROOF_TTL = "2h";
+
+export type SignupProofChannel = "email" | "phone";
+// "counsellor": an agency owner verified a counsellor's contact while adding
+// them. Kept distinct so that proof can't be replayed into a public signup.
+export type SignupProofPurpose = "signup" | "counsellor";
+
+function signupProofKind(channel: SignupProofChannel, purpose: SignupProofPurpose) {
+  return `${purpose}_${channel}_verified`;
+}
+
+/** `subject` is the lower-cased email or the E.164 digits of the phone. */
+export async function signSignupProof(
+  channel: SignupProofChannel,
+  subject: string,
+  purpose: SignupProofPurpose = "signup",
+): Promise<string> {
+  return new SignJWT({ kind: signupProofKind(channel, purpose) })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(subject)
+    .setIssuedAt()
+    .setExpirationTime(SIGNUP_PROOF_TTL)
+    .sign(secret());
+}
+
+export async function verifySignupProof(
+  token: string,
+  channel: SignupProofChannel,
+  subject: string,
+  purpose: SignupProofPurpose = "signup",
+): Promise<boolean> {
+  try {
+    const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
+    return payload.kind === signupProofKind(channel, purpose) && payload.sub === subject;
+  } catch {
+    return false;
+  }
+}

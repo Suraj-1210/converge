@@ -19,7 +19,7 @@ import {
   PARTNER_SESSION_COOKIE_NAME,
   signPartnerSessionJwt,
 } from "~/server/auth/jwt";
-import { UserType } from "~/server/db/enums";
+import { UserType, partnerKindOf } from "~/server/db/enums";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
 
@@ -187,6 +187,8 @@ export const authRouter = createTRPCRouter({
       firstName: user.first_name,
       lastName: user.last_name,
       applicationId: user.tracking_id ?? "",
+      // agency (owner) / counsellor / independent: what the portal may offer.
+      kind: partnerKindOf(user.type),
       status,
       mouSigned: !!mouSignedAt,
       redirectUrl: partnerRedirectFor(
