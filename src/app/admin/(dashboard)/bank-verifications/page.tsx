@@ -10,6 +10,7 @@ import {
   BankStatusPill,
 } from "~/components/admin/bank-account-review";
 import { AdminRole } from "~/server/db/enums";
+import { PayeeTags } from "~/components/admin/payee-tags";
 
 // Bank Verifications: every partner whose bank details are new or changed and
 // not yet verified, oldest first, so finance checks them as soon as they are
@@ -189,7 +190,10 @@ export default function BankVerificationsPage() {
                             <div className="space-y-3">
                               <div className="rounded-lg border border-[#E4E7EC] bg-white p-4 text-xs text-[#667085]">
                                 <div className="mb-1 font-semibold tracking-wide text-[#98A2B3] uppercase">Partner</div>
-                                <div className="text-sm font-medium text-[#101828]">{r.partner}</div>
+                                <div className="text-sm font-medium text-[#101828]">
+                                  {r.partner}
+                                  <PayeeTags partnerType={r.partnerType} payeeInactive={r.payeeInactive} />
+                                </div>
                                 {r.owner && <div>{r.owner}{r.ownerEmail ? ` · ${r.ownerEmail}` : ""}</div>}
                                 {r.payoutsWaiting > 0 && (
                                   <div className="mt-2 font-semibold text-[#B54708]">
@@ -225,8 +229,11 @@ function QueueRow({ row: r, tab, open, onToggle }: { row: Row; tab: Tab; open: b
         <Chevron open={open} />
       </td>
       <td className={TD}>
-        <div className="font-medium text-[#101828]">{r.partner}</div>
-        {r.owner && <div className="text-xs text-[#98A2B3]">{r.owner}</div>}
+        <div className="font-medium text-[#101828]">
+          {r.partner}
+          <PayeeTags partnerType={r.partnerType} payeeInactive={r.payeeInactive} />
+        </div>
+        {r.owner && r.partnerType === "agency" && <div className="text-xs text-[#98A2B3]">{r.owner}</div>}
       </td>
       <td className={TD}>
         <div className="font-medium text-[#101828]">{r.accountHolder}</div>

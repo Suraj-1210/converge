@@ -21,7 +21,9 @@ model application {
   notes                  String?                        @db.VarChar(1000)
   student_id             Int
   course_id              Int
-  org_id                 Int
+  // NULL for an independent counsellor's student (whose it is: the student's
+  // created_by_user_id), same as student.org_id.
+  org_id                 Int?
   offer_letter_url       String?                        @db.VarChar(255)
   program_start_date     DateTime?                      @db.Date
   // University-issued application / student reference (profile page capture).
@@ -38,7 +40,7 @@ model application {
   // rate drives the commission. Supersedes the free-text counsellor_vendor.
   commission_contract_id Int?
   course                 course                         @relation(fields: [course_id], references: [id], map: "fk_application_course")
-  organization           organization                   @relation(fields: [org_id], references: [id], map: "fk_application_organization")
+  organization           organization?                  @relation(fields: [org_id], references: [id], map: "fk_application_organization")
   student                student                        @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_application_student")
   commission             commission?
   commission_contract    commission_contract?           @relation(fields: [commission_contract_id], references: [id], onDelete: SetNull, map: "fk_application_commission_contract")
@@ -104,7 +106,10 @@ model commission {
   created_at              DateTime             @default(now()) @db.Timestamp(0)
   updated_at              DateTime             @default(now()) @db.Timestamp(0)
   application_id          Int                  @unique(map: "application_id_UNIQUE")
-  org_id                  Int
+  // Payee, stamped at billing confirmation: the agency (org_id) or the
+  // independent counsellor (payee_user_id). Exactly one (chk_commission_payee).
+  org_id                  Int?
+  payee_user_id           Int?
   collegepond_received_at DateTime?            @db.Timestamp(0)
   // Spine STATE is the two milestone timestamps (collegepond_received_at,
   // partner_paid_at). The 5-state CommissionStatus badge is DERIVED on read from
@@ -119,7 +124,8 @@ model commission {
   // Tier whose share was stamped onto partner_share_pct at billing confirmation.
   partner_tier_id         Int?
   application             application          @relation(fields: [application_id], references: [id], onDelete: Cascade, map: "fk_commission_application")
-  organization            organization         @relation(fields: [org_id], references: [id], map: "fk_commission_organization")
+  organization            organization?        @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_commission_org")
+  payee_user              user?                @relation("commission_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_commission_payee_user")
   invoice_item            invoice_item[]
   vendor                  vendor?              @relation(fields: [vendor_id], references: [id], onDelete: SetNull, map: "fk_commission_vendor")
   vendor_invoice_item     vendor_invoice_item?
@@ -129,6 +135,7 @@ model commission {
   @@index([application_id], map: "fk_commission_application1_idx")
   @@index([org_id], map: "fk_commission_organization1_idx")
   @@index([partner_tier_id], map: "fk_commission_partner_tier_idx")
+  @@index([payee_user_id], map: "fk_commission_payee_user_idx")
   @@index([vendor_id], map: "fk_commission_vendor_idx")
 }
 
@@ -282,14 +289,19 @@ model invoice {
   fy                    Int?                  @db.SmallInt
   created_at            DateTime              @default(now()) @db.Timestamp(0)
   updated_at            DateTime              @default(now()) @db.Timestamp(0)
-  org_id                Int
-  organization          organization          @relation(fields: [org_id], references: [id], map: "fk_invoice_organization")
+  // Supplier: the agency (org_id) or the independent counsellor
+  // (payee_user_id). Exactly one (chk_invoice_payee).
+  org_id                Int?
+  payee_user_id         Int?
+  organization          organization?         @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_invoice_org")
+  payee_user            user?                 @relation("invoice_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_invoice_payee_user")
   invoice_item          invoice_item[]
   bank_account          partner_bank_account? @relation(fields: [bank_account_id], references: [id], onDelete: SetNull, map: "fk_invoice_bank_account")
   partner_payout        partner_payout?
 
   @@index([org_id], map: "fk_invoice_organization1_idx")
   @@index([bank_account_id], map: "fk_invoice_bank_account_idx")
+  @@index([payee_user_id], map: "fk_invoice_payee_user_idx")
 }
 
 model invoice_item {
@@ -590,6 +602,9 @@ model user {
   session                                                                 session[]
   student                                                                 student[]                 @relation("student_counsellor")
   student_created                                                         student[]                 @relation("student_created_by")
+  commission_payee                                                        commission[]              @relation("commission_payee")
+  invoice_payee                                                           invoice[]                 @relation("invoice_payee")
+  bank_account_payee                                                      partner_bank_account[]    @relation("bank_account_payee")
   collegepond_user_user_approved_by_collegepond_user_idTocollegepond_user collegepond_user?         @relation("user_approved_by_collegepond_user_idTocollegepond_user", fields: [approved_by_collegepond_user_id], references: [id], map: "fk_user_approved_by_collegepond_user")
   collegepond_user_user_bdm_idTocollegepond_user                          collegepond_user?         @relation("user_bdm_idTocollegepond_user", fields: [bdm_id], references: [id], map: "fk_user_bdm")
   collegepond_user_user_counsellor_idTocollegepond_user                   collegepond_user?         @relation("user_counsellor_idTocollegepond_user", fields: [counsellor_id], references: [id], map: "fk_user_counsellor")
@@ -1099,7 +1114,10 @@ model vendor_payment {
 // last4); gstin_enc/pan_enc are AES-256-GCM (src/server/crypto.ts). DPDP Rule 6.
 model partner_bank_account {
   id                       Int              @id @default(autoincrement())
-  org_id                   Int
+  // Owner: the agency (org_id) or the independent counsellor (payee_user_id).
+  // Exactly one (chk_bank_account_payee).
+  org_id                   Int?
+  payee_user_id            Int?
   // 0 Domestic (IFSC), 1 International (SWIFT).
   region                   Int              @default(0) @db.UnsignedTinyInt
   account_holder           String           @db.VarChar(150)
@@ -1132,12 +1150,14 @@ model partner_bank_account {
   rejection_reason         String?          @db.VarChar(500)
   created_at               DateTime         @default(now()) @db.Timestamp(0)
   updated_at               DateTime         @default(now()) @db.Timestamp(0)
-  organization             organization     @relation(fields: [org_id], references: [id], onDelete: Cascade, map: "fk_partner_bank_account_org")
+  organization             organization?    @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_bank_account_org")
+  payee_user               user?            @relation("bank_account_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_bank_account_payee_user")
   invoice                  invoice[]
   partner_payout           partner_payout[]
 
   @@index([org_id], map: "fk_partner_bank_account_org_idx")
   @@index([is_verified, rejected_at, submitted_at], map: "idx_partner_bank_account_queue")
+  @@index([payee_user_id], map: "fk_partner_bank_account_payee_user_idx")
 }
 
 // The reconciliation/release record for a partner invoice (1:1). Ops approval →

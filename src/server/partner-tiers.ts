@@ -2,6 +2,7 @@ import "server-only";
 import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import { UserType } from "~/server/db/enums";
+import { type Payee } from "~/server/payee";
 import { fmtTierDate as fmtDay, type TierStatusView } from "~/lib/partner-tiers";
 
 // Partner Tiers (loyalty programme): the one place a partner's tier is worked
@@ -232,29 +233,40 @@ export function validateSchedule(
 
 // ---- counting -----------------------------------------------------------------
 
-// Distinct students Finance confirmed for billing in `fy`, per agency.
-// `upTo` limits it to confirmations at or before that moment.
+// Distinct students Finance confirmed for billing in `fy`, per partner: an
+// agency by its commissions' org, an independent by the commissions paid to
+// them (commission.payee_user_id). `upTo` limits it to confirmations at or
+// before that moment.
 export async function fyStudentCounts(
-  orgIds: number[],
+  partners: { orgIds: number[]; independentIds: number[] },
   fy: number,
   opts: { upTo?: Date } = {},
-): Promise<Map<number, Set<number>>> {
-  const out = new Map<number, Set<number>>();
-  if (orgIds.length === 0) return out;
+): Promise<{ byOrg: Map<number, Set<number>>; byIndependent: Map<number, Set<number>> }> {
+  const byOrg = new Map<number, Set<number>>();
+  const byIndependent = new Map<number, Set<number>>();
+  const owners = [
+    ...(partners.orgIds.length ? [{ org_id: { in: partners.orgIds } }] : []),
+    ...(partners.independentIds.length ? [{ payee_user_id: { in: partners.independentIds } }] : []),
+  ];
+  if (owners.length === 0) return { byOrg, byIndependent };
   const { start, end } = fyWindow(fy);
   const rows = await db.commission.findMany({
     where: {
-      org_id: { in: orgIds },
+      OR: owners,
       created_at: { gte: start, lt: end, ...(opts.upTo ? { lte: opts.upTo } : {}) },
     },
-    select: { org_id: true, application: { select: { student_id: true } } },
+    select: { org_id: true, payee_user_id: true, application: { select: { student_id: true } } },
   });
+  const add = (m: Map<number, Set<number>>, key: number, studentId: number) => {
+    const set = m.get(key) ?? new Set<number>();
+    set.add(studentId);
+    m.set(key, set);
+  };
   for (const r of rows) {
-    const set = out.get(r.org_id) ?? new Set<number>();
-    set.add(r.application.student_id);
-    out.set(r.org_id, set);
+    if (r.org_id != null) add(byOrg, r.org_id, r.application.student_id);
+    else if (r.payee_user_id != null) add(byIndependent, r.payee_user_id, r.application.student_id);
   }
-  return out;
+  return { byOrg, byIndependent };
 }
 
 // ---- status -------------------------------------------------------------------
@@ -328,8 +340,9 @@ export async function partnerTierStatuses(
   if (refs.length === 0) return out;
   const ladder = await ladderFor(fy);
   const orgIds = [...new Set(refs.map((r) => r.orgId).filter((x): x is number => x != null))];
+  const independentIds = [...new Set(refs.filter((r) => r.orgId == null).map((r) => r.userId))];
   const [counts, overrides] = await Promise.all([
-    fyStudentCounts(orgIds, fy),
+    fyStudentCounts({ orgIds, independentIds }, fy),
     db.partner_tier_override.findMany({
       where: { user_id: { in: refs.map((r) => r.userId) } },
       select: OVERRIDE_SELECT,
@@ -338,7 +351,8 @@ export async function partnerTierStatuses(
   const today = todayIst();
   const overrideByUser = new Map(overrides.map((o) => [o.user_id, toOverride(o, today)]));
   for (const r of refs) {
-    const students = r.orgId != null ? (counts.get(r.orgId)?.size ?? 0) : 0;
+    const students =
+      (r.orgId != null ? counts.byOrg.get(r.orgId) : counts.byIndependent.get(r.userId))?.size ?? 0;
     const status = statusFrom(ladder, students, overrideByUser.get(r.userId) ?? null);
     if (status) out.set(r.userId, status);
   }
@@ -374,11 +388,12 @@ export async function partnerRefForUser(userId: number): Promise<PartnerRef | nu
   return (await partnerRefForOrg(u.org_id)) ?? { userId: u.id, orgId: u.org_id };
 }
 
-// The share to stamp on a commission Finance is confirming for `orgId` now.
-// The student being confirmed counts toward the tier (the 11th student is the
-// first at Gold). Returns null when no ladder is configured.
+// The share to stamp on a commission Finance is confirming for `payee` (an
+// agency or an independent counsellor) now. The student being confirmed counts
+// toward the tier (the 11th student is the first at Gold). Returns null when
+// no ladder is configured.
 export async function shareForConfirmation(
-  orgId: number,
+  payee: Payee,
   studentId: number,
   opts: { at?: Date } = {},
 ): Promise<{ tier: LadderStep; sharePct: number; students: number; source: "computed" | "override" } | null> {
@@ -386,9 +401,18 @@ export async function shareForConfirmation(
   const fy = tierFyOf(at);
   const ladder = await ladderFor(fy);
   if (ladder.steps.length === 0) return null;
-  const ref = await partnerRefForOrg(orgId);
-  const counts = await fyStudentCounts([orgId], fy, { upTo: at });
-  const set = counts.get(orgId) ?? new Set<number>();
+  const ref: PartnerRef | null =
+    payee.orgId != null ? await partnerRefForOrg(payee.orgId) : { userId: payee.userId, orgId: null };
+  const counts = await fyStudentCounts(
+    payee.orgId != null
+      ? { orgIds: [payee.orgId], independentIds: [] }
+      : { orgIds: [], independentIds: [payee.userId] },
+    fy,
+    { upTo: at },
+  );
+  const set =
+    (payee.orgId != null ? counts.byOrg.get(payee.orgId) : counts.byIndependent.get(payee.userId)) ??
+    new Set<number>();
   set.add(studentId);
   const ov = ref
     ? await db.partner_tier_override.findUnique({ where: { user_id: ref.userId }, select: OVERRIDE_SELECT })

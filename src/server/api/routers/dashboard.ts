@@ -243,7 +243,8 @@ export const dashboardRouter = createTRPCRouter({
       .sort((a, b) => a.status - b.status);
 
     // Top partners — students from topOrgsRaw, enriched with apps/deposits/revenue.
-    // (application.org_id and commission.org_id are non-null, so no null guard.)
+    // Agencies only: an independent counsellor's applications and
+    // commissions have no org_id, so their null-key groups are skipped.
     const topOrgs = topOrgsRaw.filter(
       (g): g is typeof g & { org_id: number } => g.org_id !== null,
     );
@@ -255,12 +256,12 @@ export const dashboardRouter = createTRPCRouter({
       : [];
     const orgById = new Map(orgs.map((o) => [o.id, o]));
     const appByOrg = new Map<number, number>();
-    for (const g of appByOrgRaw) appByOrg.set(g.org_id, g._count.id);
+    for (const g of appByOrgRaw) if (g.org_id != null) appByOrg.set(g.org_id, g._count.id);
     const depByOrg = new Map<number, number>();
-    for (const g of depByOrgRaw) depByOrg.set(g.org_id, g._count.id);
+    for (const g of depByOrgRaw) if (g.org_id != null) depByOrg.set(g.org_id, g._count.id);
     const revByOrg = new Map<number, number>();
     for (const g of revByOrgRaw)
-      revByOrg.set(g.org_id, Number(g._sum.commision_amount ?? 0));
+      if (g.org_id != null) revByOrg.set(g.org_id, Number(g._sum.commision_amount ?? 0));
     // Partner Tiers: the agency's tier this FY (automatic, or a Super Admin
     // floor), held by its owner.
     const owners = topOrgs.length

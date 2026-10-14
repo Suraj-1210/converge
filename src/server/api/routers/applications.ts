@@ -66,7 +66,17 @@ export const applicationsRouter = createTRPCRouter({
             status: true,
             created_at: true,
             university_app_id: true,
-            student: { select: { id: true, first_name: true, last_name: true, country: true, cp_counsellor_id: true } },
+            student: {
+              select: {
+                id: true,
+                first_name: true,
+                last_name: true,
+                country: true,
+                cp_counsellor_id: true,
+                // An independent counsellor's student has no org: show them.
+                created_by: { select: { first_name: true, last_name: true } },
+              },
+            },
             course: { select: { name: true, intake_month: true, intake_year: true, university: { select: { name: true, country: true } } } },
             organization: { select: { name: true } },
           },
@@ -99,7 +109,11 @@ export const applicationsRouter = createTRPCRouter({
           id: r.id,
           studentId: r.student.id,
           student: `${r.student.first_name} ${r.student.last_name}`.trim(),
-          partner: r.organization.name,
+          partner:
+            r.organization?.name ??
+            (r.student.created_by
+              ? `${r.student.created_by.first_name} ${r.student.created_by.last_name}`.trim()
+              : "—"),
           university: r.course.university.name,
           program: r.course.name,
           status: r.status,

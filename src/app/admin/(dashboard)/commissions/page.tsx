@@ -19,6 +19,7 @@ import {
   EmptyState,
 } from "~/components/dashboard/widgets";
 import { formatINR, formatDate, countryFlag } from "~/components/dashboard/format";
+import { PayeeTags } from "~/components/admin/payee-tags";
 import {
   AdminRole,
   CommissionStatus,
@@ -356,7 +357,10 @@ export default function AdminCommissionsPage() {
                         <span className="font-semibold text-[#1570EF]">{r.studentName}</span>
                         <span className="block text-xs text-[#98A2B3]">{r.cpStudentId}</span>
                       </td>
-                      <td className={TD}>{r.partner}</td>
+                      <td className={TD}>
+                        {r.partner}
+                        <PayeeTags partnerType={r.partnerType} payeeInactive={r.payeeInactive} />
+                      </td>
                       <td className={TD}>{r.university}<span className="block text-xs text-[#98A2B3]">{r.program}</span></td>
                       <td className={TD}>{countryFlag(r.country)} {r.country}</td>
                       <td className={TD}>{r.currency} {r.tuition.toLocaleString()}</td>
@@ -482,7 +486,10 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#667085]">
         <span>{countryFlag(row.country)} {row.country}</span><span>·</span>
         <span>{row.university} — {row.program}</span><span>·</span>
-        <span className="font-medium text-[#344054]">{row.partner}</span><span>·</span>
+        <span className="font-medium text-[#344054]">
+          {row.partner}
+          <PayeeTags partnerType={row.partnerType} payeeInactive={row.payeeInactive} />
+        </span><span>·</span>
         <span>{row.isDirect ? "Direct" : row.vendorName}</span>
         <StatusPill status={row.status} />
       </div>

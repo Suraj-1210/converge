@@ -484,7 +484,9 @@ CREATE TABLE IF NOT EXISTS `application` (
   `notes`              VARCHAR(1000) NULL DEFAULT NULL,
   `student_id`         INT NOT NULL,
   `course_id`          INT NOT NULL,
-  `org_id`             INT NOT NULL,
+  -- NULL for an independent counsellor's student (same as student.org_id);
+  -- the student's created_by_user_id says whose it is.
+  `org_id`             INT NULL DEFAULT NULL,
   `offer_letter_url`   VARCHAR(255) NULL DEFAULT NULL,
   `program_start_date` DATE NULL DEFAULT NULL,
   `university_app_id`  VARCHAR(100) NULL DEFAULT NULL,
@@ -528,7 +530,10 @@ CREATE TABLE IF NOT EXISTS `commission` (
   `created_at`               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `application_id`           INT NOT NULL,
-  `org_id`                   INT NOT NULL,
+  -- Payee, stamped at billing confirmation: the agency (org_id) or the
+  -- independent counsellor (payee_user_id) — exactly one (chk_commission_payee).
+  `org_id`                   INT NULL DEFAULT NULL,
+  `payee_user_id`            INT NULL DEFAULT NULL,
   `collegepond_received_at`  TIMESTAMP NULL DEFAULT NULL,
   -- Spine state = the two milestone timestamps (collegepond_received_at,
   -- partner_paid_at). The CommissionStatus badge is derived on read.
@@ -545,12 +550,19 @@ CREATE TABLE IF NOT EXISTS `commission` (
   INDEX `fk_commission_organization1_idx` (`org_id` ASC) VISIBLE,
   INDEX `fk_commission_vendor_idx`        (`vendor_id` ASC) VISIBLE,
   INDEX `fk_commission_partner_tier_idx`  (`partner_tier_id` ASC) VISIBLE,
+  INDEX `fk_commission_payee_user_idx`    (`payee_user_id` ASC) VISIBLE,
   CONSTRAINT `fk_commission_application`
     FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_commission_organization`
+  -- RESTRICT both ways: MySQL won't CHECK a column with a cascading key.
+  CONSTRAINT `fk_commission_org`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
-    ON DELETE RESTRICT ON UPDATE CASCADE,
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_commission_payee_user`
+    FOREIGN KEY (`payee_user_id`) REFERENCES `user` (`id`)
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `chk_commission_payee`
+    CHECK ((`org_id` IS NULL) <> (`payee_user_id` IS NULL)),
   CONSTRAINT `fk_commission_vendor`
     FOREIGN KEY (`vendor_id`) REFERENCES `vendor` (`id`)
     ON DELETE SET NULL ON UPDATE CASCADE,
@@ -591,14 +603,23 @@ CREATE TABLE IF NOT EXISTS `invoice` (
   `fy`                    SMALLINT NULL DEFAULT NULL,
   `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `org_id`                INT NOT NULL,
+  -- Supplier: the agency (org_id) or the independent counsellor
+  -- (payee_user_id) — exactly one (chk_invoice_payee).
+  `org_id`                INT NULL DEFAULT NULL,
+  `payee_user_id`         INT NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_invoice_organization1_idx` (`org_id` ASC) VISIBLE,
   UNIQUE INDEX `invoice_number_UNIQUE` (`invoice_number` ASC) VISIBLE,
   INDEX `fk_invoice_bank_account_idx` (`bank_account_id` ASC) VISIBLE,
-  CONSTRAINT `fk_invoice_organization`
+  INDEX `fk_invoice_payee_user_idx` (`payee_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_invoice_org`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
-    ON DELETE RESTRICT ON UPDATE CASCADE,
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_invoice_payee_user`
+    FOREIGN KEY (`payee_user_id`) REFERENCES `user` (`id`)
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `chk_invoice_payee`
+    CHECK ((`org_id` IS NULL) <> (`payee_user_id` IS NULL)),
   CONSTRAINT `fk_invoice_bank_account`
     FOREIGN KEY (`bank_account_id`) REFERENCES `partner_bank_account` (`id`)
     ON DELETE SET NULL ON UPDATE CASCADE
@@ -1203,7 +1224,10 @@ CREATE TABLE IF NOT EXISTS `vendor_payment` (
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `partner_bank_account` (
   `id`                       INT NOT NULL AUTO_INCREMENT,
-  `org_id`                   INT NOT NULL,
+  -- Owner: the agency (org_id) or the independent counsellor
+  -- (payee_user_id) — exactly one (chk_bank_account_payee).
+  `org_id`                   INT NULL DEFAULT NULL,
+  `payee_user_id`            INT NULL DEFAULT NULL,
   `region`                   TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 Domestic (IFSC), 1 International (SWIFT)
   `account_holder`           VARCHAR(150) NOT NULL,
   `account_number_enc`       VARCHAR(1024) NULL DEFAULT NULL,
@@ -1241,9 +1265,15 @@ CREATE TABLE IF NOT EXISTS `partner_bank_account` (
   PRIMARY KEY (`id`),
   INDEX `fk_partner_bank_account_org_idx` (`org_id` ASC) VISIBLE,
   INDEX `idx_partner_bank_account_queue` (`is_verified` ASC, `rejected_at` ASC, `submitted_at` ASC) VISIBLE,
-  CONSTRAINT `fk_partner_bank_account_org`
+  INDEX `fk_partner_bank_account_payee_user_idx` (`payee_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_bank_account_org`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
-    ON DELETE CASCADE ON UPDATE CASCADE
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `fk_bank_account_payee_user`
+    FOREIGN KEY (`payee_user_id`) REFERENCES `user` (`id`)
+    ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT `chk_bank_account_payee`
+    CHECK ((`org_id` IS NULL) <> (`payee_user_id` IS NULL))
 ) ENGINE = InnoDB;
 
 

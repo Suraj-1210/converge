@@ -63,6 +63,21 @@ export async function orgOwnerRecipients(orgId: number): Promise<Recipient[]> {
   return dedupe(owners.map(toRecipient));
 }
 
+// Whoever a commission / claim / payout account belongs to: the agency's
+// owner(s), or the independent counsellor themselves.
+export async function payeeRecipients(payee: {
+  orgId: number | null;
+  userId: number | null;
+}): Promise<Recipient[]> {
+  if (payee.orgId != null) return orgOwnerRecipients(payee.orgId);
+  if (payee.userId == null) return [];
+  const u = await db.user.findFirst({
+    where: { id: payee.userId, deleted_at: null, ...active },
+    select: userSelect,
+  });
+  return u ? [toRecipient(u)] : [];
+}
+
 // A student's partner side: the agency owner(s) plus the partner counsellor
 // handling the student (for an independent counsellor, the one who created it).
 export async function studentPartnerRecipients(studentId: number): Promise<Recipient[]> {

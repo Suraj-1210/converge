@@ -1492,15 +1492,6 @@ export const studentsRouter = createTRPCRouter({
       if (!student) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
       }
-      // application.org_id is NOT NULL — independent-counsellor students
-      // can't carry applications until that linkage is modelled.
-      if (student.org_id === null) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "This student has no partner organization, so an application can't be created yet.",
-        });
-      }
       const consumeShortlist = () =>
         db.shortlist.deleteMany({
           where: { student_id: input.studentId, course_id: input.courseId },
@@ -1519,6 +1510,8 @@ export const studentsRouter = createTRPCRouter({
         data: {
           student_id: input.studentId,
           course_id: input.courseId,
+          // NULL for an independent counsellor's student; billing pays the
+          // independent who created the student (src/server/payee.ts).
           org_id: student.org_id,
           status: UniApplicationStatus.BEGIN_APPLICATION,
           stage_history: {

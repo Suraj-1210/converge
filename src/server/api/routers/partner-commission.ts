@@ -6,8 +6,15 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { encryptSecret } from "~/server/crypto";
-import { optionalPanSchema } from "~/lib/utils/pan";
+import { optionalPanSchema, panError } from "~/lib/utils/pan";
 import { auditBank, bankStatusOf, wholeSecondNow } from "~/server/bank-accounts";
+import {
+  independentIsIndiaBased,
+  payeeData,
+  payeeFromSession,
+  payeeWhere,
+  type Payee,
+} from "~/server/payee";
 import {
   PartnerInvoiceStatus,
   TrancheStatus,
@@ -58,15 +65,46 @@ function computeTax(subtotal: number, partnerGstin: string | null) {
 }
 
 // Every procedure here is payeeProcedure (agency owner or independent;
-// counsellors refused), so ctx.payee.orgId is the org whose money this is.
-function requireOrgId(orgId: number | null): number {
-  if (orgId === null) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Your account isn't linked to an organization, so invoices can't be raised yet.",
+// counsellors refused), so the money is the owner's agency's, or the
+// independent counsellor's own (payee.ts). A suspended or deleted independent
+// never gets here: protectedPartnerProcedure refuses them.
+
+// Who the tax invoice is from. An agency: its name, GSTIN and PAN. An
+// independent: their own name and personal PAN (no GSTIN on file; they enter
+// one on the claim if they're registered). PAN is mandatory on an India-based
+// independent's claim; agencies are unchanged (optional).
+async function payeeProfile(payee: Payee) {
+  if (payee.orgId != null) {
+    const org = await db.organization.findUnique({
+      where: { id: payee.orgId },
+      select: { gst_number: true, pan: true, name: true },
     });
+    return {
+      kind: "agency" as const,
+      name: org?.name ?? null,
+      gstin: org?.gst_number ?? null,
+      pan: org?.pan ?? null,
+      panRequired: false,
+    };
   }
-  return orgId;
+  const u = await db.user.findUnique({
+    where: { id: payee.userId },
+    select: { first_name: true, last_name: true, pan: true, phone: true },
+  });
+  return {
+    kind: "independent" as const,
+    name: u ? `${u.first_name} ${u.last_name}`.trim() : null,
+    gstin: null,
+    pan: u?.pan ?? null,
+    panRequired: u ? independentIsIndiaBased(u.phone) : false,
+  };
+}
+
+// An independent's PAN is their personal one (4th character P).
+function refuseNonPersonalPan(payee: Payee, pan: string | undefined): void {
+  if (payee.userId == null || !pan) return;
+  const msg = panError(pan, "individual");
+  if (msg) throw new TRPCError({ code: "BAD_REQUEST", message: msg });
 }
 
 // A claim may only include commissions whose share Finance has stamped.
@@ -83,11 +121,12 @@ function refuseUnsetShare(comms: { partner_share_pct: unknown }[]): void {
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
 
 export const partnerCommissionRouter = createTRPCRouter({
-  // Every commission for the partner's org, with a derived claim status.
+  // Every commission for the partner (agency or independent), with a derived
+  // claim status.
   listClaimable: payeeProcedure.query(async ({ ctx }) => {
-    const orgId = requireOrgId(ctx.payee.orgId);
+    const payee = payeeFromSession(ctx.payee);
     const comms = await db.commission.findMany({
-      where: { org_id: orgId },
+      where: payeeWhere(payee),
       orderBy: { id: "desc" },
       include: {
         application: {
@@ -217,10 +256,10 @@ export const partnerCommissionRouter = createTRPCRouter({
   // The partner's saved payout account. The raw account number / GSTIN / PAN are
   // encrypted at rest (crypto.ts); only the masked last-4 reaches the client.
   bankAccount: payeeProcedure.query(async ({ ctx }) => {
-    const orgId = requireOrgId(ctx.payee.orgId);
-    const [acct, org] = await Promise.all([
-      db.partner_bank_account.findFirst({ where: { org_id: orgId }, orderBy: { id: "desc" } }),
-      db.organization.findUnique({ where: { id: orgId }, select: { gst_number: true, pan: true, name: true } }),
+    const payee = payeeFromSession(ctx.payee);
+    const [acct, profile] = await Promise.all([
+      db.partner_bank_account.findFirst({ where: payeeWhere(payee), orderBy: { id: "desc" } }),
+      payeeProfile(payee),
     ]);
     return {
       hasAccount: acct != null,
@@ -247,10 +286,14 @@ export const partnerCommissionRouter = createTRPCRouter({
       // GSTIN/PAN are shown on the tax invoice — kept here for the wizard. (The
       // org's gst_number is the non-encrypted source; the encrypted copy on the
       // account is for the payout side.)
-      gstin: org?.gst_number ?? null,
+      gstin: profile.gstin,
       // PAN captured at signup, to prefill the invoice.
-      pan: org?.pan ?? null,
-      orgName: org?.name ?? null,
+      pan: profile.pan,
+      // The invoice's "From": the agency, or the independent counsellor.
+      orgName: profile.name,
+      payeeKind: profile.kind,
+      panHolder: profile.kind === "agency" ? ("agency" as const) : ("individual" as const),
+      panRequired: profile.panRequired,
     };
   }),
 
@@ -304,7 +347,8 @@ export const partnerCommissionRouter = createTRPCRouter({
         }),
     )
     .mutation(async ({ ctx, input }) => {
-      const orgId = requireOrgId(ctx.payee.orgId);
+      const payee = payeeFromSession(ctx.payee);
+      refuseNonPersonalPan(payee, input.pan);
       const intl = input.region === "international";
       const last4 = input.accountNumber.slice(-4);
       const data = {
@@ -339,12 +383,13 @@ export const partnerCommissionRouter = createTRPCRouter({
         provider_fund_account_id: null,
       };
       const existing = await db.partner_bank_account.findFirst({
-        where: { org_id: orgId },
+        where: payeeWhere(payee),
         select: { id: true, account_number_last4: true, is_verified: true, rejected_at: true },
       });
+      const savedSelect = { id: true, org_id: true, payee_user_id: true } as const;
       const saved = existing
-        ? await db.partner_bank_account.update({ where: { id: existing.id }, data, select: { id: true, org_id: true } })
-        : await db.partner_bank_account.create({ data: { org_id: orgId, ...data }, select: { id: true, org_id: true } });
+        ? await db.partner_bank_account.update({ where: { id: existing.id }, data, select: savedSelect })
+        : await db.partner_bank_account.create({ data: { ...payeeData(payee), ...data }, select: savedSelect });
       await auditBank(
         "bank.details_saved",
         saved,
@@ -381,9 +426,9 @@ export const partnerCommissionRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const orgId = requireOrgId(ctx.payee.orgId);
+      const payee = payeeFromSession(ctx.payee);
       const bank = await db.partner_bank_account.findFirst({
-        where: { org_id: orgId },
+        where: payeeWhere(payee),
         orderBy: { id: "desc" },
         select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true, proof_url: true, rejected_at: true, rejection_reason: true },
       });
@@ -404,8 +449,19 @@ export const partnerCommissionRouter = createTRPCRouter({
         });
       }
 
+      // An independent invoices on their personal PAN. India-based: required.
+      // Elsewhere optional; a claim without one is flagged for Finance review
+      // (partnerPayouts / reconciliation), not blocked.
+      refuseNonPersonalPan(payee, input.pan);
+      if (payee.userId != null && !input.pan && (await payeeProfile(payee)).panRequired) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Enter your PAN to submit a claim. It's needed for the TDS deducted on your commission.",
+        });
+      }
+
       const comms = await db.commission.findMany({
-        where: { id: { in: input.commissionIds }, org_id: orgId },
+        where: { id: { in: input.commissionIds }, ...payeeWhere(payee) },
         select: {
           id: true,
           partner_share_pct: true,
@@ -449,7 +505,7 @@ export const partnerCommissionRouter = createTRPCRouter({
             total_amount: subtotal,
             currency: "INR",
             status: PartnerInvoiceStatus.SUBMITTED,
-            org_id: orgId,
+            ...payeeData(payee),
             gstin: partnerGstin,
             pan: orNull(input.pan),
             sac_code: CP.sac,
@@ -486,9 +542,9 @@ export const partnerCommissionRouter = createTRPCRouter({
   taxPreview: payeeProcedure
     .input(z.object({ commissionIds: z.array(z.number().int().positive()), gstin: z.string().optional() }))
     .query(async ({ ctx, input }) => {
-      const orgId = requireOrgId(ctx.payee.orgId);
+      const payee = payeeFromSession(ctx.payee);
       const comms = await db.commission.findMany({
-        where: { id: { in: input.commissionIds }, org_id: orgId },
+        where: { id: { in: input.commissionIds }, ...payeeWhere(payee) },
         select: {
           partner_share_pct: true,
           commission_tranche: {
@@ -519,9 +575,9 @@ export const partnerCommissionRouter = createTRPCRouter({
   studentDetail: payeeProcedure
     .input(z.object({ commissionId: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
-      const orgId = requireOrgId(ctx.payee.orgId);
+      const payee = payeeFromSession(ctx.payee);
       const c = await db.commission.findFirst({
-        where: { id: input.commissionId, org_id: orgId },
+        where: { id: input.commissionId, ...payeeWhere(payee) },
         include: {
           application: { select: { created_at: true } },
           invoice_item: {
@@ -564,9 +620,9 @@ export const partnerCommissionRouter = createTRPCRouter({
   // Per-financial-year aggregates for the year-over-year card + the loyalty tier
   // (tier is derived from the count of students in the current FY).
   yearlyStats: payeeProcedure.query(async ({ ctx }) => {
-    const orgId = requireOrgId(ctx.payee.orgId);
+    const payee = payeeFromSession(ctx.payee);
     const comms = await db.commission.findMany({
-      where: { org_id: orgId },
+      where: payeeWhere(payee),
       select: {
         created_at: true,
         partner_paid_at: true,
@@ -597,9 +653,9 @@ export const partnerCommissionRouter = createTRPCRouter({
   }),
 
   invoiceHistory: payeeProcedure.query(async ({ ctx }) => {
-    const orgId = requireOrgId(ctx.payee.orgId);
+    const payee = payeeFromSession(ctx.payee);
     const invoices = await db.invoice.findMany({
-      where: { org_id: orgId },
+      where: payeeWhere(payee),
       orderBy: { invoice_date: "desc" },
       include: { invoice_item: { select: { id: true } } },
     });

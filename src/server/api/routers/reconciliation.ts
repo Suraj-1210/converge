@@ -16,7 +16,8 @@ import {
   type PayoutMethod,
 } from "~/server/db/enums";
 import { appUrl, payoutSentEmail } from "~/server/email";
-import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
+import { emailPartners, payeeRecipients } from "~/server/email/partners";
+import { PAYEE_LABEL_SELECT, independentInactiveReason, payeeLabel } from "~/server/payee";
 import { razorpayConfigured, razorpayMode, createPayout } from "~/server/razorpayx";
 import { adminBankSelect, bankActorNames, toAdminBankView } from "~/server/bank-accounts";
 
@@ -75,7 +76,7 @@ export const reconciliationRouter = createTRPCRouter({
             pan: true,
             net_payable: true,
             total_amount: true,
-            organization: { select: { name: true } },
+            ...PAYEE_LABEL_SELECT,
             bank_account: { select: adminBankSelect },
             invoice_item: {
               select: {
@@ -110,7 +111,10 @@ export const reconciliationRouter = createTRPCRouter({
     ]);
     return payouts.map((p) => ({
       id: p.id,
-      partner: p.invoice.organization.name,
+      // payeeInactive: a suspended / deleted independent. Release needs a
+      // recorded Finance decision until an admin reactivates them.
+      ...payeeLabel(p.invoice),
+      panReview: p.invoice.organization == null && !p.invoice.pan,
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
       status: p.status,
@@ -194,14 +198,38 @@ export const reconciliationRouter = createTRPCRouter({
         // RazorpayX-verified — a written justification of how the account was
         // confirmed (since the penny-drop account check is being bypassed).
         manualVerifyReason: z.string().trim().max(500).optional(),
+        // Required only when the payee is an independent counsellor who has
+        // been suspended or deleted: Finance's recorded decision to pay anyway
+        // (audit-logged). Otherwise they aren't paid until reactivated.
+        inactivePayeeDecision: z.string().trim().max(500).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const payout = await db.partner_payout.findUnique({
         where: { id: input.payoutId },
-        include: { invoice: { include: { invoice_item: { select: { commission_id: true, commission_tranche_id: true } } } } },
+        include: {
+          invoice: {
+            include: {
+              invoice_item: { select: { commission_id: true, commission_tranche_id: true } },
+              payee_user: {
+                select: { id: true, first_name: true, last_name: true, status: true, deleted_at: true },
+              },
+            },
+          },
+        },
       });
       if (!payout) throw new TRPCError({ code: "NOT_FOUND", message: "Payout not found" });
+      // A suspended or deleted independent can't be paid until an admin
+      // reactivates them or Finance records a decision (Suraj, 14 Oct 2026).
+      const payeeUser = payout.invoice.payee_user;
+      const inactive = payeeUser ? independentInactiveReason(payeeUser) : null;
+      const inactiveDecision = input.inactivePayeeDecision?.trim() ?? "";
+      if (inactive && inactiveDecision.length < 10) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `${`${payeeUser!.first_name} ${payeeUser!.last_name}`.trim()}'s account is ${inactive}. Reactivate them first, or record Finance's decision to pay anyway (at least 10 characters).`,
+        });
+      }
       if (payout.status !== PayoutStatus.READY_TO_PAY) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -322,8 +350,26 @@ export const reconciliationRouter = createTRPCRouter({
           await db.commission.update({ where: { id: cid }, data: { partner_paid_at: now } });
         }
       }
-      // Tell the agency the money is on its way (fire-and-forget; already saved).
-      void orgOwnerRecipients(payout.invoice.org_id)
+      if (inactive) {
+        await db.audit_log.create({
+          data: {
+            action: "payout.released_to_inactive_payee",
+            entity_type: "partner_payout",
+            entity_id: payout.id,
+            metadata: {
+              byCpUserId: ctx.cpUser.id,
+              payeeUserId: payeeUser!.id,
+              payeeState: inactive,
+              invoiceNumber: payout.invoice.invoice_number,
+              amountInr,
+              decision: inactiveDecision,
+            },
+          },
+        });
+      }
+      // Tell the partner the money is on its way (fire-and-forget; already
+      // saved). A suspended / deleted independent isn't emailed.
+      void payeeRecipients({ orgId: payout.invoice.org_id, userId: payout.invoice.payee_user_id })
         .then((rs) =>
           emailPartners(
             rs,
@@ -385,7 +431,7 @@ export const reconciliationRouter = createTRPCRouter({
             created_at: true,
             gstin: true,
             pan: true,
-            organization: { select: { name: true } },
+            ...PAYEE_LABEL_SELECT,
             invoice_item: {
               select: {
                 commission: {
@@ -421,7 +467,7 @@ export const reconciliationRouter = createTRPCRouter({
     const nameOf = (id: number | null) => (id != null ? (names.get(id) ?? null) : null);
     return payouts.map((p) => ({
       id: p.id,
-      partner: p.invoice.organization.name,
+      ...payeeLabel(p.invoice),
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
       method: p.method,

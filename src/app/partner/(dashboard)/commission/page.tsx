@@ -630,8 +630,10 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
       if (!invoiceNumber.trim()) return setErr("Invoice number is required");
       if (!signatory.trim()) return setErr("Signatory name is required");
       if (pan.trim()) {
-        const panMsg = panError(pan, "agency");
+        const panMsg = panError(pan, bank?.panHolder ?? "agency");
         if (panMsg) return setErr(panMsg);
+      } else if (bank?.panRequired) {
+        return setErr("Enter your PAN to submit a claim");
       }
       if (!bankReady) {
         return setErr(
@@ -778,7 +780,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
           </div>
           <div className="flex gap-3">
             <FormInput label="Your GSTIN (blank if unregistered → TDS)" value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="27ABCDE1234F1Z5" />
-            <FormInput label="PAN (auto from GSTIN chars 3–12)" value={pan} onChange={(e) => setPan(normalizePan(e.target.value))} maxLength={10} placeholder="ABCDE1234F" />
+            <FormInput label="PAN (auto from GSTIN chars 3–12)" required={bank?.panRequired} value={pan} onChange={(e) => setPan(normalizePan(e.target.value))} maxLength={10} placeholder="ABCDE1234F" />
           </div>
           <div className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#667085]">Recipient: <b className="text-[#344054]">Collegepond Counsellors Pvt Ltd</b> · GSTIN 27AADCK1234F1Z5 · SAC 998399</div>
           <div className="rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] p-3">

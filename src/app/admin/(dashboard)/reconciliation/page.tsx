@@ -5,6 +5,7 @@ import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
 import { BankAccountDetails, BankDecisionControls, BankStatusPill } from "~/components/admin/bank-account-review";
+import { PayeeTags } from "~/components/admin/payee-tags";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
@@ -267,7 +268,10 @@ export default function ReconciliationPage() {
                           <svg viewBox="0 0 24 24" className={`h-4 w-4 text-[#667085] transition-transform ${expanded.has(p.id) ? "rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
                         </button>
                       </td>
-                      <td className={`${TD} font-medium text-[#101828]`}>{p.partner}</td>
+                      <td className={`${TD} font-medium text-[#101828]`}>
+                        {p.partner}
+                        <PayeeTags partnerType={p.partnerType} payeeInactive={p.payeeInactive} panReview={p.panReview} />
+                      </td>
                       <td className={`${TD} font-mono text-[13px] text-[#1570EF]`}>{p.invoiceNumber}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
                       <td className={TD}>{p.approvedBy ?? "—"}</td>
@@ -350,7 +354,10 @@ export default function ReconciliationPage() {
                           <svg viewBox="0 0 24 24" className={`h-4 w-4 text-[#667085] transition-transform ${doneExpanded.has(p.id) ? "rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
                         </button>
                       </td>
-                      <td className={`${TD} font-medium text-[#101828]`}>{p.partner}</td>
+                      <td className={`${TD} font-medium text-[#101828]`}>
+                        {p.partner}
+                        <PayeeTags partnerType={p.partnerType} />
+                      </td>
                       <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
                       <td className={TD}>{p.method == null ? "—" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4]}</td>
@@ -416,7 +423,7 @@ function ReconPanel({
   verifying: boolean;
   releasing: boolean;
   onVerify: (checks: { bankConfirmed: boolean; invoiceVerified: boolean; commissionVerified: boolean; duplicateCheck: boolean }) => void;
-  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string }) => void;
+  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string; inactivePayeeDecision?: string }) => void;
   onHold: () => void;
   onSendBack: () => void;
 }) {
@@ -433,6 +440,8 @@ function ReconPanel({
   const [date, setDate] = useState(todayInput());
   const [amount, setAmount] = useState(String(payout.amountInr));
   const [notes, setNotes] = useState("");
+  // A suspended / deleted independent: Finance's recorded decision to pay anyway.
+  const [inactiveDecision, setInactiveDecision] = useState("");
   const [err, setErr] = useState("");
 
   const readyToPay = payout.status === PayoutStatus.READY_TO_PAY;
@@ -454,6 +463,9 @@ function ReconPanel({
   const doRelease = () => {
     if (!payVia && !reference.trim()) return setErr("Enter a Payment Reference # (or verify the bank to pay via RazorpayX).");
     if (!bankVerified) return setErr("Verify the partner's bank account first.");
+    if (payout.payeeInactive && inactiveDecision.trim().length < 10) {
+      return setErr("This independent counsellor is " + payout.payeeInactive + ". Record Finance's decision to pay anyway (at least 10 characters), or reactivate them first.");
+    }
     onRelease({
       method,
       bankName: bankName || undefined,
@@ -464,6 +476,7 @@ function ReconPanel({
       paymentDate: date,
       amountInr: amount.trim() === "" ? undefined : Number(amount),
       notes: notes || undefined,
+      inactivePayeeDecision: payout.payeeInactive ? inactiveDecision.trim() : undefined,
     });
   };
 
@@ -571,6 +584,23 @@ function ReconPanel({
               <FormInput label="Amount (₹)" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
             <FormTextarea label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            {payout.payeeInactive && (
+              <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-3">
+                <p className="text-xs font-semibold text-[#B42318]">
+                  {payout.partner}&apos;s account is {payout.payeeInactive}. They can&apos;t be paid until an admin reactivates them, unless Finance decides to pay anyway.
+                </p>
+                <FormTextarea
+                  label="Finance decision to pay anyway (audit-logged)"
+                  value={inactiveDecision}
+                  onChange={(e) => setInactiveDecision(e.target.value)}
+                />
+              </div>
+            )}
+            {payout.panReview && (
+              <p className="rounded-lg border border-[#FEDF89] bg-[#FFFAEB] px-3 py-2 text-xs font-medium text-[#B54708]">
+                Independent outside India: this claim has no PAN. Review it before paying.
+              </p>
+            )}
           </div>
           {!readyToPay && (
             <div className="mt-3">

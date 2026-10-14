@@ -25,6 +25,8 @@ const MODULE_BY_ENTITY: Record<string, string> = {
   export: "Exports",
   partner_bank_account: "Bank Details",
   counselling_team: "Counselling Teams",
+  commission: "Commissions",
+  partner_payout: "Payouts",
 };
 const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
   Object.entries(MODULE_BY_ENTITY).map(([k, v]) => [v, k]),
@@ -34,6 +36,8 @@ const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
 // Action-type filter (category → action IN (...)).
 const ACTION_STRINGS = [
   ...BANK_AUDIT_ACTIONS,
+  "commission.share_stamped",
+  "payout.released_to_inactive_payee",
   "application.credential_saved", "application.credential_viewed", "application.removed", "application.status_updated", "application.uni_id_saved", "application.vendor_selected",
   "counsellor.approved", "counsellor.invited", "counsellor.rejected",
   "counselling_team.auto_assign_off", "counselling_team.auto_assign_on", "counselling_team.updated",

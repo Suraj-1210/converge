@@ -2,7 +2,7 @@ import { db } from "~/server/db";
 import { createNotifications } from "~/server/notify";
 import { resolveStorageUrl } from "~/server/storage";
 import { appUrl, bankDetailsRejectedEmail, bankDetailsVerifiedEmail } from "~/server/email";
-import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
+import { emailPartners, payeeRecipients } from "~/server/email/partners";
 
 // Partner payout bank accounts (partner_bank_account): verification status,
 // the masked admin view, audit rows and partner notifications. Shared by the
@@ -28,9 +28,12 @@ export const PENDING_BANK_WHERE = { is_verified: 0, rejected_at: null } as const
 export const wholeSecondNow = () => new Date(Math.floor(Date.now() / 1000) * 1000);
 
 // Columns behind the admin view. Never the encrypted number, GSTIN or PAN.
+// The owner is the agency (org_id) or the independent counsellor
+// (payee_user_id) — exactly one.
 export const adminBankSelect = {
   id: true,
   org_id: true,
+  payee_user_id: true,
   region: true,
   account_holder: true,
   account_number_last4: true,
@@ -56,7 +59,8 @@ export const adminBankSelect = {
 
 type AdminBankRow = {
   id: number;
-  org_id: number;
+  org_id: number | null;
+  payee_user_id: number | null;
   region: number;
   account_holder: string;
   account_number_last4: string | null;
@@ -87,6 +91,7 @@ export function toAdminBankView(b: AdminBankRow, names: Map<number, string>) {
   return {
     id: b.id,
     orgId: b.org_id,
+    payeeUserId: b.payee_user_id,
     status: bankStatusOf(b),
     region: b.region === 1 ? ("international" as const) : ("domestic" as const),
     accountHolder: b.account_holder,
@@ -148,7 +153,7 @@ export type BankAuditAction = (typeof BANK_AUDIT_ACTIONS)[number];
 
 export async function auditBank(
   action: BankAuditAction,
-  bank: { id: number; org_id: number },
+  bank: { id: number; org_id: number | null; payee_user_id: number | null },
   metadata: Record<string, string | number | boolean | null>,
   partnerUserId?: number,
 ): Promise<void> {
@@ -159,24 +164,31 @@ export async function auditBank(
       action,
       entity_type: "partner_bank_account",
       entity_id: bank.id,
-      metadata,
+      // An independent's account has no org; record whose it is.
+      metadata: bank.payee_user_id != null ? { ...metadata, payeeUserId: bank.payee_user_id } : metadata,
     },
   });
 }
 
-// Tell the agency owner(s) finance verified or rejected their bank details:
+// Tell the agency owner(s), or the independent counsellor, that finance
+// verified or rejected their bank details:
 // in-app (linking to My Account → Bank Details) and by email. Account-critical,
 // so there is no preference toggle. Fire-and-forget: the decision is already
 // saved, and a failed send is logged, never thrown.
 export function notifyPartnerOfBankDecision(
-  bank: { org_id: number; account_number_last4: string | null; bank_name: string | null },
+  bank: {
+    org_id: number | null;
+    payee_user_id: number | null;
+    account_number_last4: string | null;
+    bank_name: string | null;
+  },
   decision: { kind: "verified" } | { kind: "rejected"; reason: string },
 ): void {
   const link = "/partner/account?tab=bank";
   const last4 = bank.account_number_last4;
   const ending = last4 ? ` ending ${last4}` : "";
   void (async () => {
-    const recipients = await orgOwnerRecipients(bank.org_id);
+    const recipients = await payeeRecipients({ orgId: bank.org_id, userId: bank.payee_user_id });
     try {
       await createNotifications(
         recipients.map((r) => r.id),
@@ -207,7 +219,8 @@ export function notifyPartnerOfBankDecision(
           : bankDetailsRejectedEmail(r, { accountLast4: last4, reason: decision.reason }, appUrl()),
       `bank-${decision.kind}`,
     );
-    console.log(`[notify] bank-${decision.kind} for org ${bank.org_id}: in-app + ${sent} email(s)`);
+    const whose = bank.org_id != null ? `org ${bank.org_id}` : `independent ${bank.payee_user_id}`;
+    console.log(`[notify] bank-${decision.kind} for ${whose}: in-app + ${sent} email(s)`);
   })().catch((e) =>
     console.error("[notify] bank decision lookup failed:", e instanceof Error ? e.message : e),
   );

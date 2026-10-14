@@ -6,7 +6,7 @@ import {
   superAdminProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { PayoutStatus } from "~/server/db/enums";
+import { PayoutStatus, UserType } from "~/server/db/enums";
 import { decryptSecret } from "~/server/crypto";
 import {
   razorpayConfigured,
@@ -15,6 +15,7 @@ import {
   createValidation,
   getValidation,
 } from "~/server/razorpayx";
+import { PAYEE_LABEL_SELECT, payeeLabel } from "~/server/payee";
 import {
   PENDING_BANK_WHERE,
   adminBankSelect,
@@ -132,12 +133,16 @@ export const bankVerificationRouter = createTRPCRouter({
               ? { rejected_at: "desc" }
               : { verified_at: "desc" },
         take: input.status === "pending" ? undefined : 200,
-        select: adminBankSelect,
+        select: {
+          ...adminBankSelect,
+          // An independent's own name / email (they have no org).
+          payee_user: { select: { ...PAYEE_LABEL_SELECT.payee_user.select, email: true } },
+        },
       });
       const ids = rows.map((r) => r.id);
       const [names, orgs, lastSaves, payouts] = await Promise.all([
         bankActorNames(rows),
-        orgSummaries(Array.from(new Set(rows.map((r) => r.org_id)))),
+        orgSummaries(Array.from(new Set(rows.flatMap((r) => (r.org_id != null ? [r.org_id] : []))))),
         // The latest save per account says whether it is a first submission or
         // a change (and from which last 4). Rows saved before this audit
         // existed have none.
@@ -173,10 +178,24 @@ export const bankVerificationRouter = createTRPCRouter({
         if (id != null) waiting.set(id, (waiting.get(id) ?? 0) + 1);
       }
       return rows.map((r) => {
+        if (r.org_id == null) {
+          // Independent counsellor: they are both the partner and the contact.
+          const label = payeeLabel({ organization: null, payee_user: r.payee_user });
+          return {
+            ...toAdminBankView(r, names),
+            ...label,
+            owner: label.partner,
+            ownerEmail: r.payee_user?.email ?? null,
+            submission: previous.get(r.id) ?? null,
+            payoutsWaiting: waiting.get(r.id) ?? 0,
+          };
+        }
         const org = orgs.get(r.org_id);
         return {
           ...toAdminBankView(r, names),
           partner: org?.name ?? `Org #${r.org_id}`,
+          partnerType: "agency" as const,
+          payeeInactive: null,
           owner: org?.owner ?? null,
           ownerEmail: org?.ownerEmail ?? null,
           submission: previous.get(r.id) ?? null,
@@ -200,11 +219,19 @@ export const bankVerificationRouter = createTRPCRouter({
     .query(async ({ input }) => {
       const user = await db.user.findUnique({
         where: { email: input.email },
-        select: { org_id: true },
+        select: { id: true, type: true, org_id: true },
       });
-      if (!user?.org_id) return null;
+      if (!user) return null;
+      // An agency's account is the org's; an independent's is their own.
+      const owner =
+        user.org_id != null
+          ? { org_id: user.org_id }
+          : user.type === UserType.INDEPENDENT_COUNSELLOR
+            ? { payee_user_id: user.id }
+            : null;
+      if (!owner) return null;
       const bank = await db.partner_bank_account.findFirst({
-        where: { org_id: user.org_id },
+        where: owner,
         orderBy: { id: "desc" },
         select: adminBankSelect,
       });
@@ -341,7 +368,7 @@ export const bankVerificationRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const bank = await db.partner_bank_account.findUnique({
         where: { id: input.bankAccountId },
-        select: { id: true, org_id: true, account_number_enc: true, account_number_last4: true, iban: true, provider_fund_account_id: true },
+        select: { id: true, org_id: true, payee_user_id: true, account_number_enc: true, account_number_last4: true, iban: true, provider_fund_account_id: true },
       });
       if (!bank) throw new TRPCError({ code: "NOT_FOUND", message: "Bank account not found" });
       await auditBank("bank.account_number_revealed", bank, {

@@ -16,6 +16,7 @@ import {
   toINR,
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
+import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -52,7 +53,7 @@ export const commissionsRouter = createTRPCRouter({
     const comms = await db.commission.findMany({
       orderBy: { id: "desc" },
       include: {
-        organization: { select: { name: true } },
+        ...PAYEE_LABEL_SELECT,
         application: {
           select: {
             university_app_id: true,
@@ -191,7 +192,7 @@ export const commissionsRouter = createTRPCRouter({
 
       return {
         commissionId: c.id,
-        partner: c.organization.name,
+        ...payeeLabel(c),
         studentId: c.application.student.id,
         cpStudentId: `CP-${String(c.application.student.id).padStart(5, "0")}`,
         studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
@@ -350,10 +351,11 @@ export const commissionsRouter = createTRPCRouter({
       select: {
         id: true,
         org_id: true,
+        payee_user_id: true,
         created_at: true,
         currency: true,
         commision_amount: true,
-        organization: { select: { name: true } },
+        ...PAYEE_LABEL_SELECT,
         application: {
           select: { student: { select: { id: true, first_name: true, last_name: true } } },
         },
@@ -365,7 +367,7 @@ export const commissionsRouter = createTRPCRouter({
     });
     const out = [];
     for (const c of rows) {
-      const s = await shareForConfirmation(c.org_id, c.application.student.id, { at: c.created_at });
+      const s = await shareForConfirmation(payeeOf(c), c.application.student.id, { at: c.created_at });
       const grossInr = toINR(num(c.commision_amount), c.currency);
       const unclaimedCollectedInr = c.commission_tranche
         .filter((t) => t.status === TrancheStatus.RECEIVED && t.invoice_item == null)
@@ -375,7 +377,7 @@ export const commissionsRouter = createTRPCRouter({
         c.invoice_item.reduce((a, ii) => a + num(ii.amount), 0);
       out.push({
         commissionId: c.id,
-        partner: c.organization.name,
+        partner: payeeLabel(c).partner,
         studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
         confirmedAt: c.created_at.toISOString(),
         grossInr: round2(grossInr),
@@ -409,13 +411,14 @@ export const commissionsRouter = createTRPCRouter({
         select: {
           id: true,
           org_id: true,
+          payee_user_id: true,
           created_at: true,
           application: { select: { student_id: true } },
         },
       });
       let stamped = 0;
       for (const c of rows) {
-        const s = await shareForConfirmation(c.org_id, c.application.student_id, { at: c.created_at });
+        const s = await shareForConfirmation(payeeOf(c), c.application.student_id, { at: c.created_at });
         if (!s) continue;
         // Only while still unset, so a concurrent stamp isn't overwritten.
         const res = await db.commission.updateMany({
@@ -433,6 +436,7 @@ export const commissionsRouter = createTRPCRouter({
             metadata: {
               byCpUserId: ctx.cpUser.id,
               via: "finance_backfill",
+              payeeUserId: c.payee_user_id,
               from: null,
               tier: s.tier.name,
               sharePct: s.sharePct,

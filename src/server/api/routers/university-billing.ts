@@ -16,6 +16,7 @@ import {
   toINR,
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
+import { PAYEE_LABEL_SELECT, payeeData, payeeForApplication, payeeLabel } from "~/server/payee";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -142,6 +143,8 @@ export const universityBillingRouter = createTRPCRouter({
   // university's default rate. Requires a default contract for that university.
   // Also stamps the partner's commission share from their tier (Partner Tiers
   // master) as a snapshot: later tier changes never alter a confirmed row.
+  // The payee is stamped too: the agency, or for an independent counsellor's
+  // student, the independent (even if since suspended or deleted).
   confirmBilling: financeManagerProcedure
     .input(z.object({ applicationId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
@@ -180,9 +183,16 @@ export const universityBillingRouter = createTRPCRouter({
           message: `Set a default commission rate for ${app.course.university.name} in Commission Rates first.`,
         });
       }
+      const payee = await payeeForApplication(app);
+      if (!payee) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "This student isn't linked to an agency or an independent counsellor, so there's nobody to pay commission to. Check who added the student.",
+        });
+      }
       // The student being confirmed counts toward the tier (the 11th is Gold).
       const confirmedAt = new Date();
-      const share = await shareForConfirmation(app.org_id, app.student_id, { at: confirmedAt });
+      const share = await shareForConfirmation(payee, app.student_id, { at: confirmedAt });
       if (!share) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -194,7 +204,7 @@ export const universityBillingRouter = createTRPCRouter({
       const created = await db.commission.create({
         data: {
           application_id: app.id,
-          org_id: app.org_id,
+          ...payeeData(payee),
           tuition_fee: tuition,
           currency: app.course.currency,
           // Flat deals store rate 0; the gross amount carries the value.
@@ -209,13 +219,14 @@ export const universityBillingRouter = createTRPCRouter({
       });
       await db.audit_log.create({
         data: {
-          org_id: app.org_id,
+          org_id: payee.orgId,
           action: "commission.share_stamped",
           entity_type: "commission",
           entity_id: created.id,
           metadata: {
             byCpUserId: ctx.cpUser.id,
             via: "confirm_billing",
+            payeeUserId: payee.userId,
             tier: share.tier.name,
             sharePct: share.sharePct,
             fyStudents: share.students,
@@ -279,7 +290,7 @@ export const universityBillingRouter = createTRPCRouter({
             },
           },
         },
-        organization: { select: { name: true } },
+        ...PAYEE_LABEL_SELECT,
         vendor_invoice_item: {
           select: {
             vendor_invoice: {
@@ -330,7 +341,7 @@ export const universityBillingRouter = createTRPCRouter({
         cpStudentId: `CP-${c.application.student.id}`,
         universityStudentId: c.application.university_app_id,
         program: c.application.course.name,
-        partner: c.organization.name,
+        ...payeeLabel(c),
         tuition: num(c.tuition_fee),
         currency: c.currency,
         rate: num(c.commision_rate),

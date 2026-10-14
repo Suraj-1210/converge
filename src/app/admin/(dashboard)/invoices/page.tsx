@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { PayeeTags } from "~/components/admin/payee-tags";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
@@ -269,7 +270,10 @@ export default function InvoicesPayoutsPage() {
                               <svg viewBox="0 0 24 24" className={`h-4 w-4 text-[#667085] transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
                             </button>
                           </td>
-                          <td className={`${TD} font-medium text-[#101828]`}>{inv.partner}</td>
+                          <td className={`${TD} font-medium text-[#101828]`}>
+                            {inv.partner}
+                            <PayeeTags partnerType={inv.partnerType} payeeInactive={inv.payeeInactive} panReview={inv.panReview} />
+                          </td>
                           <td className={`${TD} font-mono text-[13px]`}>{inv.invoiceNumber}</td>
                           <td className={TD}>{formatDate(inv.invoiceDate)}</td>
                           <td className={TD}>{inv.students}</td>
@@ -332,7 +336,10 @@ export default function InvoicesPayoutsPage() {
               <tbody>
                 {(historyQ.data ?? []).map((p) => (
                   <tr key={p.id} className="border-b border-[#F2F4F7] last:border-0">
-                    <td className={`${TD} font-medium text-[#101828]`}>{p.partner}</td>
+                    <td className={`${TD} font-medium text-[#101828]`}>
+                      {p.partner}
+                      <PayeeTags partnerType={p.partnerType} />
+                    </td>
                     <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}</td>
                     <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
                     <td className={TD}>{p.method == null ? "—" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4]}</td>

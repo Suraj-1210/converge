@@ -11,7 +11,8 @@ import {
   commissionClaimApprovedEmail,
   commissionClaimRejectedEmail,
 } from "~/server/email";
-import { emailPartners, orgOwnerRecipients } from "~/server/email/partners";
+import { emailPartners, payeeRecipients } from "~/server/email/partners";
+import { PAYEE_LABEL_SELECT, payeeLabel } from "~/server/payee";
 import {
   PartnerInvoiceStatus,
   PayoutStatus,
@@ -24,8 +25,13 @@ type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
 
 // Partner email once a claim is approved (fire-and-forget; already saved).
-function notifyClaimApproved(orgId: number, invoiceNumber: string, amountInr: number, partial: boolean) {
-  return orgOwnerRecipients(orgId)
+function notifyClaimApproved(
+  inv: { org_id: number | null; payee_user_id: number | null },
+  invoiceNumber: string,
+  amountInr: number,
+  partial: boolean,
+) {
+  return payeeRecipients({ orgId: inv.org_id, userId: inv.payee_user_id })
     .then((rs) =>
       emailPartners(
         rs,
@@ -47,7 +53,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
     const invoices = await db.invoice.findMany({
       orderBy: { invoice_date: "desc" },
       include: {
-        organization: { select: { name: true } },
+        ...PAYEE_LABEL_SELECT,
         partner_payout: { select: { id: true, status: true } },
         invoice_item: {
           include: {
@@ -126,10 +132,14 @@ export const partnerPayoutsRouter = createTRPCRouter({
       const partialCount = items.filter((i) => i.match === "partial").length;
       const noneCount = items.filter((i) => i.match === "no-payment").length;
       const allVerified = items.length > 0 && verifiedCount === items.length;
+      const payee = payeeLabel(inv);
       return {
         id: inv.id,
         invoiceNumber: inv.invoice_number,
-        partner: inv.organization.name,
+        ...payee,
+        // An independent outside India may claim without a PAN; Finance
+        // reviews those instead of the claim being blocked.
+        panReview: payee.partnerType === "independent" && !inv.pan,
         invoiceDate: inv.invoice_date,
         students: inv.invoice_item.length,
         totalAmount: num(inv.total_amount),
@@ -213,7 +223,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           },
         }),
       ]);
-      void notifyClaimApproved(inv.org_id, inv.invoice_number, netOf(inv), false);
+      void notifyClaimApproved(inv, inv.invoice_number, netOf(inv), false);
       return { success: true as const };
     }),
 
@@ -276,7 +286,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           },
         }),
       ]);
-      void notifyClaimApproved(inv.org_id, inv.invoice_number, partialNet, true);
+      void notifyClaimApproved(inv, inv.invoice_number, partialNet, true);
       return { success: true as const };
     }),
 
@@ -291,9 +301,9 @@ export const partnerPayoutsRouter = createTRPCRouter({
       const inv = await db.invoice.update({
         where: { id: input.invoiceId },
         data: { status: PartnerInvoiceStatus.REJECTED, rejection_reason: input.reason },
-        select: { org_id: true, invoice_number: true },
+        select: { org_id: true, payee_user_id: true, invoice_number: true },
       });
-      void orgOwnerRecipients(inv.org_id)
+      void payeeRecipients({ orgId: inv.org_id, userId: inv.payee_user_id })
         .then((rs) =>
           emailPartners(
             rs,
@@ -315,11 +325,11 @@ export const partnerPayoutsRouter = createTRPCRouter({
     const payouts = await db.partner_payout.findMany({
       where: { status: PayoutStatus.RELEASED },
       orderBy: { released_at: "desc" },
-      include: { invoice: { select: { invoice_number: true, organization: { select: { name: true } } } } },
+      include: { invoice: { select: { invoice_number: true, ...PAYEE_LABEL_SELECT } } },
     });
     return payouts.map((p) => ({
       id: p.id,
-      partner: p.invoice.organization.name,
+      ...payeeLabel(p.invoice),
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
       method: p.method,
