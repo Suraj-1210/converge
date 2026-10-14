@@ -10,6 +10,7 @@ import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
+import { CurrentTierLine, TierLadder } from "~/components/partner/loyalty-tiers";
 import { normalizePan, panError } from "~/lib/utils/pan";
 import {
   BankAccountSummary,
@@ -40,16 +41,6 @@ const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-
 const TD = "px-3.5 py-3 text-sm whitespace-nowrap text-[#344054]";
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const todayInput = () => new Date().toISOString().slice(0, 10);
-
-// ---- loyalty tiers (share % is the tier benefit; tier derived from FY students)
-const TIERS = [
-  { name: "Silver", icon: "🥈", max: 10, share: 70, perks: ["70% Commission Rate", "Standard Application Processing", "Email Support"] },
-  { name: "Gold", icon: "🥇", max: 30, share: 75, perks: ["75% Commission Rate", "Priority Application Processing", "Dedicated Support", "Quarterly Webinars"] },
-  { name: "Platinum", icon: "🏆", max: 50, share: 80, perks: ["80% Commission Rate", "Priority Processing", "Relationship Manager", "Training & Webinars", "Early University Access"] },
-  { name: "Titanium", icon: "⚡", max: 75, share: 85, perks: ["85% Commission Rate", "Priority Processing", "Dedicated Relationship Manager", "Exclusive Training", "Early Access", "Sponsored Events"] },
-  { name: "Diamond", icon: "💎", max: Infinity, share: 90, perks: ["90% Commission Rate", "Priority Application Processing", "Dedicated Relationship Manager", "Exclusive Training & Webinars", "Early Access to New Universities", "Sponsored Events & Fam Trips"] },
-] as const;
-const tierFor = (count: number) => TIERS.find((t) => count <= t.max) ?? TIERS[TIERS.length - 1]!;
 
 // ---- CSV --------------------------------------------------------------------
 const csvCell = (v: string | number | null | undefined): string => {
@@ -241,12 +232,9 @@ function CommissionContent() {
   const yearlyQ = api.partnerCommission.yearlyStats.useQuery();
   const claims = useMemo(() => claimsQ.data ?? [], [claimsQ.data]);
 
-  // ---- loyalty tier (current-FY student count) ----
+  // ---- loyalty tier: the one Collegepond set (user.tier) ----
+  const tierQ = api.dashboard.partnerTier.useQuery();
   const yearly = useMemo(() => yearlyQ.data ?? [], [yearlyQ.data]);
-  const thisYearCount = yearly.length > 0 ? yearly[yearly.length - 1]!.students : 0;
-  const tier = tierFor(thisYearCount);
-  const tierIdx = TIERS.indexOf(tier);
-  const nextTier = TIERS[tierIdx + 1] ?? null;
 
   // ---- KPIs ----
   const kpis = useMemo(() => {
@@ -311,19 +299,15 @@ function CommissionContent() {
   return (
     <div className="pb-16">
       {/* Loyalty banner */}
-      <button
-        onClick={() => setLoyaltyOpen(true)}
-        className="mb-5 flex w-full items-center justify-between gap-3 rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-3.5 text-left"
-      >
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">{tier.icon}</span>
-          <div>
-            <div className="text-sm font-bold text-[#101828]">Your Current Tier — {tier.name} · {tier.share}% Commission</div>
-            <div className="text-xs text-[#667085]">{thisYearCount} students this year{nextTier ? ` · ${Math.max(0, nextTier.max - thisYearCount + 1)} more to reach ${nextTier.name}` : " · You've reached the top tier!"}</div>
-          </div>
-        </div>
-        <span className="text-[13px] font-semibold text-[#6941C6]">View tiers →</span>
-      </button>
+      {tierQ.data && (
+        <button
+          onClick={() => setLoyaltyOpen(true)}
+          className="mb-5 flex w-full items-center justify-between gap-3 rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-3.5 text-left"
+        >
+          <CurrentTierLine tier={tierQ.data.tier} />
+          <span className="shrink-0 text-[13px] font-semibold text-[#6941C6]">View tiers →</span>
+        </button>
+      )}
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -474,7 +458,7 @@ function CommissionContent() {
       )}
 
       {detailFor && <StudentDetailModal claim={detailFor} onClose={() => setDetailFor(null)} />}
-      {loyaltyOpen && <LoyaltyModal current={tier.name} onClose={() => setLoyaltyOpen(false)} />}
+      {loyaltyOpen && tierQ.data && <LoyaltyModal current={tierQ.data.tier} onClose={() => setLoyaltyOpen(false)} />}
       {wizard && (
         <InvoiceWizard
           claims={selectedClaims}
@@ -516,28 +500,10 @@ function YoYCard({ rows }: { rows: RO["partnerCommission"]["yearlyStats"] }) {
 }
 
 // ---- Loyalty modal ----------------------------------------------------------
-function LoyaltyModal({ current, onClose }: { current: string; onClose: () => void }) {
-  const [show, setShow] = useState(current);
-  const t = TIERS.find((x) => x.name === show) ?? TIERS[0];
+function LoyaltyModal({ current, onClose }: { current: number; onClose: () => void }) {
   return (
     <Modal open title="Loyalty Tiers" width="w-[640px]" onClose={onClose} footer={<Button onClick={onClose}>Close</Button>}>
-      <div className="grid grid-cols-5 gap-2">
-        {TIERS.map((tier) => (
-          <button key={tier.name} onClick={() => setShow(tier.name)} className={`rounded-lg border p-2 text-center transition ${show === tier.name ? "border-[#1570EF] bg-[#EFF8FF]" : "border-[#E4E7EC] hover:bg-[#F9FAFB]"}`}>
-            <div className="text-xl">{tier.icon}</div>
-            <div className="text-xs font-bold text-[#101828]">{tier.name}</div>
-            <div className="text-[10px] text-[#667085]">{tier.share}%</div>
-            {tier.name === current && <div className="mt-0.5 text-[9px] font-semibold text-[#1570EF]">CURRENT</div>}
-          </button>
-        ))}
-      </div>
-      <div className="mt-4 rounded-lg border border-[#E4E7EC] p-4">
-        <div className="mb-2 text-sm font-bold text-[#101828]">{t.icon} {t.name} Tier Benefits</div>
-        <ul className="space-y-1.5">
-          {t.perks.map((p) => (<li key={p} className="flex items-center gap-2 text-sm text-[#344054]"><span className="text-[#12B76A]">✓</span> {p}</li>))}
-        </ul>
-        <p className="mt-3 text-[11px] text-[#98A2B3]">Tiers are based on students enrolled per financial year; targets reset on April 1, with a one-tier grace buffer.</p>
-      </div>
+      <TierLadder current={current} />
     </Modal>
   );
 }

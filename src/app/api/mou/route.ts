@@ -6,6 +6,7 @@ import {
   resolvePartnerSession,
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
+import { UserType } from "~/server/db/enums";
 import { MOU_USER_SELECT, executedMouFor, mouFileName, renderExecutedMou } from "~/server/mou-pdf";
 import { readStoredFile } from "~/server/storage";
 
@@ -13,8 +14,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // The signed-in partner's executed MOU as a PDF. ?download=1 saves it as a
-// file; otherwise it opens in the browser's PDF viewer. A counsellor in an
-// agency gets the MOU their agency owner signed.
+// file; otherwise it opens in the browser's PDF viewer. Only the partner owner
+// (agency owner or independent) gets it: the MOU is between Collegepond and
+// the agency, and agency counsellors are refused.
 //
 // Serves the copy frozen at signing. MOUs signed before copies were kept have
 // none, so theirs is rendered from the current text.
@@ -28,10 +30,22 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const me = await db.user.findUnique({ where: { id: partner.id }, select: MOU_USER_SELECT });
-  const signer = me?.mou_signed_at
+  const me = await db.user.findUnique({
+    where: { id: partner.id },
+    select: { ...MOU_USER_SELECT, type: true, deleted_at: true },
+  });
+  if (!me || me.deleted_at) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (me.type === UserType.AGENCY_COUNSELLOR) {
+    return NextResponse.json(
+      { error: "The MOU is managed by your agency's owner." },
+      { status: 403 },
+    );
+  }
+  const signer = me.mou_signed_at
     ? me
-    : me?.org_id
+    : me.org_id
       ? await db.user.findFirst({
           where: { org_id: me.org_id, is_owner: 1, mou_signed_at: { not: null } },
           select: MOU_USER_SELECT,

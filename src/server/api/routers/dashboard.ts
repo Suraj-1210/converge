@@ -1,8 +1,12 @@
+import { TRPCError } from "@trpc/server";
 import {
+  createCallerFactory,
   createTRPCRouter,
+  payeeProcedure,
   protectedAdminProcedure,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
+import { partnerCommissionRouter } from "~/server/api/routers/partner-commission";
 import { type db as appDb } from "~/server/db";
 import { AdminRole, UniApplicationStatus, UserStatus, UserType } from "~/server/db/enums";
 import {
@@ -251,8 +255,17 @@ export const dashboardRouter = createTRPCRouter({
     const revByOrg = new Map<number, number>();
     for (const g of revByOrgRaw)
       revByOrg.set(g.org_id, Number(g._sum.commision_amount ?? 0));
+    // The tier Collegepond set, which lives on the agency's owner.
+    const owners = topOrgs.length
+      ? await db.user.findMany({
+          where: { org_id: { in: topOrgs.map((g) => g.org_id) }, is_owner: 1 },
+          select: { org_id: true, tier: true },
+        })
+      : [];
+    const tierByOrg = new Map(owners.map((o) => [o.org_id, o.tier]));
     const topPartners = topOrgs.map((g) => ({
       orgId: g.org_id,
+      tier: tierByOrg.get(g.org_id) ?? 0,
       name: orgById.get(g.org_id)?.name ?? "—",
       city: orgById.get(g.org_id)?.city ?? null,
       students: g._count.id,
@@ -450,8 +463,123 @@ export const dashboardRouter = createTRPCRouter({
         isVirtual: e.is_virtual === 1,
       })),
       contacts,
-      bdm: person(team.bdm_id),
+      // The team's BDM, shown to partners as their Relationship Manager.
+      relationshipManager: person(team.bdm_id),
       studentsThisYear,
     };
   }),
+
+  // ===== Partner owner only =====
+  // The tier and the Important Notices (MOU, commission and payout-account
+  // updates) belong to the partner owner: the agency owner or the independent.
+  // Agency counsellors get FORBIDDEN from payeeProcedure. The client hides
+  // these for them too, but this is the enforcement.
+
+  // The loyalty tier Collegepond set on the partner (user.tier, 0 = Silver).
+  partnerTier: payeeProcedure.query(async ({ ctx }) => {
+    const me = await ctx.db.user.findUnique({
+      where: { id: ctx.payee.id },
+      select: { tier: true },
+    });
+    if (!me) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
+    return { tier: me.tier };
+  }),
+
+  partnerNotices: payeeProcedure.query(async ({ ctx }) => {
+    const me = await ctx.db.user.findUnique({
+      where: { id: ctx.payee.id },
+      select: { mou_signed_at: true },
+    });
+    if (!me) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
+
+    const notices: OwnerNotice[] = [];
+    notices.push(
+      me.mou_signed_at
+        ? {
+            id: "mou",
+            tone: "green",
+            title: "Your MOU is signed",
+            body: `Signed on ${formatNoticeDate(me.mou_signed_at)}. View or download it under My Account → Documents.`,
+            href: "/partner/account?tab=documents",
+          }
+        : {
+            id: "mou",
+            tone: "amber",
+            title: "Your MOU is waiting for your signature",
+            href: "/mou-signing",
+          },
+    );
+
+    // Commission and payout account belong to an organization. An independent
+    // without one has neither yet, so there's nothing to report.
+    if (ctx.payee.orgId != null) {
+      // The Commission page's own procedures, so the numbers always match it.
+      const commission = createCallerFactory(partnerCommissionRouter)(ctx);
+      const [claims, bank] = await Promise.all([
+        commission.listClaimable(),
+        commission.bankAccount(),
+      ]);
+      const ready = claims.filter((c) => c.status === "claimable");
+      if (ready.length > 0) {
+        const total = ready.reduce((s, c) => s + c.claimableInr, 0);
+        notices.push({
+          id: "commission-claimable",
+          tone: "green",
+          title: `${ready.length} commission${ready.length === 1 ? " is" : "s are"} ready to claim`,
+          body: `${formatInr(total)} available. Raise an invoice from the Commission page.`,
+          href: "/partner/commission",
+        });
+      }
+      const monthAgo = Date.now() - 30 * 86_400_000;
+      const paid = claims.filter((c) => c.paidAt && c.paidAt.getTime() >= monthAgo);
+      if (paid.length > 0) {
+        notices.push({
+          id: "commission-paid",
+          tone: "blue",
+          title: `${paid.length} commission${paid.length === 1 ? " was" : "s were"} paid out in the last 30 days`,
+          body: "See the payment dates on the Commission page.",
+          href: "/partner/commission",
+        });
+      }
+      if (!bank.hasAccount) {
+        notices.push({
+          id: "bank",
+          tone: "amber",
+          title: "Add your bank details to get paid",
+          body: "Commission can only be paid out to a verified bank account.",
+          href: "/partner/account?tab=bank",
+        });
+      } else if (bank.status === "rejected") {
+        notices.push({
+          id: "bank",
+          tone: "red",
+          title: "Your bank details need attention",
+          body: bank.rejectionReason ?? "Please re-enter them with a valid proof.",
+          href: "/partner/account?tab=bank",
+        });
+      } else if (bank.status === "pending") {
+        notices.push({
+          id: "bank",
+          tone: "blue",
+          title: "Your bank details are being verified",
+          href: "/partner/account?tab=bank",
+        });
+      }
+    }
+
+    return notices;
+  }),
 });
+
+type OwnerNotice = {
+  id: string;
+  tone: "green" | "amber" | "red" | "blue";
+  title: string;
+  body?: string;
+  href?: string;
+};
+
+const formatNoticeDate = (d: Date) =>
+  d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+const formatInr = (n: number) =>
+  `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;

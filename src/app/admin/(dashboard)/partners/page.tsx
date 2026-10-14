@@ -10,6 +10,7 @@ import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
+import { PARTNER_TIER_NAMES, partnerTier } from "~/lib/constants/partner-relationship";
 import {
   BankAccountDetails,
   BankDecisionControls,
@@ -61,26 +62,16 @@ type Partner = {
   lastLoginAt: string | null;
 };
 
-// tier 0..4 → label + badge palette (mirrors the mock's tier-badge classes).
-const TIER_LABELS = ["Silver", "Gold", "Platinum", "Titanium", "Diamond"] as const;
-const TIER_STYLES: Record<number, { bg: string; fg: string }> = {
-  0: { bg: "bg-[#F2F4F7]", fg: "text-[#344054]" },
-  1: { bg: "bg-[#ECFDF3]", fg: "text-[#027A48]" },
-  2: { bg: "bg-[#FFFAEB]", fg: "text-[#B54708]" },
-  3: { bg: "bg-[#F9F5FF]", fg: "text-[#6941C6]" },
-  4: { bg: "bg-[#EFF8FF]", fg: "text-[#1570EF]" },
-};
-function tierLabel(tier: number): string {
-  return TIER_LABELS[tier] ?? TIER_LABELS[0];
-}
-
+// user.tier 0..4 → the shared tier ladder (name + badge palette). The same
+// value is what the partner sees on their dashboard, Commission and Loyalty.
 function TierBadge({ tier }: { tier: number }) {
-  const s = TIER_STYLES[tier] ?? TIER_STYLES[0]!;
+  const t = partnerTier(tier);
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${s.bg} ${s.fg}`}
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+      style={{ background: t.bg, color: t.fg }}
     >
-      {tierLabel(tier)}
+      {t.name}
     </span>
   );
 }
@@ -1473,7 +1464,7 @@ function PartnerDetailSlideOver({
                   value={String(p.tier)}
                   disabled={savingTier}
                   onChange={(e) => onChangeTier(Number(e.target.value))}
-                  options={TIER_LABELS.map((label, i) => ({
+                  options={PARTNER_TIER_NAMES.map((label, i) => ({
                     value: String(i),
                     label,
                   }))}
@@ -1490,7 +1481,7 @@ function PartnerDetailSlideOver({
                   placeholder="Unassigned"
                   options={bdms.map((b) => ({
                     value: String(b.id),
-                    label: `${b.name} (${b.partnerCount})`,
+                    label: `${b.name} · ${b.partnerCount} ${b.partnerCount === 1 ? "partner" : "partners"}`,
                   }))}
                 />
               </div>

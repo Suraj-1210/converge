@@ -31,6 +31,7 @@ import {
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { AutoAssignCard } from "./auto-assign-card";
+import { partnerTier } from "~/lib/constants/partner-relationship";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -64,14 +65,6 @@ const UNI_PALETTE = [
   "#E31B54",
 ];
 
-// Tier is derived from student volume (no tier column yet) — a display nicety.
-function tierOf(students: number): { label: string; bg: string; fg: string } {
-  if (students >= 75) return { label: "Diamond", bg: "#EFF8FF", fg: "#1570EF" };
-  if (students >= 50) return { label: "Titanium", bg: "#F9F5FF", fg: "#6941C6" };
-  if (students >= 30) return { label: "Platinum", bg: "#FFFAEB", fg: "#B54708" };
-  if (students >= 15) return { label: "Gold", bg: "#ECFDF3", fg: "#027A48" };
-  return { label: "Silver", bg: "#F2F4F7", fg: "#344054" };
-}
 
 // Map an audit action to an emoji + bubble color for the activity feed.
 function activityStyle(action: string): { icon: string; bg: string } {
@@ -325,7 +318,8 @@ export default function DashboardPage() {
                 </thead>
                 <tbody>
                   {partners.map((p, i) => {
-                    const tier = tierOf(p.students);
+                    // The tier Collegepond set on the partner, not derived.
+                    const tier = partnerTier(p.tier);
                     const conv =
                       p.students > 0 ? Math.round((p.deposits / p.students) * 100) : 0;
                     const convColor =
@@ -362,7 +356,7 @@ export default function DashboardPage() {
                             className="rounded-full px-2 py-0.5 text-[11px] font-semibold"
                             style={{ background: tier.bg, color: tier.fg }}
                           >
-                            {tier.label}
+                            {tier.name}
                           </span>
                         </td>
                         <td className="px-4 py-3 font-semibold text-[#101828]">

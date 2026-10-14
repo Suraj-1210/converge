@@ -86,18 +86,22 @@ export const accountRouter = createTRPCRouter({
       a.label.localeCompare(b.label),
     );
 
-    // An agency's MOU is signed by its owner; counsellors see that one.
+    // The MOU is the partner owner's business (signed by the agency owner or
+    // the independent). Agency counsellors don't get its status at all.
+    // (An agency with more than one owner shares the one signed MOU.)
     const mouSignedAt =
-      user.mou_signed_at ??
-      (user.org_id
-        ? (
-            await ctx.db.user.findFirst({
-              where: { org_id: user.org_id, is_owner: 1, mou_signed_at: { not: null } },
-              select: { mou_signed_at: true },
-            })
-          )?.mou_signed_at
-        : null) ??
-      null;
+      partnerType === "counsellor"
+        ? null
+        : (user.mou_signed_at ??
+          (user.org_id
+            ? (
+                await ctx.db.user.findFirst({
+                  where: { org_id: user.org_id, is_owner: 1, mou_signed_at: { not: null } },
+                  select: { mou_signed_at: true },
+                })
+              )?.mou_signed_at
+            : null) ??
+          null);
 
     return {
       partnerType,
@@ -124,10 +128,10 @@ export const accountRouter = createTRPCRouter({
             gstNumber: user.organization.gst_number,
           }
         : null,
-      mou: {
-        signed: !!mouSignedAt,
-        signedAt: mouSignedAt?.toISOString() ?? null,
-      },
+      mou:
+        partnerType === "counsellor"
+          ? null
+          : { signed: !!mouSignedAt, signedAt: mouSignedAt?.toISOString() ?? null },
       documents,
     };
   }),

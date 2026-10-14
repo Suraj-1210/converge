@@ -513,6 +513,55 @@ export async function setDocumentStatus(
   });
 }
 
+type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
+
+// Approving a partner verifies its documents: every current (is_most_recent)
+// document still pending review — personal ones, plus the company's for an
+// agency owner — moves to approved, with a partner.documents_approved audit
+// entry. Rejected documents stay rejected. Every path where Collegepond
+// approves a partner or counsellor calls this in the same transaction as the
+// status change, so both happen or neither does. Returns how many changed.
+export async function approvePendingPartnerDocuments(
+  tx: Tx,
+  user: { id: number; type: number; org_id: number | null },
+  audit: { byCpUserId: number; reason: string },
+): Promise<number> {
+  const ownsOrgDocs = user.type === UserType.AGENCY_OWNER && user.org_id != null;
+  const pending = await tx.document.findMany({
+    where: {
+      status: DocumentStatus.PENDING,
+      is_most_recent: 1,
+      student_id: null,
+      OR: [
+        { user_id: user.id },
+        ...(ownsOrgDocs ? [{ org_id: user.org_id }] : []),
+      ],
+    },
+    select: { id: true, doc_type: true },
+  });
+  if (pending.length === 0) return 0;
+  const { count } = await tx.document.updateMany({
+    where: { id: { in: pending.map((d) => d.id) }, status: DocumentStatus.PENDING },
+    data: { status: DocumentStatus.APPROVED },
+  });
+  await tx.audit_log.create({
+    data: {
+      user_id: user.id,
+      org_id: user.org_id,
+      action: "partner.documents_approved",
+      entity_type: "user",
+      entity_id: user.id,
+      metadata: {
+        reason: audit.reason,
+        documentIds: pending.map((d) => d.id),
+        docTypes: pending.map((d) => d.doc_type),
+        byCpUserId: audit.byCpUserId,
+      },
+    },
+  });
+  return count;
+}
+
 export async function setApplicationStatus(
   email: string,
   status: ApplicationStatus,
@@ -554,59 +603,45 @@ export async function setApplicationStatus(
       },
     });
 
-    // Approving a partner verifies its documents: every current (is_most_recent)
-    // document still pending review — personal ones, plus the company's for an
-    // agency owner — moves to approved with the status change, or neither
-    // happens. Rejected documents stay rejected; declining or deactivating a
-    // partner leaves documents as they are.
-    if (to !== UserStatus.APPROVED) return;
-    const ownsOrgDocs = user.type === UserType.AGENCY_OWNER && user.org_id != null;
-    const pending = await tx.document.findMany({
-      where: {
-        status: DocumentStatus.PENDING,
-        is_most_recent: 1,
-        student_id: null,
-        OR: [
-          { user_id: user.id },
-          ...(ownsOrgDocs ? [{ org_id: user.org_id }] : []),
-        ],
-      },
-      select: { id: true, doc_type: true },
-    });
-    if (pending.length === 0) return;
-    await tx.document.updateMany({
-      where: { id: { in: pending.map((d) => d.id) }, status: DocumentStatus.PENDING },
-      data: { status: DocumentStatus.APPROVED },
-    });
-    await tx.audit_log.create({
-      data: {
-        user_id: user.id,
-        org_id: user.org_id,
-        action: "partner.documents_approved",
-        entity_type: "user",
-        entity_id: user.id,
-        metadata: {
-          reason: "Approved with the partner",
-          documentIds: pending.map((d) => d.id),
-          docTypes: pending.map((d) => d.doc_type),
-          byCpUserId,
-        },
-      },
-    });
+    // Approving (or reactivating into approved) verifies the partner's pending
+    // documents; declining or deactivating leaves documents as they are.
+    if (to === UserStatus.APPROVED) {
+      await approvePendingPartnerDocuments(tx, user, {
+        byCpUserId,
+        reason: "Approved with the partner",
+      });
+    }
   });
 
   return getApplicationByEmail(email);
 }
 
-// Set a partner's tier (0=Silver … 4=Diamond — see TIER_LABELS in the UI).
+// Set a partner's tier (0=Silver … 4=Diamond — see PARTNER_TIERS). It is set
+// on the agency owner or independent, and is what the partner portal shows.
 export async function setPartnerTier(
   email: string,
   tier: number,
+  byCpUserId: number,
 ): Promise<void> {
-  await db.user.update({
+  const user = await db.user.findUnique({
     where: { email: email.toLowerCase() },
-    data: { tier },
+    select: { id: true, org_id: true, tier: true },
   });
+  if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found." });
+  if (user.tier === tier) return;
+  await db.$transaction([
+    db.user.update({ where: { id: user.id }, data: { tier } }),
+    db.audit_log.create({
+      data: {
+        user_id: user.id,
+        org_id: user.org_id,
+        action: "partner.tier_updated",
+        entity_type: "user",
+        entity_id: user.id,
+        metadata: { from: user.tier, to: tier, byCpUserId },
+      },
+    }),
+  ]);
 }
 
 // Reassign (or clear) the BDM (a cp_user) who owns this partner relationship.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "~/trpc/react";
@@ -15,6 +15,7 @@ import {
   Icon,
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
+import { RELATIONSHIP_MANAGER_LABEL, partnerTier } from "~/lib/constants/partner-relationship";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -32,6 +33,16 @@ export default function PartnerDashboardPage() {
   const me = api.auth.me.useQuery(undefined, { retry: false });
   const recordVisit = api.auth.recordDashboardVisit.useMutation();
   const { data: stats, isLoading } = api.dashboard.partnerStats.useQuery();
+  // Tier and Important Notices are the partner owner's (agency owner or
+  // independent). The server refuses agency counsellors; don't even ask.
+  // Decided after mount, so the server render and the first client render
+  // match whatever auth.me's cache holds.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const isOwner = mounted && (me.data?.kind === "agency" || me.data?.kind === "independent");
+  const tierQ = api.dashboard.partnerTier.useQuery(undefined, { enabled: isOwner, retry: false });
+  const notices = api.dashboard.partnerNotices.useQuery(undefined, { enabled: isOwner, retry: false });
+  const tier = tierQ.data ? partnerTier(tierQ.data.tier) : null;
 
   // Bounce away if state has shifted (e.g. unsigned MOU, or status no longer
   // approved). Middleware enforces the cookie; this enforces the "approved +
@@ -55,21 +66,67 @@ export default function PartnerDashboardPage() {
   }, [me.data?.redirectUrl]);
 
   const contacts = stats?.contacts ?? [];
-  const bdm = stats?.bdm ?? null;
+  const rm = stats?.relationshipManager ?? null;
 
   return (
     <>
-      <div className="mb-6">
-        <h1
-          className="text-2xl font-bold text-[#101828]"
-          suppressHydrationWarning
-        >
-          Welcome{me.data?.firstName ? `, ${me.data.firstName}` : ""}! 👋
-        </h1>
-        <p className="mt-1 text-sm text-[#667085]">
-          Here&apos;s an overview of your partnership with Collegepond.
+      {/* Banners first, above the welcome. */}
+      {/* TODO(data): EduFin loan banner — needs a partner-offers/promos source. */}
+      <div className="mb-6 rounded-xl border border-[#E4E7EC] bg-gradient-to-r from-[#EFF8FF] to-[#F9FAFB] p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-[#101828]">
+            Education loans made easy with EduFin Bank
+          </h2>
+          <NeedsDataBadge />
+        </div>
+        <p className="mt-1 text-[13px] text-[#475467]">
+          Help your students fund their studies — fast approvals for Collegepond partners.
         </p>
       </div>
+
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          {/* One text node, so suppressHydrationWarning covers the name arriving
+              only on the client. */}
+          <h1
+            className="text-2xl font-bold text-[#101828]"
+            suppressHydrationWarning
+          >
+            {`Welcome${me.data?.firstName ? `, ${me.data.firstName}` : ""}! 👋`}
+          </h1>
+          <p className="mt-1 text-sm text-[#667085]">
+            Here&apos;s an overview of your partnership with Collegepond.
+          </p>
+        </div>
+        {tier && (
+          <Link
+            href="/partner/account?tab=loyalty"
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold"
+            style={{ background: tier.bg, color: tier.fg }}
+          >
+            <span aria-hidden>{tier.icon}</span> {tier.name} Partner
+          </Link>
+        )}
+      </div>
+
+      {/* Important Notices — owner only, live (MOU, commission, payouts). */}
+      {isOwner && (
+        <DashboardCard title="Important Notices" className="mb-6">
+          {notices.isLoading ? (
+            <SkeletonRows rows={2} />
+          ) : notices.data && notices.data.length > 0 ? (
+            <ul className="divide-y divide-[#F2F4F7]">
+              {notices.data.map((n) => (
+                <li key={n.id} className="py-2.5 text-[13px] first:pt-0 last:pb-0">
+                  <NoticeRow notice={n} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState label="No notices right now." />
+          )}
+        </DashboardCard>
+      )}
 
       {/* KPIs */}
       <Stagger className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -146,7 +203,7 @@ export default function PartnerDashboardPage() {
 
         {/* Your Collegepond team — under a "Counselling Team" heading, the
             counsellor then the counsellor lead (individually unlabelled), then
-            the BDM under their own heading. */}
+            the Relationship Manager (the BDM) under their own heading. */}
         <DashboardCard title="Your Collegepond Team">
           {isLoading ? (
             <div className="space-y-3">
@@ -157,7 +214,7 @@ export default function PartnerDashboardPage() {
                 </div>
               ))}
             </div>
-          ) : contacts.length || bdm ? (
+          ) : contacts.length || rm ? (
             <div className="space-y-3 text-[13px]">
               {contacts.length > 0 && (
                 <div>
@@ -169,10 +226,10 @@ export default function PartnerDashboardPage() {
                   </div>
                 </div>
               )}
-              {bdm && (
+              {rm && (
                 <div className={contacts.length ? "border-t border-[#EAECF0] pt-3" : ""}>
-                  <TeamHeading>Business Development Manager</TeamHeading>
-                  <TeamContact name={bdm.name} phone={bdm.phone} />
+                  <TeamHeading>{RELATIONSHIP_MANAGER_LABEL}</TeamHeading>
+                  <TeamContact name={rm.name} phone={rm.phone} />
                 </div>
               )}
             </div>
@@ -248,42 +305,69 @@ export default function PartnerDashboardPage() {
           </div>
         </DashboardCard>
 
-        {/* ---- Static widgets below: UI built, awaiting a real data source ---- */}
-
-        {/* TODO(data): Important Notices — needs a notices/announcements table. */}
-        <DashboardCard title="Important Notices" headerRight={<NeedsDataBadge />}>
-          <ul className="space-y-2 text-[13px] text-[#475467]">
-            <li>• MOU renewals for FY26 are now open in My Account.</li>
-            <li>• New commission slabs effective from the next intake.</li>
-          </ul>
-        </DashboardCard>
-
-        {/* TODO(data): Partner Loyalty tier — needs loyalty/tier data (user.tier). */}
-        <DashboardCard title="Partner Loyalty Program" headerRight={<NeedsDataBadge />}>
-          <div className="text-[13px]">
-            <span className="rounded-full bg-[#F2F4F7] px-2.5 py-1 text-xs font-semibold text-[#344054]">
-              Silver Partner
-            </span>
-            <p className="mt-2 text-xs text-[#98A2B3]">
-              Reach 25 students this year to unlock Gold benefits.
-            </p>
-          </div>
-        </DashboardCard>
-
-        {/* TODO(data): EduFin loan banner — needs a partner-offers/promos source. */}
-        <div className="rounded-xl border border-[#E4E7EC] bg-gradient-to-r from-[#EFF8FF] to-[#F9FAFB] p-5 lg:col-span-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-[#101828]">
-              Education loans made easy with EduFin Bank
-            </h2>
-            <NeedsDataBadge />
-          </div>
-          <p className="mt-1 text-[13px] text-[#475467]">
-            Help your students fund their studies — fast approvals for Collegepond partners.
-          </p>
-        </div>
+        {/* Partner Loyalty — owner only; the tier Collegepond set (user.tier).
+            No targets until tier thresholds are decided. */}
+        {isOwner && (
+          <DashboardCard
+            title="Partner Loyalty Program"
+            link="/partner/account?tab=loyalty"
+            linkLabel="All benefits"
+          >
+            {tierQ.isLoading ? (
+              <SkeletonRows rows={3} />
+            ) : !tier ? (
+              <EmptyState label="Your tier couldn't be loaded." />
+            ) : (
+              <div className="text-[13px]">
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
+                  style={{ background: tier.bg, color: tier.fg }}
+                >
+                  <span aria-hidden>{tier.icon}</span> {tier.name} Partner
+                </span>
+                <ul className="mt-3 space-y-1.5 text-[#475467]">
+                  {tier.perks.slice(0, 3).map((p) => (
+                    <li key={p} className="flex gap-2">
+                      <span className="text-[#12B76A]">✓</span> {p}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </DashboardCard>
+        )}
       </div>
     </>
+  );
+}
+
+const NOTICE_DOT: Record<"green" | "amber" | "red" | "blue", string> = {
+  green: "bg-[#12B76A]",
+  amber: "bg-[#F79009]",
+  red: "bg-[#F04438]",
+  blue: "bg-[#1570EF]",
+};
+
+function NoticeRow({
+  notice: n,
+}: {
+  notice: { tone: keyof typeof NOTICE_DOT; title: string; body?: string; href?: string };
+}) {
+  const content = (
+    <div className="flex gap-2.5">
+      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${NOTICE_DOT[n.tone]}`} />
+      <div className="min-w-0">
+        <div className="font-medium text-[#101828]">{n.title}</div>
+        {n.body && <div className="text-xs text-[#667085]">{n.body}</div>}
+      </div>
+    </div>
+  );
+  return n.href ? (
+    <Link href={n.href} className="block rounded-md hover:bg-[#F9FAFB]">
+      {content}
+    </Link>
+  ) : (
+    content
   );
 }
 

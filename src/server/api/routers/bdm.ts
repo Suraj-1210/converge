@@ -2,7 +2,8 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { bdmPerformanceProcedure, createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { AdminRole } from "~/server/db/enums";
+import { partnerTier } from "~/lib/constants/partner-relationship";
+import { AdminRole, UserType } from "~/server/db/enums";
 
 // application.status (UniApplicationStatus): 0 begin · 1 docs · 2 submitted · 3 review ·
 // 4 conditional offer · 5 unconditional offer · 6 deposit · 7 visa · 8 enrolled · 20+ terminal.
@@ -23,14 +24,83 @@ function partnerStatus(userStatus: number): "Active" | "Pending" | "Deactivated"
   if (userStatus === 0) return "Pending";
   return "Deactivated";
 }
-// user.tier is a raw int with no canonical taxonomy — map it to the 5-tier display scale.
-const TIER_NAMES = ["Silver", "Gold", "Platinum", "Titanium", "Diamond"] as const;
-const tierLabel = (tier: number) => TIER_NAMES[Math.max(0, Math.min(TIER_NAMES.length - 1, tier))]!;
+// user.tier (0 = Silver … 4 = Diamond) — the tier Collegepond set on the partner.
+const tierLabel = (tier: number) => partnerTier(tier).name;
 
 const MS_DAY = 86_400_000;
 function daysSince(d: Date | null): number | null {
   if (!d) return null;
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / MS_DAY));
+}
+
+// Independent counsellors are partners in their own right but have no
+// organization, so the per-org rollup in `overview` can't see them. Their
+// students are the ones they created with no org (as on the partner
+// dashboard); applications and commissions follow those students.
+async function independentPartnerRows() {
+  const people = await db.user.findMany({
+    where: { type: UserType.INDEPENDENT_COUNSELLOR, org_id: null, deleted_at: null },
+    select: { id: true, first_name: true, last_name: true, city: true, country: true, bdm_id: true, tier: true, status: true },
+  });
+  if (people.length === 0) return [];
+  const ids = people.map((p) => p.id);
+  const mine = { org_id: null, created_by_user_id: { in: ids } };
+  const [studentG, appRows, commRows] = await Promise.all([
+    db.student.groupBy({ by: ["created_by_user_id"], where: mine, _count: { id: true } }),
+    db.application.findMany({
+      where: { student: mine },
+      select: { status: true, updated_at: true, student: { select: { created_by_user_id: true } } },
+    }),
+    db.commission.findMany({
+      where: { application: { student: mine } },
+      select: { commision_amount: true, application: { select: { student: { select: { created_by_user_id: true } } } } },
+    }),
+  ]);
+  const students = new Map<number, number>();
+  for (const g of studentG) if (g.created_by_user_id != null) students.set(g.created_by_user_id, g._count.id);
+  const revenue = new Map<number, number>();
+  for (const c of commRows) {
+    const by = c.application.student.created_by_user_id;
+    if (by != null) revenue.set(by, (revenue.get(by) ?? 0) + Number(c.commision_amount));
+  }
+  type Agg = { apps: number; deposits: number; last: Date | null; pipe: { leads: number; preapp: number; submitted: number; offer: number; deposit: number } };
+  const agg = new Map<number, Agg>();
+  for (const a of appRows) {
+    const by = a.student.created_by_user_id;
+    if (by == null) continue;
+    const cur = agg.get(by) ?? { apps: 0, deposits: 0, last: null, pipe: { leads: 0, preapp: 0, submitted: 0, offer: 0, deposit: 0 } };
+    if (!cur.last || a.updated_at > cur.last) cur.last = a.updated_at;
+    if (a.status < ACTIVE_APP.lt) {
+      cur.apps++;
+      const seg = pipeSegment(a.status);
+      if (seg) cur.pipe[seg]++;
+    }
+    if (DEPOSIT_STATUSES.includes(a.status)) cur.deposits++;
+    agg.set(by, cur);
+  }
+  return people.map((u) => {
+    const g = agg.get(u.id);
+    const a = g?.apps ?? 0;
+    const d = g?.deposits ?? 0;
+    return {
+      key: `u:${u.id}`,
+      orgId: null as number | null,
+      name: `${u.first_name} ${u.last_name}`.trim(),
+      city: u.city || "—",
+      country: u.country || null,
+      bdmId: u.bdm_id,
+      tier: u.tier,
+      tierLabel: tierLabel(u.tier),
+      status: partnerStatus(u.status),
+      students: students.get(u.id) ?? 0,
+      apps: a,
+      deposits: d,
+      conversion: a > 0 ? Math.round((d / a) * 100) : 0,
+      revenue: revenue.get(u.id) ?? 0,
+      lastActDays: daysSince(g?.last ?? null),
+      pipe: g?.pipe ?? { leads: 0, preapp: 0, submitted: 0, offer: 0, deposit: 0 },
+    };
+  });
 }
 
 export const bdmRouter = createTRPCRouter({
@@ -42,7 +112,20 @@ export const bdmRouter = createTRPCRouter({
         orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
         select: { id: true, first_name: true, last_name: true },
       }),
-      db.user.findMany({ where: { is_owner: 1, org_id: { not: null }, bdm_id: { not: null } }, select: { bdm_id: true } }),
+      // One account per partner: the agency's owner, or the independent
+      // counsellor themselves. Independents have no organization, so counting
+      // only org owners left them out of every BDM's total.
+      db.user.findMany({
+        where: {
+          bdm_id: { not: null },
+          deleted_at: null,
+          OR: [
+            { type: UserType.AGENCY_OWNER, is_owner: 1, org_id: { not: null } },
+            { type: UserType.INDEPENDENT_COUNSELLOR },
+          ],
+        },
+        select: { bdm_id: true },
+      }),
     ]);
     const counts = new Map<number, number>();
     for (const o of owners) if (o.bdm_id != null) counts.set(o.bdm_id, (counts.get(o.bdm_id) ?? 0) + 1);
@@ -68,7 +151,6 @@ export const bdmRouter = createTRPCRouter({
 
       const orgs = await db.organization.findMany({ select: { id: true, name: true, city: true, country: true } });
       const orgIds = orgs.map((o) => o.id);
-      if (orgIds.length === 0) return { stats: { partners: 0, revenue: 0 }, partners: [], leaderboard: [] };
 
       const [users, studentG, appG, depoG, commG, pipeG, lastG] = await Promise.all([
         // Representative user per org (owner first), carrying bdm/tier/status.
@@ -100,13 +182,16 @@ export const bdmRouter = createTRPCRouter({
         pipe.set(r.org_id, cur);
       }
 
-      let partners = orgs.map((o) => {
+      const agencyRows = orgs.map((o) => {
         const rep = repByOrg.get(o.id);
         const a = apps.get(o.id) ?? 0;
         const d = deposits.get(o.id) ?? 0;
         const rev = revenue.get(o.id) ?? 0;
         return {
-          id: o.id,
+          // `key` is unique across agencies and independents; `orgId` is what
+          // the CRM attaches activities to (independents have none).
+          key: `o:${o.id}`,
+          orgId: o.id as number | null,
           name: o.name,
           city: o.city ?? "—",
           country: o.country ?? null,
@@ -123,6 +208,7 @@ export const bdmRouter = createTRPCRouter({
           pipe: pipe.get(o.id) ?? { leads: 0, preapp: 0, submitted: 0, offer: 0, deposit: 0 },
         };
       });
+      let partners = [...agencyRows, ...(await independentPartnerRows())];
 
       // Leaderboard (all BDMs, active partners only), Super Admin only. Computed
       // before the BDM filter so it always ranks everyone.

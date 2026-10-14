@@ -19,6 +19,7 @@ import {
   verifyPhoneOtp,
 } from "~/server/otp";
 import { requireOrgCounsellor } from "~/server/partner-access";
+import { approvePendingPartnerDocuments } from "~/server/applications/store";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import { findPartnerByContact, splitStoredPhone } from "~/server/partner-contact";
 import { countryCodes } from "~/lib/constants/location-data";
@@ -87,20 +88,29 @@ async function decideCounsellor(
   // Removed by their agency: restore first (restoreRemoved), don't approve.
   if (user?.type !== UserType.AGENCY_COUNSELLOR || user.deleted_at) return false;
 
-  await db.user.update({
-    where: { id: user.id },
-    data: {
-      status: approved ? UserStatus.APPROVED : UserStatus.REJECTED,
-      approved_by_collegepond_user_id: approved ? cpUserId : null,
-    },
-  });
-  await db.audit_log.create({
-    data: {
-      action: approved ? "counsellor.approved" : "counsellor.rejected",
-      entity_type: "user",
-      entity_id: user.id,
-      metadata: { byCpUserId: cpUserId, reason: reason ?? null },
-    },
+  await db.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        status: approved ? UserStatus.APPROVED : UserStatus.REJECTED,
+        approved_by_collegepond_user_id: approved ? cpUserId : null,
+      },
+    });
+    await tx.audit_log.create({
+      data: {
+        action: approved ? "counsellor.approved" : "counsellor.rejected",
+        entity_type: "user",
+        entity_id: user.id,
+        metadata: { byCpUserId: cpUserId, reason: reason ?? null },
+      },
+    });
+    // Same document cascade as approving a partner on the Partners page.
+    if (approved) {
+      await approvePendingPartnerDocuments(tx, user, {
+        byCpUserId: cpUserId,
+        reason: "Approved with the counsellor",
+      });
+    }
   });
 
   // Notify the partner (org owner[s]) of the decision — in-app, not email.
@@ -706,7 +716,9 @@ export const counsellorsRouter = createTRPCRouter({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Only a deactivated counsellor can be reactivated." });
       }
       // Back to where they were: active if Collegepond had approved them,
-      // otherwise still awaiting approval.
+      // otherwise still awaiting approval. No document cascade here: this is
+      // the agency owner undoing their own deactivation, not Collegepond
+      // approving anyone, and documents are only ever verified by Collegepond.
       const status =
         c.approved_by_collegepond_user_id !== null ? UserStatus.APPROVED : UserStatus.UNDER_REVIEW;
       await db.user.update({ where: { id: c.id }, data: { status } });

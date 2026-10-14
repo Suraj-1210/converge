@@ -101,9 +101,13 @@ export default function BDMPerformancePage() {
   const activitiesQ = api.bdmCrm.activity.list.useQuery(activityListInput(crmScope), { enabled: canCrm });
   const taskSummaryQ = api.bdmCrm.task.summary.useQuery(crmScope, { enabled: canCrm });
   const bdmOptions = useMemo(() => (bdmsQ.data?.bdms ?? []).map((b) => ({ id: b.id, name: b.name })), [bdmsQ.data]);
-  // A BDM may only attach activities and tasks to their own partners.
+  // A BDM may only attach activities and tasks to their own partners. CRM
+  // entries hang off an organization, so independents (no org) aren't offered.
   const partnerOptions = useMemo(
-    () => partners.filter((p) => !isBdm || p.bdmId === meId).map((p) => ({ id: p.id, name: p.name, city: p.city })),
+    () =>
+      partners
+        .filter((p) => !isBdm || p.bdmId === meId)
+        .flatMap((p) => (p.orgId != null ? [{ id: p.orgId, name: p.name, city: p.city }] : [])),
     [partners, isBdm, meId],
   );
   const prospectOptions = useMemo(
@@ -229,7 +233,7 @@ export default function BDMPerformancePage() {
                     const st = STATUS_BADGE[p.status];
                     const convColor = p.apps === 0 ? "text-[#98A2B3]" : p.conversion >= 30 ? "text-[#027A48]" : p.conversion >= 20 ? "text-[#B54708]" : "text-[#B42318]";
                     return (
-                      <tr key={p.id} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#F9FAFB]">
+                      <tr key={p.key} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#F9FAFB]">
                         <td className={TD}><div className="flex items-center gap-2.5"><Avatar name={p.name} /><div><div className="font-semibold text-[#101828]">{p.name}</div><div className="text-[11px] text-[#98A2B3]">{p.city}</div></div></div></td>
                         <td className={TD}><span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${TIER_BADGE[p.tierLabel as keyof typeof TIER_BADGE]}`}>{p.tierLabel}</span></td>
                         <td className={TD}><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${st.wrap}`}><span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />{p.status}</span></td>
@@ -256,7 +260,7 @@ export default function BDMPerformancePage() {
               {pipelineRows.map((p) => {
                 const total = p.pipe.leads + p.pipe.preapp + p.pipe.submitted + p.pipe.offer + p.pipe.deposit;
                 return (
-                  <div key={p.id} className="flex items-center gap-3">
+                  <div key={p.key} className="flex items-center gap-3">
                     <div className="w-[180px] shrink-0 truncate text-[13px] font-medium text-[#344054]">{p.name}</div>
                     <div className="flex h-6 flex-1 overflow-hidden rounded-md bg-[#F2F4F7]">
                       {PIPE_SEGMENTS.map((seg) => { const v = p.pipe[seg.key]; const w = (v / total) * 100; return v > 0 ? <div key={seg.key} style={{ width: `${w}%`, background: seg.color }} className="flex items-center justify-center text-[10px] font-bold text-white">{v >= 3 ? v : ""}</div> : null; })}

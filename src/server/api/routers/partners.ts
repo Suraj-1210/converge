@@ -156,8 +156,8 @@ export const partnersRouter = createTRPCRouter({
         tier: z.number().int().min(0).max(4),
       }),
     )
-    .mutation(async ({ input }) => {
-      await setPartnerTier(input.email, input.tier);
+    .mutation(async ({ ctx, input }) => {
+      await setPartnerTier(input.email, input.tier, ctx.cpUser.id);
       return { success: true as const };
     }),
 

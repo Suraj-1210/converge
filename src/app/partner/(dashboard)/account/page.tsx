@@ -16,6 +16,8 @@ import {
   BankVerificationBadge,
 } from "~/components/partner/bank-details";
 import { MouViewer } from "~/components/partner/mou-viewer";
+import { CurrentTierLine, TierLadder } from "~/components/partner/loyalty-tiers";
+import { RELATIONSHIP_MANAGER_LABEL } from "~/lib/constants/partner-relationship";
 import { PARTNER_FIELD_LABELS as FIELD } from "~/lib/constants/partner-labels";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
@@ -28,17 +30,6 @@ const TAB_LABELS: Record<TabKey, string> = {
   loyalty: "Loyalty",
   notifications: "Notification Preferences",
 };
-
-// Loyalty tiers — mirrors the Commission page banner/modal (display-only; the
-// actual commission share is the per-commission partner_share_pct in the DB).
-const LOYALTY_TIERS = [
-  { name: "Silver", icon: "🥈", max: 10, share: 70, perks: ["70% Commission Rate", "Standard Application Processing", "Email Support"] },
-  { name: "Gold", icon: "🥇", max: 30, share: 75, perks: ["75% Commission Rate", "Priority Application Processing", "Dedicated Support", "Quarterly Webinars"] },
-  { name: "Platinum", icon: "🏆", max: 50, share: 80, perks: ["80% Commission Rate", "Priority Processing", "Relationship Manager", "Training & Webinars", "Early University Access"] },
-  { name: "Titanium", icon: "⚡", max: 75, share: 85, perks: ["85% Commission Rate", "Priority Processing", "Dedicated Relationship Manager", "Exclusive Training", "Early Access", "Sponsored Events"] },
-  { name: "Diamond", icon: "💎", max: Infinity, share: 90, perks: ["90% Commission Rate", "Priority Application Processing", "Dedicated Relationship Manager", "Exclusive Training & Webinars", "Early Access to New Universities", "Sponsored Events & Fam Trips"] },
-] as const;
-const loyaltyTierFor = (count: number) => LOYALTY_TIERS.find((t) => count <= t.max) ?? LOYALTY_TIERS[LOYALTY_TIERS.length - 1]!;
 
 type DocStatus = "pending" | "approved" | "rejected";
 const DOC_BADGE: Record<DocStatus, { label: string; cls: string }> = {
@@ -406,7 +397,7 @@ export default function PartnerAccountPage() {
         <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
           <p className="mb-5 text-xs text-[#98A2B3]">
             Business information is managed by Collegepond. To request changes,
-            contact your relationship manager.
+            contact your {RELATIONSHIP_MANAGER_LABEL}.
           </p>
           <dl className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
             <ReadOnlyRow label={FIELD.companyName} value={data.business.name} />
@@ -436,11 +427,12 @@ export default function PartnerAccountPage() {
             </h3>
             <p className="mt-1 text-xs text-[#667085]">
               View documents you submitted during signup. To replace a document,
-              contact your relationship manager.
+              contact your {RELATIONSHIP_MANAGER_LABEL}.
             </p>
           </div>
           <ul className="divide-y divide-[#F2F4F7]">
-            {/* MOU row first */}
+            {/* MOU row first (the server sends it to partner owners only) */}
+            {data.mou && (
             <li className="flex items-center gap-4 py-4">
               <DocIconLeaf
                 tone={data.mou.signed ? "verified" : "muted"}
@@ -484,6 +476,7 @@ export default function PartnerAccountPage() {
               )}
               <MouViewer open={mouViewerOpen} onClose={closeMouViewer} />
             </li>
+            )}
 
             {data.documents.length === 0 ? (
               <li className="py-6 text-center text-sm text-[#98A2B3]">
@@ -722,63 +715,24 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
   );
 }
 
-// Loyalty tab — current tier (from this FY's enrolled-student count) + the full
-// tier ladder with benefits. Same data as the Commission page banner/modal.
+// Loyalty tab — the tier Collegepond set (user.tier) and the full tier ladder
+// with benefits. Same components as the Commission page banner/modal.
 function LoyaltyTab() {
-  const yearlyQ = api.partnerCommission.yearlyStats.useQuery();
-  const [show, setShow] = useState<string | null>(null);
-
-  const yearly = yearlyQ.data ?? [];
-  const thisYearCount = yearly.length > 0 ? yearly[yearly.length - 1]!.students : 0;
-  const tier = loyaltyTierFor(thisYearCount);
-  const tierIdx = LOYALTY_TIERS.indexOf(tier);
-  const nextTier = LOYALTY_TIERS[tierIdx + 1] ?? null;
-  const shown = LOYALTY_TIERS.find((t) => t.name === (show ?? tier.name)) ?? tier;
-
+  const tierQ = api.dashboard.partnerTier.useQuery();
+  if (!tierQ.data) {
+    return (
+      <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7 text-sm text-[#98A2B3]">
+        {tierQ.isError ? "Your tier couldn't be loaded." : "Loading…"}
+      </div>
+    );
+  }
   return (
     <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
-      {/* Current tier banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-4">
-        <div className="flex items-center gap-3">
-          <span className="text-3xl">{tier.icon}</span>
-          <div>
-            <div className="text-sm font-bold text-[#101828]">Your Current Tier — {tier.name} · {tier.share}% Commission</div>
-            <div className="text-xs text-[#667085]">
-              {thisYearCount} student{thisYearCount === 1 ? "" : "s"} this year
-              {nextTier ? ` · ${Math.max(0, nextTier.max - thisYearCount + 1)} more to reach ${nextTier.name}` : " · You've reached the top tier!"}
-            </div>
-          </div>
-        </div>
+      <div className="rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-4">
+        <CurrentTierLine tier={tierQ.data.tier} />
       </div>
-
-      {/* Tier ladder */}
-      <div className="mt-5 grid grid-cols-5 gap-2">
-        {LOYALTY_TIERS.map((t) => {
-          const active = shown.name === t.name;
-          return (
-            <button
-              key={t.name}
-              onClick={() => setShow(t.name)}
-              className={`rounded-lg border p-2 text-center transition ${active ? "border-[#1570EF] bg-[#EFF8FF]" : "border-[#E4E7EC] hover:bg-[#F9FAFB]"}`}
-            >
-              <div className="text-xl">{t.icon}</div>
-              <div className="text-xs font-bold text-[#101828]">{t.name}</div>
-              <div className="text-[10px] text-[#667085]">{t.share}%</div>
-              {t.name === tier.name && <div className="mt-0.5 text-[9px] font-semibold text-[#1570EF]">CURRENT</div>}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Benefits of the selected tier */}
-      <div className="mt-4 rounded-lg border border-[#E4E7EC] p-4">
-        <div className="mb-2 text-sm font-bold text-[#101828]">{shown.icon} {shown.name} Tier Benefits</div>
-        <ul className="space-y-1.5">
-          {shown.perks.map((p) => (
-            <li key={p} className="flex items-center gap-2 text-sm text-[#344054]"><span className="text-[#12B76A]">✓</span> {p}</li>
-          ))}
-        </ul>
-        <p className="mt-3 text-[11px] text-[#98A2B3]">Tiers are based on students enrolled per financial year; targets reset on April 1, with a one-tier grace buffer.</p>
+      <div className="mt-5">
+        <TierLadder current={tierQ.data.tier} />
       </div>
     </div>
   );
