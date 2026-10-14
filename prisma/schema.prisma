@@ -565,7 +565,7 @@ model user {
   collegepond_user_user_bdm_idTocollegepond_user                          collegepond_user?         @relation("user_bdm_idTocollegepond_user", fields: [bdm_id], references: [id], map: "fk_user_bdm")
   collegepond_user_user_counsellor_idTocollegepond_user                   collegepond_user?         @relation("user_counsellor_idTocollegepond_user", fields: [counsellor_id], references: [id], map: "fk_user_counsellor")
   collegepond_user_user_lead_counsellor_idTocollegepond_user              collegepond_user?         @relation("user_lead_counsellor_idTocollegepond_user", fields: [lead_counsellor_id], references: [id], map: "fk_user_lead_counsellor")
-  organization                                                            organization?             @relation(fields: [org_id], references: [id], onDelete: Cascade, map: "fk_user_organization")
+  organization                                                            organization?             @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_user_org")
 
   @@index([org_id], map: "fk_user_organization_idx")
   @@index([approved_by_collegepond_user_id], map: "fk_user_collegepond_user1_idx")
