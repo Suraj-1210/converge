@@ -157,7 +157,9 @@ export function StudentSlideOver({
                   CP Counselor
                 </div>
                 <div className="mt-0.5 text-sm text-[#344054]">
-                  {student.cpCounsellorName ?? "Unassigned"}
+                  {student.cpAutoAssigned
+                    ? `Auto-assigned to ${student.cpCounsellorName ?? "a counsellor"}`
+                    : (student.cpCounsellorName ?? "Unassigned")}
                 </div>
               </div>
               <select

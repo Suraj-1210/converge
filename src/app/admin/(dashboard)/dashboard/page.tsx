@@ -30,6 +30,7 @@ import {
   AVATAR_GRADIENTS,
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
+import { AutoAssignCard } from "./auto-assign-card";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -263,6 +264,9 @@ export default function DashboardPage() {
           <span className="font-semibold text-[#B54708]">Review →</span>
         </Link>
       )}
+
+      {/* Counsellor Lead only: Auto Assign switch and team */}
+      <AutoAssignCard />
 
       {/* Row 1: Application Pipeline + Applications by Country */}
       <div className="mb-5 grid grid-cols-1 gap-5 lg:grid-cols-3">

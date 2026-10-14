@@ -1,5 +1,6 @@
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { UniApplicationStatus } from "~/server/db/enums";
+import { staffApplicationScope } from "~/server/staff-access";
 
 // ---------------------------------------------------------------------------
 // Student Placements — applications that have reached Visa Secured. Ops
@@ -16,7 +17,10 @@ const PLACEMENT_STATUSES = [
 export const placementsRouter = createTRPCRouter({
   list: protectedAdminProcedure.query(async ({ ctx }) => {
     const apps = await ctx.db.application.findMany({
-      where: { status: { in: PLACEMENT_STATUSES } },
+      where: {
+        AND: [await staffApplicationScope(ctx.cpUser)],
+        status: { in: PLACEMENT_STATUSES },
+      },
       orderBy: [{ status: "asc" }, { updated_at: "desc" }],
       select: {
         id: true,

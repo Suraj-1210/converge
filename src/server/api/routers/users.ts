@@ -6,7 +6,8 @@ import {
   superAdminProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { ADMIN_ROLE_CODES, type AdminRole } from "~/server/db/enums";
+import { ADMIN_ROLE_CODES, AdminRole } from "~/server/db/enums";
+import { assignableCounsellorIds } from "~/server/staff-access";
 
 // Phone is stored as `${countryCode}${phone}` (e.g. "+919876543210"). When the
 // country code starts with "+", we treat the trailing 10 chars as the local
@@ -124,6 +125,24 @@ export const usersRouter = createTRPCRouter({
       });
       return rows.map(toApi);
     }),
+
+  // Who the signed-in user may assign a student to (Students page Assign /
+  // Reassign / Add Student): a Counsellor Lead their team and themselves, a
+  // Counsellor their own team; everyone else any active Counsellor or Lead.
+  // The server enforces the same rule (requireAssignableCounsellor).
+  assignableCounsellors: protectedAdminProcedure.query(async ({ ctx }) => {
+    const ids = await assignableCounsellorIds(ctx.cpUser);
+    const rows = await db.collegepond_user.findMany({
+      where: {
+        status: 1,
+        role: { in: [AdminRole.COUNSELLOR, AdminRole.COUNSELLOR_LEAD] },
+        ...(ids ? { id: { in: ids } } : {}),
+      },
+      orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
+      select: cpUserSelect,
+    });
+    return rows.map(toApi);
+  }),
 
   create: superAdminProcedure.input(personFields).mutation(async ({ input }) => {
     const email = input.email.toLowerCase();

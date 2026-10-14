@@ -39,9 +39,6 @@ import {
 } from "./modals";
 import { StudentSlideOver } from "./slide-over";
 
-// CP counsellor role (AdminRole.COUNSELLOR).
-const COUNSELLOR_ROLE = 4;
-
 type TabId = "all" | "leads" | "preapp" | "offer" | "decision" | "postoffer";
 
 const TABS: { id: TabId; label: string; group: StudentStatusGroup | null }[] = [
@@ -162,9 +159,9 @@ export default function StudentsPage() {
     if (firstId != null) router.prefetch(`/admin/students/${firstId}`);
   }, [router, studentsQuery.data]);
   const orgsQuery = api.students.listOrgs.useQuery();
-  const counsellorsQuery = api.users.listByRole.useQuery({
-    role: COUNSELLOR_ROLE,
-  });
+  // Only the counsellors this user may assign to (their team, for leads and
+  // counsellors); the server enforces the same rule.
+  const counsellorsQuery = api.users.assignableCounsellors.useQuery();
 
   const students = useMemo(
     () => studentsQuery.data ?? [],
@@ -877,6 +874,14 @@ function StudentRow({
         <div className="text-sm whitespace-nowrap text-[#344054]">
           {s.cpCounsellorName ?? "Unassigned"}
         </div>
+        {s.cpAutoAssigned && (
+          <div
+            className="mt-0.5 text-[10px] font-semibold tracking-wide text-[#027A48] uppercase"
+            title={`Auto-assigned to ${s.cpCounsellorName ?? "a counsellor"}`}
+          >
+            Auto-assigned
+          </div>
+        )}
         <select
           value=""
           onChange={(e) => {

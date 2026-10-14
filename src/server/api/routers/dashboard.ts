@@ -3,11 +3,23 @@ import {
   protectedAdminProcedure,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
-import { UniApplicationStatus, UserStatus, UserType } from "~/server/db/enums";
+import { type db as appDb } from "~/server/db";
+import { AdminRole, UniApplicationStatus, UserStatus, UserType } from "~/server/db/enums";
+import {
+  isCounsellingRole,
+  staffApplicationScope,
+  staffPartnerScope,
+  staffStudentScope,
+} from "~/server/staff-access";
 
 // ---------------------------------------------------------------------------
 // Dashboard aggregations.
-//   adminStats   — portal-wide overview (admin dashboard).
+//   adminStats   — admin dashboard. Portal-wide for Super Admin and the
+//                  non-counselling roles; a Counsellor / Counsellor Lead sees
+//                  only their own students, applications and partners
+//                  (src/server/staff-access.ts). Recent Activity is the
+//                  global feed for Super Admin and the user's own actions for
+//                  everyone else.
 //   partnerStats — scoped to the signed-in partner's org (or, for independent
 //                  counsellors with no org, the students they created).
 //
@@ -34,14 +46,71 @@ const VISA_OR_BEYOND = [
   UniApplicationStatus.ENROLLED,
 ];
 
+type PrismaDb = typeof appDb;
+
 // Trend pill shape returned with each admin KPI (null = nothing to compare).
 type Trend = { value: string; dir: "up" | "down" } | null;
+
+// The "applications by country" figure over a scoped set of students (the
+// global one is a single GROUP BY in SQL).
+async function applicationsByCountryScoped(
+  db: PrismaDb,
+  studentScope: Awaited<ReturnType<typeof staffStudentScope>>,
+): Promise<{ country: string; count: bigint }[]> {
+  const rows = await db.student.findMany({
+    where: { AND: [studentScope], application: { some: {} } },
+    select: { country: true, _count: { select: { application: true } } },
+  });
+  const byCountry = new Map<string, number>();
+  for (const r of rows) {
+    byCountry.set(r.country, (byCountry.get(r.country) ?? 0) + r._count.application);
+  }
+  return [...byCountry.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([country, count]) => ({ country, count: BigInt(count) }));
+}
 
 export const dashboardRouter = createTRPCRouter({
   // ===== Admin overview =====
   adminStats: protectedAdminProcedure.query(async ({ ctx }) => {
     const { db } = ctx;
-    const partnerWhere = { type: { not: UserType.ADMIN } };
+    const me = ctx.cpUser;
+    const scoped = isCounsellingRole(me.role);
+    // One visibility rule for every figure below ({} = everything).
+    const [studentScope, appScope, partnerScope] = await Promise.all([
+      staffStudentScope(me),
+      staffApplicationScope(me),
+      staffPartnerScope(me),
+    ]);
+    const partnerWhere = { AND: [partnerScope], type: { not: UserType.ADMIN } };
+    const commissionScope = scoped ? { application: appScope } : {};
+    // Top Partners: a counsellor's ranking covers only their own partners.
+    const myOrgIds = scoped
+      ? [
+          ...new Set(
+            (await db.user.findMany({ where: partnerScope, select: { org_id: true } }))
+              .map((u) => u.org_id)
+              .filter((x): x is number => x !== null),
+          ),
+        ]
+      : null;
+    // Recent Activity: Super Admin sees everyone; anyone else their own
+    // actions, including ones a Super Admin took while impersonating them.
+    const activityWhere =
+      me.role === AdminRole.SUPER_ADMIN
+        ? {}
+        : {
+            OR: [
+              { metadata: { path: "$.byCpUserId", equals: me.id } },
+              {
+                AND: [
+                  { metadata: { path: "$.impersonation.kind", equals: "staff" } },
+                  { metadata: { path: "$.impersonation.id", equals: me.id } },
+                ],
+              },
+            ],
+          };
 
     // Time windows for month-over-month / year-over-year trend pills.
     const now = new Date();
@@ -80,24 +149,24 @@ export const dashboardRouter = createTRPCRouter({
       db.user.count({
         where: { ...partnerWhere, created_at: { gte: monthStart } },
       }),
-      db.student.count(),
-      db.student.count({ where: { created_at: { gte: monthStart } } }),
+      db.student.count({ where: studentScope }),
+      db.student.count({ where: { AND: [studentScope], created_at: { gte: monthStart } } }),
       db.student.count({
-        where: { created_at: { gte: lastMonthStart, lt: monthStart } },
+        where: { AND: [studentScope], created_at: { gte: lastMonthStart, lt: monthStart } },
       }),
       // "Active" applications = anything not in a terminal outcome (>=20).
-      db.application.count({ where: { status: { lt: 20 } } }),
-      db.application.count({ where: { created_at: { gte: monthStart } } }),
+      db.application.count({ where: { AND: [appScope], status: { lt: 20 } } }),
+      db.application.count({ where: { AND: [appScope], created_at: { gte: monthStart } } }),
       db.application.count({
-        where: { created_at: { gte: lastMonthStart, lt: monthStart } },
+        where: { AND: [appScope], created_at: { gte: lastMonthStart, lt: monthStart } },
       }),
       db.user.count({
         where: { ...partnerWhere, status: UserStatus.UNDER_REVIEW },
       }),
-      db.application.groupBy({ by: ["status"], _count: true }),
+      db.application.groupBy({ by: ["status"], where: appScope, _count: true }),
       db.student.groupBy({
         by: ["org_id"],
-        where: { org_id: { not: null } },
+        where: { org_id: myOrgIds ? { in: myOrgIds } : { not: null } },
         _count: { id: true },
         orderBy: { _count: { id: "desc" } },
         take: 8,
@@ -112,24 +181,31 @@ export const dashboardRouter = createTRPCRouter({
         by: ["org_id"],
         _sum: { commision_amount: true },
       }),
-      db.application.groupBy({ by: ["course_id"], _count: { course_id: true } }),
+      db.application.groupBy({
+        by: ["course_id"],
+        where: appScope,
+        _count: { course_id: true },
+      }),
       // Applications by destination country (student.country, ISO2).
-      db.$queryRaw<{ country: string; count: bigint }[]>`
-        SELECT s.country AS country, COUNT(*) AS count
-        FROM application a
-        JOIN student s ON a.student_id = s.id
-        GROUP BY s.country
-        ORDER BY count DESC
-        LIMIT 6`,
+      scoped
+        ? applicationsByCountryScoped(db, studentScope)
+        : db.$queryRaw<{ country: string; count: bigint }[]>`
+            SELECT s.country AS country, COUNT(*) AS count
+            FROM application a
+            JOIN student s ON a.student_id = s.id
+            GROUP BY s.country
+            ORDER BY count DESC
+            LIMIT 6`,
       db.commission.aggregate({
         _sum: { commision_amount: true },
-        where: { created_at: { gte: yearStart } },
+        where: { ...commissionScope, created_at: { gte: yearStart } },
       }),
       db.commission.aggregate({
         _sum: { commision_amount: true },
-        where: { created_at: { gte: lastYearStart, lt: lastYearToDate } },
+        where: { ...commissionScope, created_at: { gte: lastYearStart, lt: lastYearToDate } },
       }),
       db.audit_log.findMany({
+        where: activityWhere,
         orderBy: { created_at: "desc" },
         take: 8,
         select: {

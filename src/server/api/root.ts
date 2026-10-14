@@ -6,6 +6,7 @@ import { signupRouter } from "~/server/api/routers/signup";
 import { adminAuthRouter } from "~/server/api/routers/admin-auth";
 import { usersRouter } from "~/server/api/routers/users";
 import { departmentsRouter } from "~/server/api/routers/departments";
+import { counsellingTeamsRouter } from "~/server/api/routers/counselling-teams";
 import { partnersRouter } from "~/server/api/routers/partners";
 import { universitiesRouter } from "~/server/api/routers/universities";
 import { studentsRouter } from "~/server/api/routers/students";
@@ -42,6 +43,7 @@ export const appRouter = createTRPCRouter({
   adminAuth: adminAuthRouter,
   users: usersRouter,
   departments: departmentsRouter,
+  counsellingTeams: counsellingTeamsRouter,
   partners: partnersRouter,
   universities: universitiesRouter,
   students: studentsRouter,

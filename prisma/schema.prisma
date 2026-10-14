@@ -460,6 +460,9 @@ model student {
   // CP-side assigned counsellor (admin "Assign" action). counsellor_id above
   // remains the partner-side counsellor used for partner-portal scoping.
   cp_counsellor_id          Int?
+  // Set when auto-assign chose cp_counsellor_id ("Auto-assigned" tag);
+  // cleared by any manual assignment.
+  cp_auto_assigned_at       DateTime?                   @db.Timestamp(0)
   // Partner user who created the record — scoping for org-less independents.
   created_by_user_id        Int?
   // ---- Profile-page personal information (cp-student-profile mock) ----
@@ -624,9 +627,41 @@ model collegepond_user {
   bdm_activity                                                bdm_activity[]
   bdm_task_assigned                                           bdm_task[]            @relation("bdm_task_assignee")
   bdm_task_created                                            bdm_task[]            @relation("bdm_task_creator")
+  counsellor_team_led                                         counsellor_team?      @relation("counsellor_team_lead")
+  counsellor_team_spoc                                        counsellor_team[]     @relation("counsellor_team_spoc")
+  counsellor_team_member                                      counsellor_team_member?
 
   @@index([department_id], map: "fk_cp_user_department_idx")
   @@map("cp_user")
+}
+
+// Counselling teams (Settings -> Counselling Teams, Super Admin). One team per
+// Counsellor Lead: the counsellors who report to them, the primary SPOC new
+// leads route to, and the lead's Auto Assign switch. See src/server/staff-access.ts.
+model counsellor_team {
+  id                      Int                      @id @default(autoincrement())
+  lead_cp_user_id         Int                      @unique(map: "uq_counsellor_team_lead")
+  primary_spoc_cp_user_id Int?
+  auto_assign             Int                      @default(0) @db.TinyInt
+  created_at              DateTime                 @default(now()) @db.Timestamp(0)
+  updated_at              DateTime                 @default(now()) @updatedAt @db.Timestamp(0)
+  lead                    collegepond_user         @relation("counsellor_team_lead", fields: [lead_cp_user_id], references: [id], onDelete: Cascade, map: "fk_counsellor_team_lead")
+  primary_spoc            collegepond_user?        @relation("counsellor_team_spoc", fields: [primary_spoc_cp_user_id], references: [id], onDelete: SetNull, map: "fk_counsellor_team_spoc")
+  member                  counsellor_team_member[]
+
+  @@index([primary_spoc_cp_user_id], map: "fk_counsellor_team_spoc_idx")
+}
+
+// A counsellor reporting to a lead; at most one team per counsellor.
+model counsellor_team_member {
+  id         Int              @id @default(autoincrement())
+  team_id    Int
+  cp_user_id Int              @unique(map: "uq_counsellor_team_member")
+  created_at DateTime         @default(now()) @db.Timestamp(0)
+  team       counsellor_team  @relation(fields: [team_id], references: [id], onDelete: Cascade, map: "fk_counsellor_team_member_team")
+  cp_user    collegepond_user @relation(fields: [cp_user_id], references: [id], onDelete: Cascade, map: "fk_counsellor_team_member_user")
+
+  @@index([team_id], map: "fk_counsellor_team_member_team_idx")
 }
 
 // Department master for internal staff (Settings -> Departments, Super Admin).

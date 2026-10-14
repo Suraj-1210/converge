@@ -8,6 +8,7 @@ import {
   sendWhatsappMessage,
 } from "~/server/periskope";
 import { reconcileChatMessages } from "~/server/whatsapp-sync";
+import { requireStaffStudent } from "~/server/staff-access";
 
 // Student ↔ counsellor WhatsApp thread (via Periskope). The DB is the store; the
 // thread reads from it (instant load). sync() reconciles it against Periskope's
@@ -19,7 +20,8 @@ export const chatRouter = createTRPCRouter({
 
   thread: protectedAdminProcedure
     .input(z.object({ studentId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const rows = await db.whatsapp_message.findMany({
         where: { student_id: input.studentId },
         orderBy: { created_at: "desc" },
@@ -46,7 +48,8 @@ export const chatRouter = createTRPCRouter({
   // WITHOUT blocking the thread render.
   sync: protectedAdminProcedure
     .input(z.object({ studentId: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const student = await db.student.findUnique({
         where: { id: input.studentId },
         select: { id: true, phone: true },
@@ -68,6 +71,7 @@ export const chatRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const student = await db.student.findUnique({
         where: { id: input.studentId },
         select: { id: true, phone: true },

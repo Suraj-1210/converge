@@ -2,6 +2,7 @@ import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
 import { flushPartnerUpdateEmails, partnerEditedStudentIds } from "~/server/student-changes";
+import { staffStudentScope } from "~/server/staff-access";
 import {
   AdminRole,
   PartnerInvoiceStatus,
@@ -48,6 +49,8 @@ const BANK_VERIFIER_ROLES: number[] = [
 export const notificationsRouter = createTRPCRouter({
   list: protectedAdminProcedure.query(async ({ ctx }) => {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Student counts follow the admin Students list's visibility.
+    const studentScope = await staffStudentScope(ctx.cpUser);
     // The bell polls, so it also sends any partner-edit emails whose burst
     // has ended (a backstop for the in-process timer after a restart).
     void flushPartnerUpdateEmails();
@@ -92,16 +95,15 @@ export const notificationsRouter = createTRPCRouter({
             },
           },
         }),
-        db.student.count({ where: { created_at: { gte: weekAgo } } }),
+        db.student.count({ where: { AND: [studentScope], created_at: { gte: weekAgo } } }),
         // A partner saved new or changed bank details: finance's alert, shown
         // only to the roles that can verify them.
         BANK_VERIFIER_ROLES.includes(ctx.cpUser.role)
           ? db.partner_bank_account.count({ where: PENDING_BANK_WHERE })
           : Promise.resolve(0),
-        // Students a partner edited that nobody here has reviewed yet. When
-        // the admin Students list is scoped per counsellor, pass the same
-        // filter here.
-        seesPartnerEdits ? partnerEditedStudentIds() : Promise.resolve([] as number[]),
+        // Students a partner edited that nobody here has reviewed yet, within
+        // the same visibility as the admin Students list.
+        seesPartnerEdits ? partnerEditedStudentIds(studentScope) : Promise.resolve([] as number[]),
       ]);
 
     const notifications: AdminNotification[] = [];

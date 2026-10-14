@@ -89,6 +89,46 @@ CREATE TABLE IF NOT EXISTS `cp_user` (
 
 
 -- -----------------------------------------------------
+-- counsellor_team  (one per Counsellor Lead: primary SPOC + Auto Assign)
+-- counsellor_team_member  (counsellors reporting to a lead; one team each)
+-- Settings -> Counselling Teams. See 20261014084901_counselling_teams.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `counsellor_team` (
+  `id`                      INT       NOT NULL AUTO_INCREMENT,
+  `lead_cp_user_id`         INT       NOT NULL,
+  `primary_spoc_cp_user_id` INT       NULL DEFAULT NULL,
+  `auto_assign`             TINYINT   NOT NULL DEFAULT 0,
+  `created_at`              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_counsellor_team_lead` (`lead_cp_user_id` ASC) VISIBLE,
+  INDEX `fk_counsellor_team_spoc_idx` (`primary_spoc_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_counsellor_team_lead`
+    FOREIGN KEY (`lead_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_counsellor_team_spoc`
+    FOREIGN KEY (`primary_spoc_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `counsellor_team_member` (
+  `id`         INT       NOT NULL AUTO_INCREMENT,
+  `team_id`    INT       NOT NULL,
+  `cp_user_id` INT       NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_counsellor_team_member` (`cp_user_id` ASC) VISIBLE,
+  INDEX `fk_counsellor_team_member_team_idx` (`team_id` ASC) VISIBLE,
+  CONSTRAINT `fk_counsellor_team_member_team`
+    FOREIGN KEY (`team_id`) REFERENCES `counsellor_team` (`id`)
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_counsellor_team_member_user`
+    FOREIGN KEY (`cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
 -- user  (FK -> organization, collegepond_user)
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `user` (
@@ -246,6 +286,7 @@ CREATE TABLE IF NOT EXISTS `student` (
   `needs_edu_loan`     TINYINT(1) NULL DEFAULT NULL,  -- renamed from education_loan
   `apply_through_cp`   TINYINT(1) NULL DEFAULT NULL,
   `cp_counsellor_id`   INT NULL DEFAULT NULL,           -- CP-side assigned counsellor
+  `cp_auto_assigned_at` TIMESTAMP NULL DEFAULT NULL,    -- set when auto-assign chose cp_counsellor_id
   `created_by_user_id` INT NULL DEFAULT NULL,           -- partner user who created the record
   -- Profile-page personal information (cp-student-profile mock)
   `middle_name`               VARCHAR(50)  NULL DEFAULT NULL,

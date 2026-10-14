@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
+import { requireStaffNote, staffStudentScope } from "~/server/staff-access";
 
 // student_note: one row is a note (is_task 0) or a task/reminder (is_task 1,
 // with due_date / priority / is_done). priority: 0 Low · 1 Medium · 2 High.
@@ -9,13 +10,15 @@ const PRIORITY_LABEL = ["Low", "Medium", "High"];
 const todayStart = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 
 export const notesRouter = createTRPCRouter({
-  stats: protectedAdminProcedure.query(async () => {
+  stats: protectedAdminProcedure.query(async ({ ctx }) => {
     const today = todayStart();
+    // Notes on students this user can see (staff-access.ts).
+    const student = await staffStudentScope(ctx.cpUser);
     const [overdue, upcoming, completed, notes] = await Promise.all([
-      db.student_note.count({ where: { is_task: 1, is_done: 0, due_date: { lt: today } } }),
-      db.student_note.count({ where: { is_task: 1, is_done: 0, due_date: { gte: today } } }),
-      db.student_note.count({ where: { is_task: 1, is_done: 1 } }),
-      db.student_note.count({ where: { is_task: 0 } }),
+      db.student_note.count({ where: { student, is_task: 1, is_done: 0, due_date: { lt: today } } }),
+      db.student_note.count({ where: { student, is_task: 1, is_done: 0, due_date: { gte: today } } }),
+      db.student_note.count({ where: { student, is_task: 1, is_done: 1 } }),
+      db.student_note.count({ where: { student, is_task: 0 } }),
     ]);
     return { overdue, upcoming, completed, notes };
   }),
@@ -29,11 +32,12 @@ export const notesRouter = createTRPCRouter({
         search: z.string().optional(),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const today = todayStart();
       const search = input.search?.trim();
       const isTask = input.tab === "reminders" ? 1 : 0;
       const where = {
+        AND: [{ student: await staffStudentScope(ctx.cpUser) }],
         is_task: isTask,
         ...(input.priority != null ? { priority: input.priority } : {}),
         ...(input.status === "completed"
@@ -84,7 +88,8 @@ export const notesRouter = createTRPCRouter({
 
   toggleDone: protectedAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffNote(ctx.cpUser, input.id);
       const n = await db.student_note.findUnique({ where: { id: input.id }, select: { is_done: true } });
       if (!n) throw new TRPCError({ code: "NOT_FOUND", message: "Reminder not found" });
       await db.student_note.update({ where: { id: input.id }, data: { is_done: n.is_done === 1 ? 0 : 1 } });

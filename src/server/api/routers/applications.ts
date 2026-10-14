@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { UniApplicationStatusLabel } from "~/server/db/enums";
+import { requireStaffApplication, staffApplicationScope } from "~/server/staff-access";
 
 const PAGE_SIZE = 20;
 const MS_DAY = 86_400_000;
@@ -14,9 +15,9 @@ const ENROLLED = [8];
 
 export const applicationsRouter = createTRPCRouter({
   // Dropdown options: partners that have applications + the stage labels.
-  filters: protectedAdminProcedure.query(async () => {
+  filters: protectedAdminProcedure.query(async ({ ctx }) => {
     const orgs = await db.organization.findMany({
-      where: { application: { some: {} } },
+      where: { application: { some: await staffApplicationScope(ctx.cpUser) } },
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     });
@@ -36,9 +37,12 @@ export const applicationsRouter = createTRPCRouter({
         scope: z.enum(["active", "closed", "all"]).default("active"),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const search = input.search?.trim();
+      // Counsellors see only their students' applications (staff-access.ts).
+      const scope = await staffApplicationScope(ctx.cpUser);
       const where = {
+        AND: [scope],
         ...(input.status != null
           ? { status: input.status }
           : input.scope === "active"
@@ -67,7 +71,7 @@ export const applicationsRouter = createTRPCRouter({
             organization: { select: { name: true } },
           },
         }),
-        db.application.groupBy({ by: ["status"], _count: { id: true } }),
+        db.application.groupBy({ by: ["status"], where: scope, _count: { id: true } }),
       ]);
 
       const cpIds = Array.from(new Set(rows.map((r) => r.student.cp_counsellor_id).filter((x): x is number => x != null)));
@@ -113,7 +117,8 @@ export const applicationsRouter = createTRPCRouter({
   // filtered list; the "Open full profile" link goes to the full page).
   detail: protectedAdminProcedure
     .input(z.object({ applicationId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       const a = await db.application.findUnique({
         where: { id: input.applicationId },
         select: {

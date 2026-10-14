@@ -24,6 +24,7 @@ const MODULE_BY_ENTITY: Record<string, string> = {
   cp_user: "Users",
   export: "Exports",
   partner_bank_account: "Bank Details",
+  counselling_team: "Counselling Teams",
 };
 const ENTITY_BY_MODULE: Record<string, string> = Object.fromEntries(
   Object.entries(MODULE_BY_ENTITY).map(([k, v]) => [v, k]),
@@ -35,11 +36,12 @@ const ACTION_STRINGS = [
   ...BANK_AUDIT_ACTIONS,
   "application.credential_saved", "application.credential_viewed", "application.removed", "application.status_updated", "application.uni_id_saved", "application.vendor_selected",
   "counsellor.approved", "counsellor.invited", "counsellor.rejected",
+  "counselling_team.auto_assign_off", "counselling_team.auto_assign_on", "counselling_team.updated",
   "event.created", "event.deleted", "event.updated",
   "export.downloaded",
   "impersonation.ended", "impersonation.started",
   "partner.documents_approved", "partner.status_updated",
-  "student.academics_updated", "student.application_created", "student.cp_counsellor_assigned", "student.document_removed", "student.document_uploaded", "student.profile_updated", "student.shortlist_removed", "student.shortlisted", "student.status_updated", "student.tests_updated", "student.work_experience_updated",
+  "student.academics_updated", "student.application_created", "student.cp_counsellor_assigned", "student.cp_counsellor_auto_assigned", "student.document_removed", "student.document_uploaded", "student.profile_updated", "student.shortlist_removed", "student.shortlisted", "student.status_updated", "student.tests_updated", "student.work_experience_updated",
 ];
 
 function categoryOf(action: string): string {

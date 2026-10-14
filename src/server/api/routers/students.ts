@@ -24,6 +24,17 @@ import {
   requireOrgCounsellor,
   requireVisibleStudent,
 } from "~/server/partner-access";
+import {
+  autoAssignStudents,
+  isCounsellingRole,
+  requireAssignableCounsellor,
+  requireStaffApplication,
+  requireStaffNote,
+  requireStaffStudent,
+  requireStaffStudents,
+  staffStudentScope,
+  type StaffUser,
+} from "~/server/staff-access";
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
@@ -34,6 +45,7 @@ import { emailPartners, studentPartnerRecipients } from "~/server/email/partners
 const LIST_CAP = 500;
 import {
   APP_TO_STUDENT_STATUS,
+  AdminRole,
   COURSE_LEVEL_CODES,
   EDUCATION_LEVEL_CODES,
   EMERGENCY_RELATIONSHIP_CODES,
@@ -198,6 +210,8 @@ function toApi(s: DbStudent) {
     counsellorName: s.user ? fullName(s.user) : null,
     cpCounsellorId: s.cp_counsellor_id,
     cpCounsellorName: s.cp_counsellor ? fullName(s.cp_counsellor) : null,
+    // Auto-assign picked the counsellor (cleared by any manual assignment).
+    cpAutoAssigned: s.cp_counsellor_id !== null && s.cp_auto_assigned_at !== null,
     bdmName: bdm ? fullName(bdm) : null,
     createdAt: s.created_at.toISOString(),
     updatedAt: s.updated_at.toISOString(),
@@ -334,10 +348,30 @@ function boolToInt(v: boolean | null): number | null {
   return v === null ? null : v ? 1 : 0;
 }
 
-async function requireStudent(id: number) {
-  const s = await db.student.findUnique({ where: { id }, select: { id: true } });
-  if (!s) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
+// The Collegepond counsellor a staff-created student starts with. A
+// hand-picked one must be within the creator's reach; a Counsellor's own new
+// students default to them. null = let auto-assign route it.
+async function initialCpCounsellor(user: StaffUser, picked: number | null | undefined) {
+  if (picked) return (await requireAssignableCounsellor(user, picked)).id;
+  return user.role === AdminRole.COUNSELLOR ? user.id : null;
+}
+
+// After auto-assign: a counselling user must not create students they then
+// can't see, so anything still outside their scope is assigned to them.
+async function keepVisibleToCreator(user: StaffUser, ids: number[]) {
+  if (!isCounsellingRole(user.role) || ids.length === 0) return;
+  const scope = await staffStudentScope(user);
+  const visible = await db.student.findMany({
+    where: { AND: [{ id: { in: ids } }, scope] },
+    select: { id: true },
+  });
+  const seen = new Set(visible.map((v) => v.id));
+  const hidden = ids.filter((id) => !seen.has(id));
+  if (hidden.length) {
+    await db.student.updateMany({
+      where: { id: { in: hidden }, cp_counsellor_id: null },
+      data: { cp_counsellor_id: user.id },
+    });
   }
 }
 
@@ -421,9 +455,10 @@ async function findDuplicate(
 
 // Partner-facing DTO: same as toApi minus CP-internal assignment fields.
 function toPartnerApi(s: DbStudent) {
-  const { cpCounsellorId, cpCounsellorName, bdmName, ...rest } = toApi(s);
+  const { cpCounsellorId, cpCounsellorName, cpAutoAssigned, bdmName, ...rest } = toApi(s);
   void cpCounsellorId;
   void cpCounsellorName;
+  void cpAutoAssigned;
   void bdmName;
   return rest;
 }
@@ -912,6 +947,7 @@ function toPartnerFull(full: Awaited<ReturnType<typeof loadStudentFull>>) {
     ...full,
     cpCounsellorId: null,
     cpCounsellorName: null,
+    cpAutoAssigned: false,
     bdmName: null,
     notes: [],
     partnerUpdates: [] as Awaited<ReturnType<typeof pendingPartnerUpdates>>,
@@ -945,8 +981,9 @@ async function partnerEdit<T>(
 
 export const studentsRouter = createTRPCRouter({
   // Lightweight list for pickers (e.g. the Uni Assist student selector).
-  listLite: protectedAdminProcedure.query(async () => {
+  listLite: protectedAdminProcedure.query(async ({ ctx }) => {
     const rows = await db.student.findMany({
+      where: await staffStudentScope(ctx.cpUser),
       orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
       take: LIST_CAP,
       select: {
@@ -966,8 +1003,10 @@ export const studentsRouter = createTRPCRouter({
 
   // ---- Admin (cross-partner) ----------------------------------------------
 
-  adminList: protectedAdminProcedure.query(async () => {
+  adminList: protectedAdminProcedure.query(async ({ ctx }) => {
     const rows = await db.student.findMany({
+      // Counsellors see only their students (src/server/staff-access.ts).
+      where: await staffStudentScope(ctx.cpUser),
       orderBy: { updated_at: "desc" },
       take: LIST_CAP,
       include: studentInclude,
@@ -1000,7 +1039,8 @@ export const studentsRouter = createTRPCRouter({
         cpCounsellorId: z.number().int().positive().nullable().optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
       const duplicate = await findDuplicate(
         input.email,
         input.countryCode,
@@ -1024,11 +1064,19 @@ export const studentsRouter = createTRPCRouter({
           education_loan: input.educationLoan ? 1 : 0,
           apply_through_cp: input.applyThroughCp ? 1 : 0,
           org_id: input.orgId,
-          cp_counsellor_id: input.cpCounsellorId ?? null,
+          cp_counsellor_id: cpCounsellorId,
         },
+        select: { id: true },
+      });
+      if (cpCounsellorId === null) {
+        await autoAssignStudents([created.id]);
+        await keepVisibleToCreator(ctx.cpUser, [created.id]);
+      }
+      const student = await db.student.findUniqueOrThrow({
+        where: { id: created.id },
         include: studentInclude,
       });
-      return { ok: true as const, student: toApi(created) };
+      return { ok: true as const, student: toApi(student) };
     }),
 
   // Bulk-create students from a parsed CSV. Rows are validated client-side; the
@@ -1042,7 +1090,8 @@ export const studentsRouter = createTRPCRouter({
         rows: z.array(createFields).min(1).max(500),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
       // One pass over existing students to detect duplicates by email or by
       // phone digits, instead of a full scan per row.
       const existing = await db.student.findMany({
@@ -1102,12 +1151,23 @@ export const studentsRouter = createTRPCRouter({
           education_loan: r.educationLoan ? 1 : 0,
           apply_through_cp: r.applyThroughCp ? 1 : 0,
           org_id: input.orgId,
-          cp_counsellor_id: input.cpCounsellorId ?? null,
+          cp_counsellor_id: cpCounsellorId,
         });
       });
 
       if (toCreate.length > 0) {
         await db.student.createMany({ data: toCreate });
+        if (cpCounsellorId === null) {
+          // createMany returns no ids; emails are unique, so look them up.
+          const ids = (
+            await db.student.findMany({
+              where: { email: { in: toCreate.map((r) => r.email) } },
+              select: { id: true },
+            })
+          ).map((r) => r.id);
+          await autoAssignStudents(ids);
+          await keepVisibleToCreator(ctx.cpUser, ids);
+        }
       }
 
       return { created: toCreate.length, skipped };
@@ -1116,7 +1176,8 @@ export const studentsRouter = createTRPCRouter({
   // Full profile for /admin/students/[id], plus partner edits awaiting review.
   adminGet: protectedAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.id);
       const full = await loadStudentFull(input.id);
       return { ...full, partnerUpdates: await pendingPartnerUpdates(input.id) };
     }),
@@ -1125,6 +1186,7 @@ export const studentsRouter = createTRPCRouter({
   markPartnerUpdatesReviewed: protectedAdminProcedure
     .input(z.object({ studentId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const r = await db.student_partner_update.updateMany({
         where: { student_id: input.studentId, reviewed_at: null },
         data: { reviewed_at: new Date(), reviewed_by_cp_user_id: ctx.cpUser.id },
@@ -1145,13 +1207,7 @@ export const studentsRouter = createTRPCRouter({
   adminUpdate: protectedAdminProcedure
     .input(profileUpdateInput)
     .mutation(async ({ ctx, input }) => {
-      const existing = await db.student.findUnique({
-        where: { id: input.id },
-        select: { id: true },
-      });
-      if (!existing) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
-      }
+      await requireStaffStudent(ctx.cpUser, input.id);
       const duplicate = await findDuplicate(
         input.email,
         input.countryCode,
@@ -1179,7 +1235,7 @@ export const studentsRouter = createTRPCRouter({
   saveEducation: protectedAdminProcedure
     .input(educationInput)
     .mutation(async ({ ctx, input }) => {
-      await requireStudent(input.studentId);
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       await applyEducation(input);
       await db.audit_log.create({
         data: {
@@ -1195,7 +1251,7 @@ export const studentsRouter = createTRPCRouter({
   saveWorkExperience: protectedAdminProcedure
     .input(workInput)
     .mutation(async ({ ctx, input }) => {
-      await requireStudent(input.studentId);
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       await applyWorkExperience(input);
       await db.audit_log.create({
         data: {
@@ -1211,7 +1267,7 @@ export const studentsRouter = createTRPCRouter({
   saveTestScores: protectedAdminProcedure
     .input(testsInput)
     .mutation(async ({ ctx, input }) => {
-      await requireStudent(input.studentId);
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       await applyTestScores(input);
       await db.audit_log.create({
         data: {
@@ -1237,7 +1293,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await requireStudent(input.studentId);
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const note = await db.student_note.create({
         data: {
           student_id: input.studentId,
@@ -1263,14 +1319,8 @@ export const studentsRouter = createTRPCRouter({
         isDone: z.boolean().optional(),
       }),
     )
-    .mutation(async ({ input }) => {
-      const note = await db.student_note.findUnique({
-        where: { id: input.id },
-        select: { id: true },
-      });
-      if (!note) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Note not found" });
-      }
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffNote(ctx.cpUser, input.id);
       await db.student_note.update({
         where: { id: input.id },
         data: {
@@ -1291,7 +1341,8 @@ export const studentsRouter = createTRPCRouter({
 
   deleteNote: protectedAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffNote(ctx.cpUser, input.id);
       await db.student_note.deleteMany({ where: { id: input.id } });
       return { ok: true };
     }),
@@ -1310,6 +1361,7 @@ export const studentsRouter = createTRPCRouter({
       if (!doc?.student_id) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
       }
+      await requireStaffStudent(ctx.cpUser, doc.student_id);
       await db.document.delete({ where: { id: doc.id } });
       await db.audit_log.create({
         data: {
@@ -1331,10 +1383,13 @@ export const studentsRouter = createTRPCRouter({
         studentIds: z.array(z.number().int().positive()).max(200),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       if (input.studentIds.length === 0) return [];
       const rows = await db.shortlist.findMany({
-        where: { student_id: { in: input.studentIds } },
+        where: {
+          student_id: { in: input.studentIds },
+          student: await staffStudentScope(ctx.cpUser),
+        },
         select: { student_id: true, course_id: true },
       });
       return rows.map((r) => ({
@@ -1351,6 +1406,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudents(ctx.cpUser, input.studentIds);
       const course = await db.course.findUnique({
         where: { id: input.courseId },
         select: { id: true },
@@ -1400,6 +1456,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudents(ctx.cpUser, input.studentIds);
       const result = await db.shortlist.deleteMany({
         where: {
           student_id: { in: input.studentIds },
@@ -1427,6 +1484,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
       const student = await db.student.findUnique({
         where: { id: input.studentId },
         select: { id: true, org_id: true, status: true },
@@ -1509,6 +1567,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       const app = await db.application.findUnique({
         where: { id: input.applicationId },
         select: {
@@ -1609,6 +1668,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       await db.application.update({
         where: { id: input.applicationId },
         data: { university_app_id: input.universityAppId },
@@ -1635,6 +1695,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       await db.application.update({
         where: { id: input.applicationId },
         data: { counsellor_vendor: input.vendor },
@@ -1657,7 +1718,8 @@ export const studentsRouter = createTRPCRouter({
         docs: z.array(z.string().trim().min(1).max(120)).max(20),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       await db.application.update({
         where: { id: input.applicationId },
         data: { conditional_docs: input.docs },
@@ -1677,7 +1739,8 @@ export const studentsRouter = createTRPCRouter({
         amount: z.number().nonnegative().max(99_999_999).nullable(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       await db.application.update({
         where: { id: input.applicationId },
         data: {
@@ -1700,6 +1763,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       const app = await db.application.findUnique({
         where: { id: input.applicationId },
         select: { id: true, student_id: true },
@@ -1732,6 +1796,7 @@ export const studentsRouter = createTRPCRouter({
   revealPortalCredential: protectedAdminProcedure
     .input(z.object({ applicationId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       const cred = await db.application_portal_credential.findUnique({
         where: { application_id: input.applicationId },
       });
@@ -1755,6 +1820,7 @@ export const studentsRouter = createTRPCRouter({
   removeApplication: protectedAdminProcedure
     .input(z.object({ applicationId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      await requireStaffApplication(ctx.cpUser, input.applicationId);
       const app = await db.application.findUnique({
         where: { id: input.applicationId },
         select: { id: true, student_id: true, course_id: true },
@@ -1801,6 +1867,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffStudents(ctx.cpUser, input.ids);
       const result = await db.student.updateMany({
         where: { id: { in: input.ids } },
         data: { status: input.status },
@@ -1831,16 +1898,13 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const counsellor = await db.collegepond_user.findUnique({
-        where: { id: input.cpCounsellorId },
-        select: { id: true, first_name: true, last_name: true, status: true },
-      });
-      if (counsellor?.status !== 1) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Counsellor not found" });
-      }
+      // Only students the assigner can see, only to someone in their team
+      // (counselling roles); a manual pick replaces any auto-assignment.
+      await requireStaffStudents(ctx.cpUser, input.ids);
+      const counsellor = await requireAssignableCounsellor(ctx.cpUser, input.cpCounsellorId);
       const result = await db.student.updateMany({
         where: { id: { in: input.ids } },
-        data: { cp_counsellor_id: input.cpCounsellorId },
+        data: { cp_counsellor_id: counsellor.id, cp_auto_assigned_at: null },
       });
       await db.audit_log.createMany({
         data: input.ids.map((id) => ({
@@ -1906,6 +1970,9 @@ export const studentsRouter = createTRPCRouter({
           },
           include: studentInclude,
         });
+        // Route it to a Collegepond counsellor when the partner's lead has
+        // Auto Assign on (src/server/staff-access.ts).
+        await autoAssignStudents([created.id]);
         return { ok: true as const, student: toPartnerApi(created) };
       } catch (e) {
         // student.email is globally UNIQUE, but findDuplicate above is

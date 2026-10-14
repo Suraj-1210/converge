@@ -11,6 +11,7 @@ import {
   STUDENT_DOC_TYPES,
 } from "~/server/db/enums";
 import { appUrl, partnerProfileUpdatedEmail, sendEmail } from "~/server/email";
+import { studentPartner } from "~/server/staff-access";
 // Plain option data (no React), shared with the profile form's test editor.
 import { ALL_TESTS } from "~/app/admin/(dashboard)/students/[id]/profile-lib";
 
@@ -18,8 +19,9 @@ import { ALL_TESTS } from "~/app/admin/(dashboard)/students/[id]/profile-lib";
 // Collegepond's counselling team hears about them (decided with Suraj,
 // 14 Oct 2026):
 //   - every change is a student_partner_update row (also the audit trail);
-//   - one email per burst of edits to the student's Collegepond counsellor,
-//     or every Counsellor Lead when none is assigned;
+//   - one email per burst of edits to the student's Collegepond counsellor;
+//     with none, the partner's Counsellor Lead (who can see the student); with
+//     no lead either, every Counsellor Lead;
 //   - an admin-bell item until someone marks the changes reviewed.
 //
 // A section is snapshotted as { "Human label": "display value" } before and
@@ -287,19 +289,31 @@ async function emailCounsellingTeam(
     select: {
       first_name: true,
       last_name: true,
+      org_id: true,
+      created_by_user_id: true,
       cp_counsellor: { select: { email: true, first_name: true, last_name: true, status: true } },
     },
   });
   if (!student) return;
 
-  // The student's Collegepond counsellor; with none (or inactive), the Leads.
+  // The student's Collegepond counsellor; with none (or inactive), the
+  // partner's Counsellor Lead; with no active lead, every Lead.
   const cp = student.cp_counsellor?.status === 1 ? student.cp_counsellor : null;
+  const leadId = cp ? null : ((await studentPartner(student))?.lead_counsellor_id ?? null);
+  const lead = leadId
+    ? await db.collegepond_user.findFirst({
+        where: { id: leadId, status: 1 },
+        select: { email: true, first_name: true, last_name: true },
+      })
+    : null;
   const recipients = cp
     ? [cp]
-    : await db.collegepond_user.findMany({
-        where: { role: AdminRole.COUNSELLOR_LEAD, status: 1 },
-        select: { email: true, first_name: true, last_name: true },
-      });
+    : lead
+      ? [lead]
+      : await db.collegepond_user.findMany({
+          where: { role: AdminRole.COUNSELLOR_LEAD, status: 1 },
+          select: { email: true, first_name: true, last_name: true },
+        });
   if (recipients.length === 0) {
     console.log(`[partner-edit] student ${studentId}: no Collegepond counsellor or lead to email`);
     return;

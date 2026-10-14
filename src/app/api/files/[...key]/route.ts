@@ -10,6 +10,7 @@ import { db } from "~/server/db";
 import { findVisibleStudent } from "~/server/partner-access";
 import { presignGetUrl, spacesConfigured } from "~/server/storage/spaces";
 import { AdminRole } from "~/server/db/enums";
+import { canSeeStudent, isCounsellingRole } from "~/server/staff-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,11 +42,22 @@ export async function GET(
   const jar = await cookies();
 
   // Admins (collegepond staff) may read any document, except partners'
-  // cancelled cheques / bank letters, which are for finance roles only.
+  // cancelled cheques / bank letters, which are for finance roles only, and
+  // a counsellor's student documents, which follow the admin Students list
+  // (src/server/staff-access.ts).
   const adminToken = jar.get(SESSION_COOKIE_NAME)?.value;
   const admin = adminToken ? await verifySessionJwt(adminToken) : null;
   let allowed =
     admin != null && (!key.startsWith("bank-proofs/") || BANK_PROOF_ADMIN_ROLES.includes(admin.role));
+  if (allowed && admin && isCounsellingRole(admin.role)) {
+    const doc = await db.document.findFirst({
+      where: { file_url: key, student_id: { not: null } },
+      select: { student_id: true },
+    });
+    if (doc?.student_id != null && !(await canSeeStudent(admin, doc.student_id))) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+  }
 
   // Partners may only read files attached to their own user/org (or to a
   // student they can see).
