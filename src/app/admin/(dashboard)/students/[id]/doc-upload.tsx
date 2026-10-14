@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { api } from "~/trpc/react";
+import { useStudentProfileApi } from "./profile-api";
 import { type AdminStudentFull } from "../lib";
 import { formatBytes } from "./documents-tab";
 
@@ -22,9 +23,9 @@ export function InlineDocUpload({
   hint: string;
   onToast: (msg: string) => void;
 }) {
-  const utils = api.useUtils();
-  const invalidate = () =>
-    void utils.students.adminGet.invalidate({ id: student.id });
+  const profileApi = useStudentProfileApi();
+  const refresh = profileApi.useRefresh();
+  const invalidate = () => refresh(student.id);
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -47,7 +48,7 @@ export function InlineDocUpload({
         fd.append("studentId", String(student.id));
         fd.append("docType", docType);
         fd.append("file", file);
-        const res = await fetch("/api/admin/student-doc", {
+        const res = await fetch(profileApi.uploadUrl, {
           method: "POST",
           body: fd,
         });
@@ -104,24 +105,26 @@ export function InlineDocUpload({
                 <span className="text-[#98A2B3]">
                   {formatBytes(f.sizeBytes)}
                 </span>
-                <button
-                  type="button"
-                  disabled={deleteMut.isPending}
-                  onClick={() => deleteMut.mutate({ id: f.id })}
-                  aria-label={`Remove ${f.fileName}`}
-                  className="flex cursor-pointer items-center text-[#98A2B3] hover:text-[#F04438] disabled:opacity-50"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    className="h-3 w-3"
+                {profileApi.canDeleteDocuments && (
+                  <button
+                    type="button"
+                    disabled={deleteMut.isPending}
+                    onClick={() => deleteMut.mutate({ id: f.id })}
+                    aria-label={`Remove ${f.fileName}`}
+                    className="flex cursor-pointer items-center text-[#98A2B3] hover:text-[#F04438] disabled:opacity-50"
                   >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      className="h-3 w-3"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                )}
               </span>
             ))}
           </div>

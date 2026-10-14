@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
-import { api } from "~/trpc/react";
+import { useStudentProfileApi } from "./profile-api";
 import { type AdminStudentFull } from "../lib";
 import {
   ALL_TESTS,
@@ -47,7 +47,8 @@ export function TestsTab({
   student: AdminStudentFull;
   onToast: (msg: string) => void;
 }) {
-  const utils = api.useUtils();
+  const profileApi = useStudentProfileApi();
+  const refresh = profileApi.useRefresh();
   const [state, setState] = useState<TestState>(() => buildState(student));
   const [open, setOpen] = useState<Set<string>>(
     () => new Set(Object.keys(buildState(student))),
@@ -91,9 +92,9 @@ export function TestsTab({
       [key]: (prev[key] ?? []).filter((_, i) => i !== attempt),
     }));
 
-  const saveMut = api.students.saveTestScores.useMutation({
+  const saveMut = profileApi.useSaveTests({
     onSuccess: () => {
-      void utils.students.adminGet.invalidate({ id: student.id });
+      refresh(student.id);
       onToast("Test scores saved");
     },
     onError: (err) => onToast(err.message),

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
-import { api } from "~/trpc/react";
+import { useStudentProfileApi } from "./profile-api";
 import { type AdminStudentFull } from "../lib";
 import {
   EMPLOYMENT_TYPES,
@@ -70,7 +70,8 @@ export function WorkTab({
   student: AdminStudentFull;
   onToast: (msg: string) => void;
 }) {
-  const utils = api.useUtils();
+  const profileApi = useStudentProfileApi();
+  const refresh = profileApi.useRefresh();
   const [drafts, setDrafts] = useState<WorkDraft[]>(() => buildDrafts(student));
 
   useEffect(() => {
@@ -83,9 +84,9 @@ export function WorkTab({
       prev.map((d, idx) => (idx === i ? { ...d, ...patch } : d)),
     );
 
-  const saveMut = api.students.saveWorkExperience.useMutation({
+  const saveMut = profileApi.useSaveWork({
     onSuccess: () => {
-      void utils.students.adminGet.invalidate({ id: student.id });
+      refresh(student.id);
       onToast("Work experience saved");
     },
     onError: (err) => onToast(err.message),

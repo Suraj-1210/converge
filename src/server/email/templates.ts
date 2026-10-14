@@ -562,6 +562,34 @@ export function studentsAssignedEmail(
   );
 }
 
+// 21. Collegepond counselling team: a partner edited a student's profile.
+// One email per burst of edits, grouped by profile section.
+export function partnerProfileUpdatedEmail(
+  r: { name: string },
+  u: {
+    studentName: string;
+    studentId: number;
+    updatedBy: string[];
+    sections: { title: string; lines: string[] }[];
+  },
+  appUrl: string,
+): EmailMessage {
+  const who = u.updatedBy.length ? u.updatedBy.join(", ") : "A partner";
+  return build(
+    `Partner Updated ${u.studentName}'s Profile`,
+    "Student profile updated by a partner",
+    hello(r.name),
+    [
+      { p: `${who} updated ${u.studentName}'s profile on the Partner Portal (CP-${u.studentId}). Please review the changes:` },
+      ...u.sections.flatMap((s): Block[] => [
+        { p: s.title },
+        { list: s.lines.length > 25 ? [...s.lines.slice(0, 25), `…and ${s.lines.length - 25} more`] : s.lines },
+      ]),
+      { button: { label: "Review in the Admin Portal", url: portal(appUrl, `/admin/students/${u.studentId}`) } },
+    ],
+  );
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).

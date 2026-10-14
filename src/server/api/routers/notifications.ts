@@ -1,6 +1,7 @@
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
+import { flushPartnerUpdateEmails, partnerEditedStudentIds } from "~/server/student-changes";
 import {
   AdminRole,
   PartnerInvoiceStatus,
@@ -30,6 +31,13 @@ export interface AdminNotification {
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
+// Who reviews partner edits to student profiles.
+const COUNSELLING_ROLES: number[] = [
+  AdminRole.SUPER_ADMIN,
+  AdminRole.COUNSELLOR_LEAD,
+  AdminRole.COUNSELLOR,
+];
+
 // Who verifies partner bank details (same roles as financeProcedure).
 const BANK_VERIFIER_ROLES: number[] = [
   AdminRole.SUPER_ADMIN,
@@ -40,6 +48,10 @@ const BANK_VERIFIER_ROLES: number[] = [
 export const notificationsRouter = createTRPCRouter({
   list: protectedAdminProcedure.query(async ({ ctx }) => {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // The bell polls, so it also sends any partner-edit emails whose burst
+    // has ended (a backstop for the in-process timer after a restart).
+    void flushPartnerUpdateEmails();
+    const seesPartnerEdits = COUNSELLING_ROLES.includes(ctx.cpUser.role);
 
     const [
       pendingApprovals,
@@ -48,6 +60,7 @@ export const notificationsRouter = createTRPCRouter({
       invoicesPending,
       newStudents,
       bankPending,
+      partnerEdited,
     ] = await Promise.all([
         db.user.count({
           where: {
@@ -85,6 +98,10 @@ export const notificationsRouter = createTRPCRouter({
         BANK_VERIFIER_ROLES.includes(ctx.cpUser.role)
           ? db.partner_bank_account.count({ where: PENDING_BANK_WHERE })
           : Promise.resolve(0),
+        // Students a partner edited that nobody here has reviewed yet. When
+        // the admin Students list is scoped per counsellor, pass the same
+        // filter here.
+        seesPartnerEdits ? partnerEditedStudentIds() : Promise.resolve([] as number[]),
       ]);
 
     const notifications: AdminNotification[] = [];
@@ -137,6 +154,19 @@ export const notificationsRouter = createTRPCRouter({
         tone: "orange",
         unread: true,
         href: "/admin/invoices",
+      });
+    }
+    if (partnerEdited.length > 0) {
+      notifications.push({
+        id: "partner-edits",
+        title: `${plural(partnerEdited.length, "student")} updated by partners`,
+        time: "Needs review",
+        tone: "orange",
+        unread: true,
+        href:
+          partnerEdited.length === 1
+            ? `/admin/students/${partnerEdited[0]!}`
+            : "/admin/students?partnerEdits=1",
       });
     }
     if (newStudents > 0) {

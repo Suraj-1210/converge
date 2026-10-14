@@ -173,6 +173,15 @@ export default function StudentsPage() {
   const counsellors = counsellorsQuery.data ?? [];
 
   const [tab, setTab] = useState<TabId>("all");
+  // Students a partner edited that nobody has reviewed yet (the admin bell
+  // links here with ?partnerEdits=1).
+  const [partnerEditsOnly, setPartnerEditsOnly] = useState(false);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("partnerEdits") === "1") {
+      setPartnerEditsOnly(true);
+    }
+  }, []);
+  const partnerEditedCount = students.filter((s) => s.partnerEditCount > 0).length;
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [sort, setSort] = useState<{ column: SortKey; direction: "asc" | "desc" }>(
     { column: "updatedAt", direction: "desc" },
@@ -311,6 +320,7 @@ export default function StudentsPage() {
       if (tabGroup !== null && studentStatusGroup(s.status) !== tabGroup) {
         return false;
       }
+      if (partnerEditsOnly && s.partnerEditCount === 0) return false;
       if (q) {
         const haystack = [
           studentName(s),
@@ -342,7 +352,7 @@ export default function StudentsPage() {
       }
       return true;
     });
-  }, [students, tabGroup, filters]);
+  }, [students, tabGroup, filters, partnerEditsOnly]);
 
   const sorted = useMemo(() => {
     const dir = sort.direction === "asc" ? 1 : -1;
@@ -496,6 +506,22 @@ export default function StudentsPage() {
           );
         })}
       </div>
+
+      {(partnerEditedCount > 0 || partnerEditsOnly) && (
+        <button
+          type="button"
+          onClick={() => setPartnerEditsOnly((v) => !v)}
+          aria-pressed={partnerEditsOnly}
+          className={`mb-4 inline-flex h-[32px] cursor-pointer items-center gap-2 rounded-full border px-3.5 text-[13px] font-semibold transition-colors ${
+            partnerEditsOnly
+              ? "border-[#DC6803] bg-[#DC6803] text-white"
+              : "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708] hover:border-[#DC6803]"
+          }`}
+        >
+          Updated by partners ({partnerEditedCount})
+          {partnerEditsOnly && <span aria-hidden>×</span>}
+        </button>
+      )}
 
       {/* Filter bar */}
       <div className="mb-5 flex flex-wrap items-center gap-2.5">

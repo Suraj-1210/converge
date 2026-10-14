@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "~/components/ui/button";
 import { StatCard } from "~/components/ui/stat-card";
@@ -28,6 +29,7 @@ import {
 import { AssignModal } from "./assign-modal";
 import { UploadDocumentsModal, expectedProgress } from "./upload-documents-modal";
 import { assigneeOf, type Viewer } from "./assignee";
+import { AssigneeLabel } from "./assignee-label";
 
 type PartnerStudent = RouterOutputs["students"]["partnerList"][number];
 
@@ -670,25 +672,6 @@ function StudentsPage() {
 
 // ----- Table row --------------------------------------------------------------
 
-// "You", the counsellor's name, or an orange Unassigned badge.
-function AssigneeLabel({ student, viewer }: { student: PartnerStudent; viewer: Viewer | null }) {
-  if (!viewer) return <span className="text-[#98A2B3]">—</span>;
-  const a = assigneeOf(student, viewer);
-  if (a.kind === "unassigned") {
-    return (
-      <span className="inline-flex items-center rounded-full border border-[#FEDF89] bg-[#FFFAEB] px-2 py-0.5 text-[12px] font-semibold text-[#B54708]">
-        Unassigned
-      </span>
-    );
-  }
-  if (a.kind === "you") return <span className="font-medium text-[#101828]">You</span>;
-  return (
-    <span className="block max-w-[150px] truncate text-[#344054]" title={a.name}>
-      {a.name}
-    </span>
-  );
-}
-
 const rowBtn =
   "h-8 cursor-pointer rounded-lg border px-2.5 text-[12px] font-semibold whitespace-nowrap transition-colors";
 
@@ -751,9 +734,12 @@ function StudentRow({
             {initials}
           </button>
           <div className="min-w-0">
-            <div className="text-sm font-semibold whitespace-nowrap text-[#101828]">
+            <Link
+              href={`/partner/students/${s.id}`}
+              className="text-sm font-semibold whitespace-nowrap text-[#101828] hover:text-[#1570EF] hover:underline"
+            >
               {s.firstName} {s.lastName}
-            </div>
+            </Link>
             <div className="text-xs text-[#98A2B3]">CP-{s.id}</div>
           </div>
         </div>
@@ -892,6 +878,12 @@ function PartnerStudentSlideOver({
                 <StudentStatusBadge status={s.status} />
                 <span className="text-xs text-[#98A2B3]">CP-{s.id}</span>
               </div>
+              <Link
+                href={`/partner/students/${s.id}`}
+                className="mt-1.5 inline-block text-[13px] font-semibold text-[#1570EF] hover:underline"
+              >
+                Open full profile →
+              </Link>
             </div>
           </div>
           <button

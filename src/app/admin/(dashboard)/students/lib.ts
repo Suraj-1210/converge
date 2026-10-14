@@ -205,7 +205,7 @@ export function splitPhone(stored: string | null): {
 // the student's "primary" application. Terminal-only students fall back to
 // any application; lead students have none.
 export function primaryApplication(
-  s: AdminStudent,
+  s: Pick<AdminStudent, "applications">,
 ): StudentApplication | null {
   const active = s.applications.filter((a) => a.status < 20);
   if (active.length > 0) {
@@ -214,11 +214,13 @@ export function primaryApplication(
   return s.applications[0] ?? null;
 }
 
-export function derivedUniversity(s: AdminStudent): string {
+export function derivedUniversity(s: Pick<AdminStudent, "applications">): string {
   return primaryApplication(s)?.university ?? "Not Assigned";
 }
 
-export function derivedProgram(s: AdminStudent): string {
+export function derivedProgram(
+  s: Pick<AdminStudent, "applications" | "interestedProgram">,
+): string {
   return primaryApplication(s)?.program ?? s.interestedProgram ?? "—";
 }
 

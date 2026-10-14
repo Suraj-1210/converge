@@ -352,6 +352,27 @@ model whatsapp_message {
   @@index([chat_id], map: "idx_whatsapp_message_chat")
 }
 
+// Partner-portal profile edits awaiting Collegepond review. user_id is the
+// partner who made the change; reviewed_by_cp_user_id the staff member who
+// cleared it (both plain ids, FKs live in schema.sql).
+model student_partner_update {
+  id                     Int       @id @default(autoincrement())
+  student_id             Int
+  user_id                Int?
+  section                String    @db.VarChar(30)
+  changes                Json
+  created_at             DateTime  @default(now()) @db.Timestamp(0)
+  emailed_at             DateTime? @db.Timestamp(0)
+  reviewed_at            DateTime? @db.Timestamp(0)
+  reviewed_by_cp_user_id Int?
+  student                student   @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_spu_student")
+
+  @@index([student_id, reviewed_at], map: "idx_spu_student_reviewed")
+  @@index([emailed_at, created_at], map: "idx_spu_emailed")
+  @@index([user_id], map: "fk_spu_user_idx")
+  @@index([reviewed_by_cp_user_id], map: "fk_spu_cp_user_idx")
+}
+
 model notification_preference {
   id                Int  @id @default(autoincrement())
   user_id           Int
@@ -479,6 +500,7 @@ model student {
   note                      student_note[]
   document                  document[]
   whatsapp_message          whatsapp_message[]
+  partner_update            student_partner_update[]
   organization              organization?               @relation(fields: [org_id], references: [id], map: "fk_student_organization")
   user                      user?                       @relation("student_counsellor", fields: [counsellor_id], references: [id], onUpdate: NoAction, map: "fk_student_user")
   cp_counsellor             collegepond_user?           @relation(fields: [cp_counsellor_id], references: [id], onDelete: SetNull, map: "fk_student_cp_counsellor")

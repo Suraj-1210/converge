@@ -9,6 +9,7 @@ import { db } from "~/server/db";
 import { UserStatus } from "~/server/db/enums";
 import { findVisibleStudent } from "~/server/partner-access";
 import { parseStudentDocUpload, storeStudentDocument } from "~/server/student-docs";
+import { documentChange, recordPartnerChange } from "~/server/student-changes";
 
 // Partner-side student document upload (student panel → Documents). Same
 // fields and file rules as /api/admin/student-doc; the partner may upload
@@ -47,8 +48,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
-  return storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, {
+  const res = await storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, {
     byPartnerUserId: partner.id,
     ...(partner.impersonatorId ? { impersonation: { kind: "partner", byCpUserId: partner.impersonatorId } } : {}),
   });
+  // Collegepond's counselling team hears about partner uploads with the rest
+  // of the partner's profile edits.
+  if (res.ok) {
+    await recordPartnerChange(parsed.studentId, partner.id, "documents", [
+      documentChange(parsed.docType.key, parsed.file.name),
+    ]);
+  }
+  return res;
 }

@@ -7,7 +7,23 @@ import {
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
-import { partnerScope, requireOrgCounsellor, requireVisibleStudent } from "~/server/partner-access";
+import {
+  academicsSnapshot,
+  diffSnapshots,
+  pendingPartnerUpdates,
+  profileSnapshot,
+  recordPartnerChange,
+  testsSnapshot,
+  workSnapshot,
+  type ChangeSection,
+  type Snapshot,
+} from "~/server/student-changes";
+import {
+  findVisibleStudent,
+  partnerScope,
+  requireOrgCounsellor,
+  requireVisibleStudent,
+} from "~/server/partner-access";
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
@@ -361,16 +377,19 @@ function phoneDigits(stored: string | null): string {
 // Duplicate = same email (case-insensitive) OR same phone (digits-only).
 // Returns the matching student row or null. `where` narrows the search scope
 // (partners only collide within their own visible set; admin checks globally).
+// `excludeId`: the student being edited, who can't clash with themselves
+// (otherwise their own phone matches first and hides a real email clash).
 async function findDuplicate(
   email: string,
   countryCode: string,
   phone: string,
   where: Record<string, unknown>,
+  excludeId?: number,
 ) {
   // phone is NOT NULL, so every student is a phone-match candidate; we scan the
   // whole in-scope set and match by email or phone-digits in JS below.
   const candidates = await db.student.findMany({
-    where,
+    where: excludeId ? { AND: [where, { id: { not: excludeId } }] } : where,
     select: {
       id: true,
       first_name: true,
@@ -410,6 +429,517 @@ function toPartnerApi(s: DbStudent) {
 }
 
 // ---------------------------------------------------------------------------
+// Profile saves, shared by the admin and partner profile pages
+// ---------------------------------------------------------------------------
+
+const profileUpdateInput = createFields.extend({
+  id: z.number().int().positive(),
+  gender: z
+    .number()
+    .int()
+    .refine((v) => GENDER_CODES.includes(v as Gender), {
+      message: "Invalid gender",
+    })
+    .nullable(),
+  nationality: z
+    .string()
+    .trim()
+    .length(2)
+    .transform((v) => v.toUpperCase())
+    .nullable(),
+  middleName: z.string().trim().max(50).nullable(),
+  maritalStatus: z
+    .number()
+    .int()
+    .refine((v) => MARITAL_STATUS_CODES.includes(v as MaritalStatus), {
+      message: "Invalid marital status",
+    })
+    .nullable(),
+  mailingAddress1: z.string().trim().max(255).nullable(),
+  mailingAddress2: z.string().trim().max(255).nullable(),
+  mailingCity: z.string().trim().max(100).nullable(),
+  mailingState: z.string().trim().max(100).nullable(),
+  mailingCountry: z.string().trim().max(50).nullable(),
+  mailingPostal: z.string().trim().max(20).nullable(),
+  permanentSameAsMailing: z.boolean(),
+  permanentAddress1: z.string().trim().max(255).nullable(),
+  permanentAddress2: z.string().trim().max(255).nullable(),
+  permanentCity: z.string().trim().max(100).nullable(),
+  permanentState: z.string().trim().max(100).nullable(),
+  permanentCountry: z.string().trim().max(50).nullable(),
+  permanentPostal: z.string().trim().max(20).nullable(),
+  dualCitizenship: z.boolean().nullable(),
+  passportNumber: z.string().trim().max(20).nullable(),
+  passportExpiry: dateStringSchema.nullable(),
+  visaRefused: z.boolean().nullable(),
+  visaRefusedDetails: z.string().trim().max(500).nullable(),
+  criminalRecord: z.boolean().nullable(),
+  criminalRecordDetails: z.string().trim().max(500).nullable(),
+  medicalCondition: z.boolean().nullable(),
+  medicalConditionDetails: z.string().trim().max(500).nullable(),
+  emergencyContacts: z
+    .array(
+      z.object({
+        relationship: z
+          .number()
+          .int()
+          .refine(
+            (v) =>
+              EMERGENCY_RELATIONSHIP_CODES.includes(
+                v as EmergencyRelationship,
+              ),
+            { message: "Invalid relationship" },
+          ),
+        name: z.string().trim().min(1).max(100),
+        email: z.string().trim().email().max(255).nullable(),
+        phone: z.string().trim().max(45).nullable(),
+      }),
+    )
+    .max(10),
+});
+
+// The Personal Information save, shared by the admin and partner profile.
+async function applyProfileUpdate(input: z.infer<typeof profileUpdateInput>) {
+  // "Same as mailing" copies the values so the permanent address stays
+  // meaningful if the flag is later unchecked (mock behaviour).
+  const perm = input.permanentSameAsMailing
+    ? {
+        address1: input.mailingAddress1,
+        address2: input.mailingAddress2,
+        city: input.mailingCity,
+        state: input.mailingState,
+        country: input.mailingCountry,
+        postal: input.mailingPostal,
+      }
+    : {
+        address1: input.permanentAddress1,
+        address2: input.permanentAddress2,
+        city: input.permanentCity,
+        state: input.permanentState,
+        country: input.permanentCountry,
+        postal: input.permanentPostal,
+      };
+  const updated = await db.student.update({
+    where: { id: input.id },
+    data: {
+      first_name: input.firstName,
+      last_name: input.lastName,
+      email: input.email.toLowerCase(),
+      phone: normalizePhone(input.countryCode, input.phone),
+      date_of_birth: new Date(input.dateOfBirth),
+      gender: input.gender,
+      nationality: input.nationality,
+      country: input.country,
+      intake: input.intake,
+      course_level: input.courseLevel,
+      interested_program: input.interestedProgram,
+      education_loan: input.educationLoan ? 1 : 0,
+      apply_through_cp: input.applyThroughCp ? 1 : 0,
+      middle_name: input.middleName,
+      marital_status: input.maritalStatus,
+      mailing_address1: input.mailingAddress1,
+      mailing_address2: input.mailingAddress2,
+      mailing_city: input.mailingCity,
+      mailing_state: input.mailingState,
+      mailing_country: input.mailingCountry,
+      mailing_postal: input.mailingPostal,
+      permanent_same_as_mailing: input.permanentSameAsMailing ? 1 : 0,
+      permanent_address1: perm.address1,
+      permanent_address2: perm.address2,
+      permanent_city: perm.city,
+      permanent_state: perm.state,
+      permanent_country: perm.country,
+      permanent_postal: perm.postal,
+      dual_citizenship: boolToInt(input.dualCitizenship),
+      passport_number: input.passportNumber,
+      passport_expiry: input.passportExpiry
+        ? new Date(input.passportExpiry)
+        : null,
+      visa_refused: boolToInt(input.visaRefused),
+      visa_refused_details: input.visaRefused
+        ? input.visaRefusedDetails
+        : null,
+      criminal_record: boolToInt(input.criminalRecord),
+      criminal_record_details: input.criminalRecord
+        ? input.criminalRecordDetails
+        : null,
+      medical_condition: boolToInt(input.medicalCondition),
+      medical_condition_details: input.medicalCondition
+        ? input.medicalConditionDetails
+        : null,
+    },
+    include: studentInclude,
+  });
+  await db.student_emergency_contact.deleteMany({
+    where: { student_id: input.id },
+  });
+  if (input.emergencyContacts.length > 0) {
+    await db.student_emergency_contact.createMany({
+      data: input.emergencyContacts.map((c) => ({
+        student_id: input.id,
+        relationship: c.relationship,
+        name: c.name,
+        email: c.email,
+        phone: c.phone,
+      })),
+    });
+  }
+  return updated;
+}
+
+const educationInput = z.object({
+  studentId: z.number().int().positive(),
+  highestLevel: educationLevelSchema.nullable(),
+  entries: z
+    .array(
+      z.object({
+        level: educationLevelSchema,
+        country: z.string().trim().max(50).nullable(),
+        board: z.string().trim().max(100).nullable(),
+        state: z.string().trim().max(50).nullable(),
+        qualification: z.string().trim().max(100).nullable(),
+        institution: z.string().trim().max(150).nullable(),
+        city: z.string().trim().max(100).nullable(),
+        gradingSystem: z.string().trim().max(20).nullable(),
+        scale: z.string().trim().max(50).nullable(),
+        score: z.string().trim().max(20).nullable(),
+        language: z.string().trim().max(30).nullable(),
+        passMonth: z.number().int().min(1).max(12).nullable(),
+        passYear: z.number().int().min(1950).max(2100).nullable(),
+        major: z.string().trim().max(100).nullable(),
+        researchTopic: z.string().trim().max(255).nullable(),
+        predictedScore: z.string().trim().max(20).nullable(),
+      }),
+    )
+    .max(5),
+});
+
+// Academic Qualification save (replace-all), shared by admin and partner.
+async function applyEducation(input: z.infer<typeof educationInput>) {
+  await db.student.update({
+    where: { id: input.studentId },
+    data: { highest_education_level: input.highestLevel },
+  });
+  await db.student_education.deleteMany({
+    where: { student_id: input.studentId },
+  });
+  if (input.entries.length > 0) {
+    await db.student_education.createMany({
+      data: input.entries.map((e) => ({
+        student_id: input.studentId,
+        level: e.level,
+        country: e.country,
+        board: e.board,
+        state: e.state,
+        qualification: e.qualification,
+        institution: e.institution,
+        city: e.city,
+        grading_system: e.gradingSystem,
+        scale: e.scale,
+        score: e.score,
+        language: e.language,
+        pass_month: e.passMonth,
+        pass_year: e.passYear,
+        major: e.major,
+        research_topic: e.researchTopic,
+        predicted_score: e.predictedScore,
+      })),
+    });
+  }
+}
+
+const workInput = z.object({
+  studentId: z.number().int().positive(),
+  entries: z
+    .array(
+      z.object({
+        company: z.string().trim().min(1).max(150),
+        jobTitle: z.string().trim().max(100).nullable(),
+        employmentType: z.string().trim().max(20).nullable(),
+        industry: z.string().trim().max(50).nullable(),
+        startMonth: z.number().int().min(1).max(12),
+        startYear: z.number().int().min(1950).max(2100),
+        endMonth: z.number().int().min(1).max(12).nullable(),
+        endYear: z.number().int().min(1950).max(2100).nullable(),
+        currentlyWorking: z.boolean(),
+        city: z.string().trim().max(100).nullable(),
+        country: z.string().trim().max(50).nullable(),
+        description: z.string().trim().max(1000).nullable(),
+      }),
+    )
+    .max(20),
+});
+
+// Work Experience save (replace-all), shared by admin and partner.
+async function applyWorkExperience(input: z.infer<typeof workInput>) {
+  await db.student_work_experience.deleteMany({
+    where: { student_id: input.studentId },
+  });
+  if (input.entries.length > 0) {
+    await db.student_work_experience.createMany({
+      data: input.entries.map((w) => ({
+        student_id: input.studentId,
+        company: w.company,
+        job_title: w.jobTitle,
+        employment_type: w.employmentType,
+        industry: w.industry,
+        start_month: w.startMonth,
+        start_year: w.startYear,
+        end_month: w.currentlyWorking ? null : w.endMonth,
+        end_year: w.currentlyWorking ? null : w.endYear,
+        currently_working: w.currentlyWorking ? 1 : 0,
+        city: w.city,
+        country: w.country,
+        description: w.description,
+      })),
+    });
+  }
+}
+
+const testsInput = z.object({
+  studentId: z.number().int().positive(),
+  entries: z
+    .array(
+      z.object({
+        test: z.string().trim().min(1).max(20),
+        attempt: z.number().int().min(1).max(10),
+        scores: z.record(z.string(), z.number()),
+        testDate: dateStringSchema.nullable(),
+      }),
+    )
+    .max(40),
+});
+
+// Tests save (replace-all), shared by admin and partner.
+async function applyTestScores(input: z.infer<typeof testsInput>) {
+  await db.student_test_score.deleteMany({
+    where: { student_id: input.studentId },
+  });
+  if (input.entries.length > 0) {
+    await db.student_test_score.createMany({
+      data: input.entries.map((t) => ({
+        student_id: input.studentId,
+        test: t.test,
+        attempt: t.attempt,
+        scores: t.scores,
+        test_date: t.testDate ? new Date(t.testDate) : null,
+      })),
+    });
+  }
+}
+
+// Full profile for /admin/students/[id] (and, trimmed by
+// toPartnerFull, /partner/students/[id]): the list DTO plus rich application
+// and shortlist cards (course + university meta).
+async function loadStudentFull(id: number) {
+  const s = await db.student.findUnique({
+    where: { id },
+    include: studentInclude,
+  });
+  if (!s) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
+  }
+  const [applications, shortlists] = await Promise.all([
+    db.application.findMany({
+      where: { student_id: id },
+      orderBy: { created_at: "asc" },
+      select: {
+        id: true,
+        status: true,
+        created_at: true,
+        submitted_at: true,
+        decided_at: true,
+        university_app_id: true,
+        counsellor_vendor: true,
+        conditional_docs: true,
+        deposit_deadline: true,
+        deposit_amount: true,
+        deposit_currency: true,
+        stage_history: {
+          orderBy: { stage: "asc" },
+          select: { stage: true, occurred_at: true },
+        },
+        portal_credential: { select: { username: true } },
+        course: { select: courseCardSelect },
+      },
+    }),
+    db.shortlist.findMany({
+      where: { student_id: id },
+      orderBy: { created_at: "desc" },
+      select: { id: true, created_at: true, course: { select: courseCardSelect } },
+    }),
+  ]);
+  const [contacts, education, work, tests, notes, documents] =
+    await Promise.all([
+      db.student_emergency_contact.findMany({
+        where: { student_id: id },
+        orderBy: { id: "asc" },
+      }),
+      db.student_education.findMany({
+        where: { student_id: id },
+        orderBy: { level: "desc" },
+      }),
+      db.student_work_experience.findMany({
+        where: { student_id: id },
+        orderBy: [{ start_year: "desc" }, { start_month: "desc" }],
+      }),
+      db.student_test_score.findMany({
+        where: { student_id: id },
+        orderBy: [{ test: "asc" }, { attempt: "asc" }],
+      }),
+      db.student_note.findMany({
+        where: { student_id: id },
+        orderBy: { created_at: "desc" },
+        include: {
+          collegepond_user: {
+            select: { first_name: true, last_name: true },
+          },
+        },
+      }),
+      db.document.findMany({
+        where: { student_id: id },
+        orderBy: { created_at: "desc" },
+      }),
+    ]);
+  return {
+    ...toApi(s),
+    notes: notes.map((n) => ({
+      id: n.id,
+      body: n.body,
+      isTask: n.is_task === 1,
+      dueDate: n.due_date ? n.due_date.toISOString().slice(0, 10) : null,
+      priority: n.priority,
+      isDone: n.is_done === 1,
+      createdAt: n.created_at.toISOString(),
+      author: n.collegepond_user ? fullName(n.collegepond_user) : null,
+    })),
+    documents: documents.map((d) => ({
+      id: d.id,
+      docType: d.doc_type,
+      fileName: d.file_name,
+      fileUrl: resolveStorageUrl(d.file_url),
+      mimeType: d.mime_type,
+      sizeBytes: d.size_bytes,
+      isMostRecent: d.is_most_recent === 1,
+      createdAt: d.created_at.toISOString(),
+    })),
+    emergencyContacts: contacts.map((c) => ({
+      id: c.id,
+      relationship: c.relationship,
+      name: c.name,
+      email: c.email,
+      phone: c.phone,
+    })),
+    educationRows: education.map((e) => ({
+      level: e.level,
+      country: e.country,
+      board: e.board,
+      state: e.state,
+      qualification: e.qualification,
+      institution: e.institution,
+      city: e.city,
+      gradingSystem: e.grading_system,
+      scale: e.scale,
+      score: e.score,
+      language: e.language,
+      passMonth: e.pass_month,
+      passYear: e.pass_year,
+      major: e.major,
+      researchTopic: e.research_topic,
+      predictedScore: e.predicted_score,
+    })),
+    workExperience: work.map((w) => ({
+      id: w.id,
+      company: w.company,
+      jobTitle: w.job_title,
+      employmentType: w.employment_type,
+      industry: w.industry,
+      startMonth: w.start_month,
+      startYear: w.start_year,
+      endMonth: w.end_month,
+      endYear: w.end_year,
+      currentlyWorking: w.currently_working === 1,
+      city: w.city,
+      country: w.country,
+      description: w.description,
+    })),
+    testScores: tests.map((t) => ({
+      test: t.test,
+      attempt: t.attempt,
+      scores: (t.scores ?? {}) as Record<string, number>,
+      testDate: t.test_date ? t.test_date.toISOString().slice(0, 10) : null,
+    })),
+    applicationCards: applications.map((a) => ({
+      id: a.id,
+      status: a.status,
+      stage: currentStage(a.status, a.stage_history),
+      createdAt: a.created_at.toISOString(),
+      submittedAt: a.submitted_at?.toISOString() ?? null,
+      decidedAt: a.decided_at?.toISOString() ?? null,
+      universityAppId: a.university_app_id,
+      counsellorVendor: a.counsellor_vendor,
+      conditionalDocs: Array.isArray(a.conditional_docs)
+        ? (a.conditional_docs as string[])
+        : [],
+      depositDeadline: a.deposit_deadline
+        ? a.deposit_deadline.toISOString().slice(0, 10)
+        : null,
+      depositAmount:
+        a.deposit_amount === null ? null : a.deposit_amount.toNumber(),
+      depositCurrency: a.deposit_currency,
+      stageHistory: a.stage_history.map((h) => ({
+        stage: h.stage,
+        date: h.occurred_at.toISOString(),
+      })),
+      // Username only — the password never leaves the server unencrypted
+      // except through the audited reveal mutation.
+      portalCredentialUsername: a.portal_credential?.username ?? null,
+      ...toCourseCard(a.course),
+    })),
+    shortlists: shortlists.map((r) => ({
+      id: r.id,
+      shortlistedAt: r.created_at.toISOString(),
+      ...toCourseCard(r.course),
+    })),
+  };
+}
+
+// The partner's view of the full profile: same shape as the admin one, with
+// Collegepond-internal details blanked (staff notes, CP counsellor and BDM,
+// application vendor, portal login).
+function toPartnerFull(full: Awaited<ReturnType<typeof loadStudentFull>>) {
+  return {
+    ...full,
+    cpCounsellorId: null,
+    cpCounsellorName: null,
+    bdmName: null,
+    notes: [],
+    partnerUpdates: [] as Awaited<ReturnType<typeof pendingPartnerUpdates>>,
+    applicationCards: full.applicationCards.map((a) => ({
+      ...a,
+      counsellorVendor: null,
+      portalCredentialUsername: null,
+    })),
+  };
+}
+
+// Runs a partner's save between two snapshots of the section and records
+// the difference for Collegepond (nothing when the save changed nothing).
+async function partnerEdit<T>(
+  partnerUserId: number,
+  studentId: number,
+  section: ChangeSection,
+  snapshot: (id: number) => Promise<Snapshot>,
+  save: () => Promise<T>,
+): Promise<T> {
+  const before = await snapshot(studentId);
+  const result = await save();
+  const after = await snapshot(studentId);
+  await recordPartnerChange(studentId, partnerUserId, section, diffSnapshots(before, after));
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -442,7 +972,16 @@ export const studentsRouter = createTRPCRouter({
       take: LIST_CAP,
       include: studentInclude,
     });
-    return rows.map(toApi);
+    // Counted over the listed students only, so any scoping of this list
+    // (e.g. a counsellor seeing just their own students) carries through.
+    const pending = await db.student_partner_update.groupBy({
+      by: ["student_id"],
+      where: { reviewed_at: null, student_id: { in: rows.map((r) => r.id) } },
+      _count: { _all: true },
+    });
+    const updates = new Map(pending.map((p) => [p.student_id, p._count._all]));
+    // partnerEditCount: partner edits nobody at Collegepond has reviewed yet.
+    return rows.map((s) => ({ ...toApi(s), partnerEditCount: updates.get(s.id) ?? 0 }));
   }),
 
   // Org options for the admin Add Student "Partner" picker.
@@ -574,251 +1113,37 @@ export const studentsRouter = createTRPCRouter({
       return { created: toCreate.length, skipped };
     }),
 
-  // Full profile for /admin/students/[id]: the list DTO plus rich application
-  // and shortlist cards (course + university meta).
+  // Full profile for /admin/students/[id], plus partner edits awaiting review.
   adminGet: protectedAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input }) => {
-      const s = await db.student.findUnique({
-        where: { id: input.id },
-        include: studentInclude,
+      const full = await loadStudentFull(input.id);
+      return { ...full, partnerUpdates: await pendingPartnerUpdates(input.id) };
+    }),
+
+  // Clears the "updated by a partner" banner and bell item for a student.
+  markPartnerUpdatesReviewed: protectedAdminProcedure
+    .input(z.object({ studentId: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      const r = await db.student_partner_update.updateMany({
+        where: { student_id: input.studentId, reviewed_at: null },
+        data: { reviewed_at: new Date(), reviewed_by_cp_user_id: ctx.cpUser.id },
       });
-      if (!s) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
-      }
-      const [applications, shortlists] = await Promise.all([
-        db.application.findMany({
-          where: { student_id: input.id },
-          orderBy: { created_at: "asc" },
-          select: {
-            id: true,
-            status: true,
-            created_at: true,
-            submitted_at: true,
-            decided_at: true,
-            university_app_id: true,
-            counsellor_vendor: true,
-            conditional_docs: true,
-            deposit_deadline: true,
-            deposit_amount: true,
-            deposit_currency: true,
-            stage_history: {
-              orderBy: { stage: "asc" },
-              select: { stage: true, occurred_at: true },
-            },
-            portal_credential: { select: { username: true } },
-            course: { select: courseCardSelect },
+      if (r.count > 0) {
+        await db.audit_log.create({
+          data: {
+            action: "student.partner_edits_reviewed",
+            entity_type: "student",
+            entity_id: input.studentId,
+            metadata: { byCpUserId: ctx.cpUser.id, count: r.count },
           },
-        }),
-        db.shortlist.findMany({
-          where: { student_id: input.id },
-          orderBy: { created_at: "desc" },
-          select: { id: true, created_at: true, course: { select: courseCardSelect } },
-        }),
-      ]);
-      const [contacts, education, work, tests, notes, documents] =
-        await Promise.all([
-          db.student_emergency_contact.findMany({
-            where: { student_id: input.id },
-            orderBy: { id: "asc" },
-          }),
-          db.student_education.findMany({
-            where: { student_id: input.id },
-            orderBy: { level: "desc" },
-          }),
-          db.student_work_experience.findMany({
-            where: { student_id: input.id },
-            orderBy: [{ start_year: "desc" }, { start_month: "desc" }],
-          }),
-          db.student_test_score.findMany({
-            where: { student_id: input.id },
-            orderBy: [{ test: "asc" }, { attempt: "asc" }],
-          }),
-          db.student_note.findMany({
-            where: { student_id: input.id },
-            orderBy: { created_at: "desc" },
-            include: {
-              collegepond_user: {
-                select: { first_name: true, last_name: true },
-              },
-            },
-          }),
-          db.document.findMany({
-            where: { student_id: input.id },
-            orderBy: { created_at: "desc" },
-          }),
-        ]);
-      return {
-        ...toApi(s),
-        notes: notes.map((n) => ({
-          id: n.id,
-          body: n.body,
-          isTask: n.is_task === 1,
-          dueDate: n.due_date ? n.due_date.toISOString().slice(0, 10) : null,
-          priority: n.priority,
-          isDone: n.is_done === 1,
-          createdAt: n.created_at.toISOString(),
-          author: n.collegepond_user ? fullName(n.collegepond_user) : null,
-        })),
-        documents: documents.map((d) => ({
-          id: d.id,
-          docType: d.doc_type,
-          fileName: d.file_name,
-          fileUrl: resolveStorageUrl(d.file_url),
-          mimeType: d.mime_type,
-          sizeBytes: d.size_bytes,
-          isMostRecent: d.is_most_recent === 1,
-          createdAt: d.created_at.toISOString(),
-        })),
-        emergencyContacts: contacts.map((c) => ({
-          id: c.id,
-          relationship: c.relationship,
-          name: c.name,
-          email: c.email,
-          phone: c.phone,
-        })),
-        educationRows: education.map((e) => ({
-          level: e.level,
-          country: e.country,
-          board: e.board,
-          state: e.state,
-          qualification: e.qualification,
-          institution: e.institution,
-          city: e.city,
-          gradingSystem: e.grading_system,
-          scale: e.scale,
-          score: e.score,
-          language: e.language,
-          passMonth: e.pass_month,
-          passYear: e.pass_year,
-          major: e.major,
-          researchTopic: e.research_topic,
-          predictedScore: e.predicted_score,
-        })),
-        workExperience: work.map((w) => ({
-          id: w.id,
-          company: w.company,
-          jobTitle: w.job_title,
-          employmentType: w.employment_type,
-          industry: w.industry,
-          startMonth: w.start_month,
-          startYear: w.start_year,
-          endMonth: w.end_month,
-          endYear: w.end_year,
-          currentlyWorking: w.currently_working === 1,
-          city: w.city,
-          country: w.country,
-          description: w.description,
-        })),
-        testScores: tests.map((t) => ({
-          test: t.test,
-          attempt: t.attempt,
-          scores: (t.scores ?? {}) as Record<string, number>,
-          testDate: t.test_date ? t.test_date.toISOString().slice(0, 10) : null,
-        })),
-        applicationCards: applications.map((a) => ({
-          id: a.id,
-          status: a.status,
-          stage: currentStage(a.status, a.stage_history),
-          createdAt: a.created_at.toISOString(),
-          submittedAt: a.submitted_at?.toISOString() ?? null,
-          decidedAt: a.decided_at?.toISOString() ?? null,
-          universityAppId: a.university_app_id,
-          counsellorVendor: a.counsellor_vendor,
-          conditionalDocs: Array.isArray(a.conditional_docs)
-            ? (a.conditional_docs as string[])
-            : [],
-          depositDeadline: a.deposit_deadline
-            ? a.deposit_deadline.toISOString().slice(0, 10)
-            : null,
-          depositAmount:
-            a.deposit_amount === null ? null : a.deposit_amount.toNumber(),
-          depositCurrency: a.deposit_currency,
-          stageHistory: a.stage_history.map((h) => ({
-            stage: h.stage,
-            date: h.occurred_at.toISOString(),
-          })),
-          // Username only — the password never leaves the server unencrypted
-          // except through the audited reveal mutation.
-          portalCredentialUsername: a.portal_credential?.username ?? null,
-          ...toCourseCard(a.course),
-        })),
-        shortlists: shortlists.map((r) => ({
-          id: r.id,
-          shortlistedAt: r.created_at.toISOString(),
-          ...toCourseCard(r.course),
-        })),
-      };
+        });
+      }
+      return { reviewed: r.count };
     }),
 
   adminUpdate: protectedAdminProcedure
-    .input(
-      createFields.extend({
-        id: z.number().int().positive(),
-        gender: z
-          .number()
-          .int()
-          .refine((v) => GENDER_CODES.includes(v as Gender), {
-            message: "Invalid gender",
-          })
-          .nullable(),
-        nationality: z
-          .string()
-          .trim()
-          .length(2)
-          .transform((v) => v.toUpperCase())
-          .nullable(),
-        middleName: z.string().trim().max(50).nullable(),
-        maritalStatus: z
-          .number()
-          .int()
-          .refine((v) => MARITAL_STATUS_CODES.includes(v as MaritalStatus), {
-            message: "Invalid marital status",
-          })
-          .nullable(),
-        mailingAddress1: z.string().trim().max(255).nullable(),
-        mailingAddress2: z.string().trim().max(255).nullable(),
-        mailingCity: z.string().trim().max(100).nullable(),
-        mailingState: z.string().trim().max(100).nullable(),
-        mailingCountry: z.string().trim().max(50).nullable(),
-        mailingPostal: z.string().trim().max(20).nullable(),
-        permanentSameAsMailing: z.boolean(),
-        permanentAddress1: z.string().trim().max(255).nullable(),
-        permanentAddress2: z.string().trim().max(255).nullable(),
-        permanentCity: z.string().trim().max(100).nullable(),
-        permanentState: z.string().trim().max(100).nullable(),
-        permanentCountry: z.string().trim().max(50).nullable(),
-        permanentPostal: z.string().trim().max(20).nullable(),
-        dualCitizenship: z.boolean().nullable(),
-        passportNumber: z.string().trim().max(20).nullable(),
-        passportExpiry: dateStringSchema.nullable(),
-        visaRefused: z.boolean().nullable(),
-        visaRefusedDetails: z.string().trim().max(500).nullable(),
-        criminalRecord: z.boolean().nullable(),
-        criminalRecordDetails: z.string().trim().max(500).nullable(),
-        medicalCondition: z.boolean().nullable(),
-        medicalConditionDetails: z.string().trim().max(500).nullable(),
-        emergencyContacts: z
-          .array(
-            z.object({
-              relationship: z
-                .number()
-                .int()
-                .refine(
-                  (v) =>
-                    EMERGENCY_RELATIONSHIP_CODES.includes(
-                      v as EmergencyRelationship,
-                    ),
-                  { message: "Invalid relationship" },
-                ),
-              name: z.string().trim().min(1).max(100),
-              email: z.string().trim().email().max(255).nullable(),
-              phone: z.string().trim().max(45).nullable(),
-            }),
-          )
-          .max(10),
-      }),
-    )
+    .input(profileUpdateInput)
     .mutation(async ({ ctx, input }) => {
       const existing = await db.student.findUnique({
         where: { id: input.id },
@@ -832,94 +1157,12 @@ export const studentsRouter = createTRPCRouter({
         input.countryCode,
         input.phone,
         {},
+        input.id,
       );
-      if (duplicate && duplicate.id !== input.id) {
+      if (duplicate) {
         return { ok: false as const, duplicate };
       }
-      // "Same as mailing" copies the values so the permanent address stays
-      // meaningful if the flag is later unchecked (mock behaviour).
-      const perm = input.permanentSameAsMailing
-        ? {
-            address1: input.mailingAddress1,
-            address2: input.mailingAddress2,
-            city: input.mailingCity,
-            state: input.mailingState,
-            country: input.mailingCountry,
-            postal: input.mailingPostal,
-          }
-        : {
-            address1: input.permanentAddress1,
-            address2: input.permanentAddress2,
-            city: input.permanentCity,
-            state: input.permanentState,
-            country: input.permanentCountry,
-            postal: input.permanentPostal,
-          };
-      const updated = await db.student.update({
-        where: { id: input.id },
-        data: {
-          first_name: input.firstName,
-          last_name: input.lastName,
-          email: input.email.toLowerCase(),
-          phone: normalizePhone(input.countryCode, input.phone),
-          date_of_birth: new Date(input.dateOfBirth),
-          gender: input.gender,
-          nationality: input.nationality,
-          country: input.country,
-          intake: input.intake,
-          course_level: input.courseLevel,
-          interested_program: input.interestedProgram,
-          education_loan: input.educationLoan ? 1 : 0,
-          apply_through_cp: input.applyThroughCp ? 1 : 0,
-          middle_name: input.middleName,
-          marital_status: input.maritalStatus,
-          mailing_address1: input.mailingAddress1,
-          mailing_address2: input.mailingAddress2,
-          mailing_city: input.mailingCity,
-          mailing_state: input.mailingState,
-          mailing_country: input.mailingCountry,
-          mailing_postal: input.mailingPostal,
-          permanent_same_as_mailing: input.permanentSameAsMailing ? 1 : 0,
-          permanent_address1: perm.address1,
-          permanent_address2: perm.address2,
-          permanent_city: perm.city,
-          permanent_state: perm.state,
-          permanent_country: perm.country,
-          permanent_postal: perm.postal,
-          dual_citizenship: boolToInt(input.dualCitizenship),
-          passport_number: input.passportNumber,
-          passport_expiry: input.passportExpiry
-            ? new Date(input.passportExpiry)
-            : null,
-          visa_refused: boolToInt(input.visaRefused),
-          visa_refused_details: input.visaRefused
-            ? input.visaRefusedDetails
-            : null,
-          criminal_record: boolToInt(input.criminalRecord),
-          criminal_record_details: input.criminalRecord
-            ? input.criminalRecordDetails
-            : null,
-          medical_condition: boolToInt(input.medicalCondition),
-          medical_condition_details: input.medicalCondition
-            ? input.medicalConditionDetails
-            : null,
-        },
-        include: studentInclude,
-      });
-      await db.student_emergency_contact.deleteMany({
-        where: { student_id: input.id },
-      });
-      if (input.emergencyContacts.length > 0) {
-        await db.student_emergency_contact.createMany({
-          data: input.emergencyContacts.map((c) => ({
-            student_id: input.id,
-            relationship: c.relationship,
-            name: c.name,
-            email: c.email,
-            phone: c.phone,
-          })),
-        });
-      }
+      const updated = await applyProfileUpdate(input);
       await db.audit_log.create({
         data: {
           action: "student.profile_updated",
@@ -934,66 +1177,10 @@ export const studentsRouter = createTRPCRouter({
   // Academic Qualification sub-tab: replace-all per student (the form is
   // the full state — one entry per education level).
   saveEducation: protectedAdminProcedure
-    .input(
-      z.object({
-        studentId: z.number().int().positive(),
-        highestLevel: educationLevelSchema.nullable(),
-        entries: z
-          .array(
-            z.object({
-              level: educationLevelSchema,
-              country: z.string().trim().max(50).nullable(),
-              board: z.string().trim().max(100).nullable(),
-              state: z.string().trim().max(50).nullable(),
-              qualification: z.string().trim().max(100).nullable(),
-              institution: z.string().trim().max(150).nullable(),
-              city: z.string().trim().max(100).nullable(),
-              gradingSystem: z.string().trim().max(20).nullable(),
-              scale: z.string().trim().max(50).nullable(),
-              score: z.string().trim().max(20).nullable(),
-              language: z.string().trim().max(30).nullable(),
-              passMonth: z.number().int().min(1).max(12).nullable(),
-              passYear: z.number().int().min(1950).max(2100).nullable(),
-              major: z.string().trim().max(100).nullable(),
-              researchTopic: z.string().trim().max(255).nullable(),
-              predictedScore: z.string().trim().max(20).nullable(),
-            }),
-          )
-          .max(5),
-      }),
-    )
+    .input(educationInput)
     .mutation(async ({ ctx, input }) => {
       await requireStudent(input.studentId);
-      await db.student.update({
-        where: { id: input.studentId },
-        data: { highest_education_level: input.highestLevel },
-      });
-      await db.student_education.deleteMany({
-        where: { student_id: input.studentId },
-      });
-      if (input.entries.length > 0) {
-        await db.student_education.createMany({
-          data: input.entries.map((e) => ({
-            student_id: input.studentId,
-            level: e.level,
-            country: e.country,
-            board: e.board,
-            state: e.state,
-            qualification: e.qualification,
-            institution: e.institution,
-            city: e.city,
-            grading_system: e.gradingSystem,
-            scale: e.scale,
-            score: e.score,
-            language: e.language,
-            pass_month: e.passMonth,
-            pass_year: e.passYear,
-            major: e.major,
-            research_topic: e.researchTopic,
-            predicted_score: e.predictedScore,
-          })),
-        });
-      }
+      await applyEducation(input);
       await db.audit_log.create({
         data: {
           action: "student.academics_updated",
@@ -1006,53 +1193,10 @@ export const studentsRouter = createTRPCRouter({
     }),
 
   saveWorkExperience: protectedAdminProcedure
-    .input(
-      z.object({
-        studentId: z.number().int().positive(),
-        entries: z
-          .array(
-            z.object({
-              company: z.string().trim().min(1).max(150),
-              jobTitle: z.string().trim().max(100).nullable(),
-              employmentType: z.string().trim().max(20).nullable(),
-              industry: z.string().trim().max(50).nullable(),
-              startMonth: z.number().int().min(1).max(12),
-              startYear: z.number().int().min(1950).max(2100),
-              endMonth: z.number().int().min(1).max(12).nullable(),
-              endYear: z.number().int().min(1950).max(2100).nullable(),
-              currentlyWorking: z.boolean(),
-              city: z.string().trim().max(100).nullable(),
-              country: z.string().trim().max(50).nullable(),
-              description: z.string().trim().max(1000).nullable(),
-            }),
-          )
-          .max(20),
-      }),
-    )
+    .input(workInput)
     .mutation(async ({ ctx, input }) => {
       await requireStudent(input.studentId);
-      await db.student_work_experience.deleteMany({
-        where: { student_id: input.studentId },
-      });
-      if (input.entries.length > 0) {
-        await db.student_work_experience.createMany({
-          data: input.entries.map((w) => ({
-            student_id: input.studentId,
-            company: w.company,
-            job_title: w.jobTitle,
-            employment_type: w.employmentType,
-            industry: w.industry,
-            start_month: w.startMonth,
-            start_year: w.startYear,
-            end_month: w.currentlyWorking ? null : w.endMonth,
-            end_year: w.currentlyWorking ? null : w.endYear,
-            currently_working: w.currentlyWorking ? 1 : 0,
-            city: w.city,
-            country: w.country,
-            description: w.description,
-          })),
-        });
-      }
+      await applyWorkExperience(input);
       await db.audit_log.create({
         data: {
           action: "student.work_experience_updated",
@@ -1065,37 +1209,10 @@ export const studentsRouter = createTRPCRouter({
     }),
 
   saveTestScores: protectedAdminProcedure
-    .input(
-      z.object({
-        studentId: z.number().int().positive(),
-        entries: z
-          .array(
-            z.object({
-              test: z.string().trim().min(1).max(20),
-              attempt: z.number().int().min(1).max(10),
-              scores: z.record(z.string(), z.number()),
-              testDate: dateStringSchema.nullable(),
-            }),
-          )
-          .max(40),
-      }),
-    )
+    .input(testsInput)
     .mutation(async ({ ctx, input }) => {
       await requireStudent(input.studentId);
-      await db.student_test_score.deleteMany({
-        where: { student_id: input.studentId },
-      });
-      if (input.entries.length > 0) {
-        await db.student_test_score.createMany({
-          data: input.entries.map((t) => ({
-            student_id: input.studentId,
-            test: t.test,
-            attempt: t.attempt,
-            scores: t.scores,
-            test_date: t.testDate ? new Date(t.testDate) : null,
-          })),
-        });
-      }
+      await applyTestScores(input);
       await db.audit_log.create({
         data: {
           action: "student.tests_updated",
@@ -1830,6 +1947,86 @@ export const studentsRouter = createTRPCRouter({
         isMostRecent: d.is_most_recent === 1,
         createdAt: d.created_at.toISOString(),
       }));
+    }),
+
+  // ---- Partner student profile (/partner/students/[id]) -------------------
+  // Anyone who can see the student may view and edit the profile (owner,
+  // assigned counsellor, the independent who created them), including after
+  // applications are submitted. Every edit is diffed and reported to
+  // Collegepond's counselling team (src/server/student-changes.ts).
+
+  partnerGet: protectedPartnerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.id);
+      return toPartnerFull(await loadStudentFull(input.id));
+    }),
+
+  partnerUpdate: protectedPartnerProcedure
+    .input(profileUpdateInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.id);
+      // Email is unique across Collegepond. Name the clash only when it is a
+      // student this partner can already see; another agency's stays hidden.
+      const duplicate = await findDuplicate(
+        input.email,
+        input.countryCode,
+        input.phone,
+        {},
+        input.id,
+      );
+      if (duplicate) {
+        if (await findVisibleStudent(ctx.cpPartner.id, duplicate.id)) {
+          return { ok: false as const, duplicate };
+        }
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `Another student on Collegepond already uses this ${
+            duplicate.matchedOn === "email" ? "email address" : "phone number"
+          }.`,
+        });
+      }
+      const updated = await partnerEdit(ctx.cpPartner.id, input.id, "profile", profileSnapshot, () =>
+        applyProfileUpdate(input),
+      );
+      // Same type as adminUpdate's result (the shared form takes either).
+      const student: ReturnType<typeof toApi> = {
+        ...toApi(updated),
+        cpCounsellorId: null,
+        cpCounsellorName: null,
+        bdmName: null,
+      };
+      return { ok: true as const, student };
+    }),
+
+  partnerSaveEducation: protectedPartnerProcedure
+    .input(educationInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      await partnerEdit(ctx.cpPartner.id, input.studentId, "academics", academicsSnapshot, () =>
+        applyEducation(input),
+      );
+      return { ok: true };
+    }),
+
+  partnerSaveWorkExperience: protectedPartnerProcedure
+    .input(workInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      await partnerEdit(ctx.cpPartner.id, input.studentId, "work", workSnapshot, () =>
+        applyWorkExperience(input),
+      );
+      return { ok: true };
+    }),
+
+  partnerSaveTestScores: protectedPartnerProcedure
+    .input(testsInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      await partnerEdit(ctx.cpPartner.id, input.studentId, "tests", testsSnapshot, () =>
+        applyTestScores(input),
+      );
+      return { ok: true };
     }),
 
   // Who the owner can route students to, with how many each holds now, so the

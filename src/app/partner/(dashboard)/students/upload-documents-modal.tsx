@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal } from "~/components/ui/modal";
 import { api, type RouterOutputs } from "~/trpc/react";
 import {
@@ -108,14 +108,18 @@ interface Queued {
   error?: string;
 }
 
-export function UploadDocumentsModal({
+// The student's documents as a checklist of the standard expected list, with
+// per-item and multi-file uploads. Used inline on the student profile and in
+// the Upload documents dialog. onPendingChange reports files queued but not
+// uploaded, so a dialog can ask before discarding them.
+export function DocumentsChecklist({
   student,
-  onClose,
   onUploaded,
+  onPendingChange,
 }: {
   student: { id: number; firstName: string; lastName: string };
-  onClose: () => void;
   onUploaded: (msg: string) => void;
+  onPendingChange?: (waiting: number) => void;
 }) {
   const utils = api.useUtils();
   const docs = api.students.partnerDocuments.useQuery({
@@ -125,6 +129,7 @@ export function UploadDocumentsModal({
   const { done, total } = expectedProgress(docs.data);
   const refresh = () => {
     void utils.students.partnerDocuments.invalidate({ studentId: student.id });
+    void utils.students.partnerGet.invalidate({ id: student.id });
   };
 
   // Multi-file drop: each file gets its own type before anything uploads.
@@ -157,16 +162,8 @@ export function UploadDocumentsModal({
   };
 
   const pending = queue.filter((q) => q.state === "ready");
-  // A stray click on the backdrop shouldn't silently drop queued files.
-  const close = () => {
-    const waiting = queue.filter((q) => q.state !== "done").length;
-    if (
-      waiting > 0 &&
-      !window.confirm(`Discard ${plural(waiting, "file")} not uploaded yet?`)
-    )
-      return;
-    onClose();
-  };
+  const waiting = queue.filter((q) => q.state !== "done").length;
+  useEffect(() => onPendingChange?.(waiting), [waiting, onPendingChange]);
   const uploadingQueue = queue.some((q) => q.state === "uploading");
   const missingType = pending.some((q) => !q.docType);
 
@@ -229,21 +226,7 @@ export function UploadDocumentsModal({
   const optionalUploaded = optional.filter((t) => bySlot.has(t.key)).length;
 
   return (
-    <Modal
-      open
-      title={`Documents · ${student.firstName} ${student.lastName}`}
-      onClose={close}
-      width="w-[640px]"
-      footer={
-        <button
-          type="button"
-          onClick={close}
-          className="h-9 cursor-pointer rounded-lg border border-[#D0D5DD] px-4 text-[13px] font-semibold text-[#344054]"
-        >
-          Done
-        </button>
-      }
-    >
+    <div className="space-y-4">
       {/* Progress */}
       <div>
         <div className="flex items-baseline justify-between">
@@ -469,6 +452,50 @@ export function UploadDocumentsModal({
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+export function UploadDocumentsModal({
+  student,
+  onClose,
+  onUploaded,
+}: {
+  student: { id: number; firstName: string; lastName: string };
+  onClose: () => void;
+  onUploaded: (msg: string) => void;
+}) {
+  const [waiting, setWaiting] = useState(0);
+  // A stray click on the backdrop shouldn't silently drop queued files.
+  const close = () => {
+    if (
+      waiting > 0 &&
+      !window.confirm(`Discard ${plural(waiting, "file")} not uploaded yet?`)
+    )
+      return;
+    onClose();
+  };
+  return (
+    <Modal
+      open
+      title={`Documents · ${student.firstName} ${student.lastName}`}
+      onClose={close}
+      width="w-[640px]"
+      footer={
+        <button
+          type="button"
+          onClick={close}
+          className="h-9 cursor-pointer rounded-lg border border-[#D0D5DD] px-4 text-[13px] font-semibold text-[#344054]"
+        >
+          Done
+        </button>
+      }
+    >
+      <DocumentsChecklist
+        student={student}
+        onUploaded={onUploaded}
+        onPendingChange={setWaiting}
+      />
     </Modal>
   );
 }

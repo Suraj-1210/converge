@@ -18,6 +18,7 @@ import {
 import { ApplicationTab } from "./application-tab";
 import { ChatTab } from "./chat-tab";
 import { DocumentsTab } from "./documents-tab";
+import { PartnerEditsBanner } from "./partner-edits-banner";
 import { ProfileTab } from "./profile-tab";
 import { SummaryTab } from "./summary-tab";
 import { TasksNotesTab } from "./tasks-notes-tab";
@@ -129,6 +130,8 @@ export default function StudentProfilePage() {
               </div>
             </div>
           </div>
+
+          {student && <PartnerEditsBanner student={student} onToast={showToast} />}
 
           {/* Main tabs */}
           <div className="mb-6 flex gap-1 overflow-x-auto border-b-2 border-[#E4E7EC]">

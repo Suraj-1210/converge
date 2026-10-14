@@ -5,7 +5,7 @@ import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { EducationLevel, EducationLevelLabel } from "~/server/db/enums";
-import { api } from "~/trpc/react";
+import { useStudentProfileApi } from "./profile-api";
 import { type AdminStudentFull } from "../lib";
 import {
   BOARD_OPTIONS,
@@ -104,7 +104,8 @@ export function AcademicTab({
   student: AdminStudentFull;
   onToast: (msg: string) => void;
 }) {
-  const utils = api.useUtils();
+  const profileApi = useStudentProfileApi();
+  const refresh = profileApi.useRefresh();
   const [highest, setHighest] = useState(() => buildState(student).highest);
   const [entries, setEntries] = useState<Record<number, EduDraft>>(
     () => buildState(student).entries,
@@ -144,9 +145,9 @@ export function AcademicTab({
     setField(level, patch);
   };
 
-  const saveMut = api.students.saveEducation.useMutation({
+  const saveMut = profileApi.useSaveEducation({
     onSuccess: () => {
-      void utils.students.adminGet.invalidate({ id: student.id });
+      refresh(student.id);
       onToast("Academic information saved");
     },
     onError: (err) => onToast(err.message),

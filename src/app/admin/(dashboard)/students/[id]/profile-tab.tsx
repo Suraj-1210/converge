@@ -5,7 +5,7 @@ import { Button } from "~/components/ui/button";
 import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { INTAKE_OPTIONS } from "~/components/students/status";
-import { api } from "~/trpc/react";
+import { useStudentProfileApi } from "./profile-api";
 import {
   ADD_COUNTRY_OPTIONS,
   COURSE_LEVEL_SELECT_OPTIONS,
@@ -210,7 +210,8 @@ function PersonalInfoForm({
   student: AdminStudentFull;
   onToast: (msg: string) => void;
 }) {
-  const utils = api.useUtils();
+  const profileApi = useStudentProfileApi();
+  const refresh = profileApi.useRefresh();
   const [form, setForm] = useState<ProfileForm>(() => buildForm(student));
 
   // Re-seed only when navigating to a different student — a background
@@ -231,7 +232,7 @@ function PersonalInfoForm({
       ),
     }));
 
-  const updateMut = api.students.adminUpdate.useMutation({
+  const updateMut = profileApi.useUpdateProfile({
     onSuccess: (res) => {
       if (!res.ok) {
         onToast(
@@ -241,8 +242,7 @@ function PersonalInfoForm({
         );
         return;
       }
-      void utils.students.adminGet.invalidate({ id: student.id });
-      void utils.students.adminList.invalidate();
+      refresh(student.id);
       onToast("Profile saved");
     },
     onError: (err) => onToast(err.message),
