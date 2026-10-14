@@ -28,6 +28,26 @@ INSERT IGNORE INTO `department` (`name`, `is_active`, `sort_order`) VALUES
   ('Finance',              1, 50),
   ('Content',              1, 60);
 
+-- Partner Tiers master (Settings -> Partner Tiers). Same rows as the
+-- 20261014091941_partner_tiers migration seeds.
+INSERT IGNORE INTO `partner_tier` (`name`, `display_order`, `badge_color`, `icon`, `benefits`) VALUES
+  ('Silver',   10, '#344054', CONVERT(0xf09fa588 USING utf8mb4), JSON_ARRAY('Standard Application Processing', 'Email Support')),
+  ('Gold',     20, '#027A48', CONVERT(0xf09fa587 USING utf8mb4), JSON_ARRAY('Priority Application Processing', 'Dedicated Support', 'Quarterly Webinars')),
+  ('Platinum', 30, '#B54708', CONVERT(0xf09f8f86 USING utf8mb4), JSON_ARRAY('Priority Processing', 'Priority access to your Relationship Manager', 'Training & Webinars', 'Early University Access')),
+  ('Titanium', 40, '#6941C6', CONVERT(0xe29aa1 USING utf8mb4), JSON_ARRAY('Priority Processing', 'Priority access to your Relationship Manager', 'Exclusive Training', 'Early Access', 'Sponsored Events')),
+  ('Diamond',  50, '#1570EF', CONVERT(0xf09f928e USING utf8mb4), JSON_ARRAY('Priority Application Processing', 'Priority access to your Relationship Manager', 'Exclusive Training & Webinars', 'Early Access to New Universities', 'Sponsored Events & Fam Trips'));
+
+INSERT IGNORE INTO `partner_tier_rule` (`fy`, `tier_id`, `min_students`, `max_students`, `share_pct`)
+  SELECT 2026, t.`id`, r.min_s, r.max_s, r.share
+  FROM `partner_tier` t
+  JOIN (
+    SELECT 'Silver' AS name, 0 AS min_s, 10 AS max_s, 70.00 AS share
+    UNION ALL SELECT 'Gold',     11, 30,   75.00
+    UNION ALL SELECT 'Platinum', 31, 50,   80.00
+    UNION ALL SELECT 'Titanium', 51, 75,   85.00
+    UNION ALL SELECT 'Diamond',  76, NULL, 90.00
+  ) r ON r.name = t.`name`;
+
 -- One CollegePond staff user per role, for local development. status=1 → active.
 -- last_login_at seeded to NOW() so the dev UI doesn't show "Never" everywhere.
 INSERT IGNORE INTO `cp_user` (

@@ -4,7 +4,6 @@
 // partners / prospects / activities / tasks) was removed — it had no backend and
 // was never imported once the page moved to real data.
 
-export type Tier = "Diamond" | "Titanium" | "Platinum" | "Gold" | "Silver";
 export type Status = "Active" | "Pending" | "Deactivated";
 
 export const relDays = (d: number) =>
@@ -26,14 +25,6 @@ export const initials = (name: string) =>
     .map((w) => w[0] ?? "")
     .join("")
     .toUpperCase();
-
-export const TIER_BADGE: Record<Tier, string> = {
-  Diamond: "bg-[#EFF8FF] text-[#1570EF]",
-  Titanium: "bg-[#F9F5FF] text-[#6941C6]",
-  Platinum: "bg-[#FFFAEB] text-[#B54708]",
-  Gold: "bg-[#ECFDF3] text-[#027A48]",
-  Silver: "bg-[#F2F4F7] text-[#344054]",
-};
 
 export const STATUS_BADGE: Record<Status, { wrap: string; dot: string }> = {
   Active: { wrap: "bg-[#ECFDF3] text-[#027A48]", dot: "bg-[#12B76A]" },

@@ -15,7 +15,8 @@ import {
   Icon,
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
-import { RELATIONSHIP_MANAGER_LABEL, partnerTier } from "~/lib/constants/partner-relationship";
+import { RELATIONSHIP_MANAGER_LABEL } from "~/lib/constants/partner-relationship";
+import { TierBadge, tierProgressText } from "~/components/partner/loyalty-tiers";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -42,7 +43,7 @@ export default function PartnerDashboardPage() {
   const isOwner = mounted && (me.data?.kind === "agency" || me.data?.kind === "independent");
   const tierQ = api.dashboard.partnerTier.useQuery(undefined, { enabled: isOwner, retry: false });
   const notices = api.dashboard.partnerNotices.useQuery(undefined, { enabled: isOwner, retry: false });
-  const tier = tierQ.data ? partnerTier(tierQ.data.tier) : null;
+  const tier = tierQ.data ?? null;
 
   // Bounce away if state has shifted (e.g. unsigned MOU, or status no longer
   // approved). Middleware enforces the cookie; this enforces the "approved +
@@ -99,12 +100,8 @@ export default function PartnerDashboardPage() {
           </p>
         </div>
         {tier && (
-          <Link
-            href="/partner/account?tab=loyalty"
-            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold"
-            style={{ background: tier.bg, color: tier.fg }}
-          >
-            <span aria-hidden>{tier.icon}</span> {tier.name} Partner
+          <Link href="/partner/account?tab=loyalty">
+            <TierBadge step={tier.effective} suffix="Partner" />
           </Link>
         )}
       </div>
@@ -305,8 +302,7 @@ export default function PartnerDashboardPage() {
           </div>
         </DashboardCard>
 
-        {/* Partner Loyalty — owner only; the tier Collegepond set (user.tier).
-            No targets until tier thresholds are decided. */}
+        {/* Partner Loyalty — owner only; tier from the Partner Tiers master. */}
         {isOwner && (
           <DashboardCard
             title="Partner Loyalty Program"
@@ -319,14 +315,10 @@ export default function PartnerDashboardPage() {
               <EmptyState label="Your tier couldn't be loaded." />
             ) : (
               <div className="text-[13px]">
-                <span
-                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
-                  style={{ background: tier.bg, color: tier.fg }}
-                >
-                  <span aria-hidden>{tier.icon}</span> {tier.name} Partner
-                </span>
+                <TierBadge step={tier.effective} suffix="Partner" />
+                <div className="mt-2 text-xs text-[#667085]">{tierProgressText(tier)}</div>
                 <ul className="mt-3 space-y-1.5 text-[#475467]">
-                  {tier.perks.slice(0, 3).map((p) => (
+                  {[`${tier.effective.sharePct}% commission share`, ...tier.effective.benefits].slice(0, 3).map((p) => (
                     <li key={p} className="flex gap-2">
                       <span className="text-[#12B76A]">✓</span> {p}
                     </li>

@@ -5,7 +5,8 @@ import { api } from "~/trpc/react";
 import { Toast } from "~/components/ui/toast";
 import { StatCard, SkeletonTable } from "~/components/dashboard/widgets";
 import { AdminRole, ProspectStage } from "~/server/db/enums";
-import { fmtMoney, relDays, PIPE_SEGMENTS, TIER_BADGE, STATUS_BADGE } from "./data";
+import { fmtMoney, relDays, PIPE_SEGMENTS, STATUS_BADGE } from "./data";
+import { tierBadgeStyle } from "~/lib/partner-tiers";
 import { Avatar, CARD, TD, TH } from "./crm-ui";
 import { ProspectPipeline } from "./prospect-pipeline";
 import { ActivityLog, activityListInput } from "./activity-log";
@@ -17,7 +18,6 @@ import { MyTasks } from "./my-tasks";
 // plain message. The CRM tabs (Prospect Pipeline, Activity Log, My Tasks) run on the
 // bdmCrm router. The mock's scorecard, alerts and agenda still have no backend.
 
-const TIER_RANK: Record<string, number> = { Diamond: 5, Titanium: 4, Platinum: 3, Gold: 2, Silver: 1 };
 const STATUS_RANK: Record<string, number> = { Active: 3, Pending: 2, Deactivated: 1 };
 type ContentTab = "portfolio" | "prospects" | "activity" | "tasks";
 
@@ -63,7 +63,7 @@ export default function BDMPerformancePage() {
     const val = (p: (typeof partners)[number]): number | string => {
       switch (sortKey) {
         case "name": return p.name;
-        case "tier": return TIER_RANK[p.tierLabel] ?? 0;
+        case "tier": return p.tier;
         case "status": return STATUS_RANK[p.status] ?? 0;
         case "students": return p.students;
         case "apps": return p.apps;
@@ -209,7 +209,7 @@ export default function BDMPerformancePage() {
       {/* Filter bar */}
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <select value={fType} onChange={(e) => setFType(e.target.value)} className="h-9 rounded-lg border border-[#D0D5DD] px-3 text-sm text-[#344054] outline-none focus:border-[#1570EF]"><option value="">All Partner Types</option><option value="Active">Active</option><option value="Pending">Pending</option><option value="Deactivated">Deactivated</option></select>
-        <select value={fTier} onChange={(e) => setFTier(e.target.value)} className="h-9 rounded-lg border border-[#D0D5DD] px-3 text-sm text-[#344054] outline-none focus:border-[#1570EF]"><option value="">All Tiers</option><option>Diamond</option><option>Titanium</option><option>Platinum</option><option>Gold</option><option>Silver</option></select>
+        <select value={fTier} onChange={(e) => setFTier(e.target.value)} className="h-9 rounded-lg border border-[#D0D5DD] px-3 text-sm text-[#344054] outline-none focus:border-[#1570EF]"><option value="">All Tiers</option>{[...(ov.data?.tierNames ?? [])].reverse().map((n) => <option key={n}>{n}</option>)}</select>
         <button onClick={() => { setApplied({ type: fType, tier: fTier }); toast("Filters applied"); }} className="h-9 rounded-lg border border-[#1570EF] px-3.5 text-[13px] font-semibold text-[#1570EF] hover:bg-[#EFF8FF]">Apply Filter</button>
         <button onClick={() => { setFType(""); setFTier(""); setApplied({ type: "", tier: "" }); toast("Filters reset"); }} className="h-9 rounded-lg border border-[#D0D5DD] px-3.5 text-[13px] font-semibold text-[#344054] hover:bg-[#F9FAFB]">Reset</button>
       </div>
@@ -235,7 +235,7 @@ export default function BDMPerformancePage() {
                     return (
                       <tr key={p.key} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#F9FAFB]">
                         <td className={TD}><div className="flex items-center gap-2.5"><Avatar name={p.name} /><div><div className="font-semibold text-[#101828]">{p.name}</div><div className="text-[11px] text-[#98A2B3]">{p.city}</div></div></div></td>
-                        <td className={TD}><span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${TIER_BADGE[p.tierLabel as keyof typeof TIER_BADGE]}`}>{p.tierLabel}</span></td>
+                        <td className={TD}><span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={tierBadgeStyle(p.tierColor)}>{p.tierLabel}</span></td>
                         <td className={TD}><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${st.wrap}`}><span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />{p.status}</span></td>
                         <td className={`${TD} font-semibold text-[#101828]`}>{p.students}</td>
                         <td className={TD}>{p.apps}</td>

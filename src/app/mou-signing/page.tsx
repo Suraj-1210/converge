@@ -6,7 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Toast } from "~/components/ui/toast";
 import { api } from "~/trpc/react";
 import { ImpersonationBanner } from "~/components/dashboard/impersonation";
-import { MOU_SECTIONS, type MouSection } from "~/lib/constants/mou";
+import { mouSectionsFor, type MouSection } from "~/lib/constants/mou";
 
 type Step = 0 | 1 | 2 | 3;
 type SignatureMode = "draw" | "type";
@@ -35,6 +35,10 @@ export default function MouSigningPage() {
   const router = useRouter();
   const me = api.auth.me.useQuery(undefined, { retry: false });
   const utils = api.useUtils();
+  // The commission tier table comes from the Partner Tiers master (this FY's
+  // ladder) — the same table signMou freezes into the executed PDF.
+  const tierLadder = api.partnerTiers.ladder.useQuery(undefined, { retry: false });
+  const mouSections = tierLadder.data ? mouSectionsFor(tierLadder.data.steps) : null;
 
   const [step, setStep] = useState<Step>(0);
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
@@ -411,14 +415,20 @@ export default function MouSigningPage() {
                     onScroll={onMouScroll}
                     className="mb-4 max-h-[380px] overflow-y-auto rounded-[10px] border border-[#E4E7EC] bg-[#FAFBFC] p-6"
                   >
-                    {MOU_SECTIONS.map((section, i) => (
-                      <MouSectionView
-                        key={section.title}
-                        number={i + 1}
-                        section={section}
-                        last={i === MOU_SECTIONS.length - 1}
-                      />
-                    ))}
+                    {!mouSections ? (
+                      <div className="py-10 text-center text-sm text-[#98A2B3]">
+                        {tierLadder.isError ? "Couldn't load the agreement. Please refresh the page." : "Loading the agreement…"}
+                      </div>
+                    ) : (
+                      mouSections.map((section, i) => (
+                        <MouSectionView
+                          key={section.title}
+                          number={i + 1}
+                          section={section}
+                          last={i === mouSections.length - 1}
+                        />
+                      ))
+                    )}
                   </div>
 
                   <div

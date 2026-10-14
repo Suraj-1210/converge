@@ -10,7 +10,8 @@ import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
-import { PARTNER_TIER_NAMES, partnerTier } from "~/lib/constants/partner-relationship";
+import { type TierStatusView } from "~/lib/partner-tiers";
+import { PartnerTierBadge, PartnerTierPanel } from "./tier-panel";
 import {
   BankAccountDetails,
   BankDecisionControls,
@@ -43,7 +44,8 @@ type Partner = {
   submittedAt: string;
   updatedAt: string;
   documents: PartnerDocument[];
-  tier: number;
+  userId: number;
+  tier: TierStatusView | null;
   bdmId: number | null;
   bdmName: string | null;
   pan: string | null;
@@ -61,20 +63,6 @@ type Partner = {
   mouSignedAt: string | null;
   lastLoginAt: string | null;
 };
-
-// user.tier 0..4 → the shared tier ladder (name + badge palette). The same
-// value is what the partner sees on their dashboard, Commission and Loyalty.
-function TierBadge({ tier }: { tier: number }) {
-  const t = partnerTier(tier);
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
-      style={{ background: t.bg, color: t.fg }}
-    >
-      {t.name}
-    </span>
-  );
-}
 
 const REJECT_REASONS = [
   { value: "incomplete_docs", label: "Incomplete Documents" },
@@ -263,14 +251,6 @@ export default function PartnersPage() {
               : "Document rejected — partner emailed to re-send it"
             : "Document reset",
       );
-    },
-    onError: (err) => showToast(err.message),
-  });
-
-  const setTierMut = api.partners.setTier.useMutation({
-    onSuccess: () => {
-      void utils.partners.list.invalidate();
-      showToast("Tier updated");
     },
     onError: (err) => showToast(err.message),
   });
@@ -622,9 +602,7 @@ export default function PartnersPage() {
           partner={detailPartner}
           bdms={bdmsQuery.data?.bdms ?? []}
           onClose={() => setDetailEmail(null)}
-          onChangeTier={(tier) =>
-            setTierMut.mutate({ email: detailPartner.email, tier })
-          }
+          onToast={showToast}
           onChangeBdm={(bdmId) =>
             setBdmMut.mutate({ email: detailPartner.email, bdmId })
           }
@@ -658,7 +636,6 @@ export default function PartnersPage() {
           savingStatus={setStatus.isPending}
           onSendMouReminder={() => mouReminder.mutate({ email: detailPartner.email })}
           sendingMouReminder={mouReminder.isPending}
-          savingTier={setTierMut.isPending}
           savingBdm={setBdmMut.isPending}
           savingPan={setPanMut.isPending}
         />
@@ -1268,7 +1245,7 @@ function PartnerTable({
                   {p.role === "agency" ? "Agency" : "Independent"}
                 </td>
                 <td className="px-3.5 py-3">
-                  <TierBadge tier={p.tier} />
+                  <PartnerTierBadge tier={p.tier} />
                 </td>
                 <td className="px-3.5 py-3 text-sm text-[#344054]">{p.city ?? "—"}</td>
                 <td className="px-3.5 py-3 text-sm text-[#344054]">
@@ -1315,7 +1292,7 @@ function PartnerDetailSlideOver({
   partner: p,
   bdms,
   onClose,
-  onChangeTier,
+  onToast,
   onChangeBdm,
   onSavePan,
   onDeactivate,
@@ -1328,14 +1305,13 @@ function PartnerDetailSlideOver({
   savingStatus,
   onSendMouReminder,
   sendingMouReminder,
-  savingTier,
   savingBdm,
   savingPan,
 }: {
   partner: Partner;
   bdms: BdmOption[];
   onClose: () => void;
-  onChangeTier: (tier: number) => void;
+  onToast: (msg: string) => void;
   onChangeBdm: (bdmId: number | null) => void;
   onSavePan: (pan: string | null) => void;
   onDeactivate: () => void;
@@ -1348,7 +1324,6 @@ function PartnerDetailSlideOver({
   savingStatus: boolean;
   onSendMouReminder: () => void;
   sendingMouReminder: boolean;
-  savingTier: boolean;
   savingBdm: boolean;
   savingPan: boolean;
 }) {
@@ -1455,20 +1430,12 @@ function PartnerDetailSlideOver({
             </Section>
           )}
 
-          {/* Relationship — tier + BDM (editable) */}
+          {/* Relationship — tier (Partner Tiers master; override is Super
+              Admin only) + BDM (editable) */}
           <Section title="Relationship">
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <FormSelect
-                  label="Tier"
-                  value={String(p.tier)}
-                  disabled={savingTier}
-                  onChange={(e) => onChangeTier(Number(e.target.value))}
-                  options={PARTNER_TIER_NAMES.map((label, i) => ({
-                    value: String(i),
-                    label,
-                  }))}
-                />
+              <div className="col-span-2">
+                <PartnerTierPanel userId={p.userId} tier={p.tier} onToast={onToast} />
               </div>
               <div>
                 <FormSelect

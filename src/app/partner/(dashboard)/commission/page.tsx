@@ -11,6 +11,7 @@ import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { CurrentTierLine, TierLadder } from "~/components/partner/loyalty-tiers";
+import { type TierStatusView } from "~/lib/partner-tiers";
 import { normalizePan, panError } from "~/lib/utils/pan";
 import {
   BankAccountSummary,
@@ -39,6 +40,9 @@ type TrancheRow = Claim["tranches"][number];
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap text-[#667085]";
 const TD = "px-3.5 py-3 text-sm whitespace-nowrap text-[#344054]";
+// The share Collegepond stamped from your tier when the student was confirmed
+// for billing; null until then (and not claimable).
+const shareText = (pct: number | null) => (pct == null ? "Pending" : `${pct}%`);
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const todayInput = () => new Date().toISOString().slice(0, 10);
 
@@ -232,7 +236,7 @@ function CommissionContent() {
   const yearlyQ = api.partnerCommission.yearlyStats.useQuery();
   const claims = useMemo(() => claimsQ.data ?? [], [claimsQ.data]);
 
-  // ---- loyalty tier: the one Collegepond set (user.tier) ----
+  // ---- loyalty tier (Partner Tiers master: this FY's students, or a set floor) ----
   const tierQ = api.dashboard.partnerTier.useQuery();
   const yearly = useMemo(() => yearlyQ.data ?? [], [yearlyQ.data]);
 
@@ -288,7 +292,7 @@ function CommissionContent() {
     ];
     const body = rows.map((c) => [
       c.studentCode, c.studentName, c.program, c.university, c.intake ?? "", c.country, c.currency,
-      c.tuition, c.commissionRate, c.commissionAmount, c.partnerSharePct, c.claimableInr,
+      c.tuition, c.commissionRate, c.commissionAmount, shareText(c.partnerSharePct), c.claimableInr,
       c.status === "paid" ? "Fully Paid" : c.status === "invoiced" ? "Invoiced" : "Not Invoiced",
       c.receivedAt ? "Yes" : "No", c.paidAt ? "Yes" : "No", c.paidAt ? formatDate(c.paidAt) : "",
     ]);
@@ -304,7 +308,7 @@ function CommissionContent() {
           onClick={() => setLoyaltyOpen(true)}
           className="mb-5 flex w-full items-center justify-between gap-3 rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-3.5 text-left"
         >
-          <CurrentTierLine tier={tierQ.data.tier} />
+          <CurrentTierLine status={tierQ.data} />
           <span className="shrink-0 text-[13px] font-semibold text-[#6941C6]">View tiers →</span>
         </button>
       )}
@@ -388,10 +392,13 @@ function CommissionContent() {
                     <td className={`${TD} font-medium`}>{c.currency} {c.tuition.toLocaleString()}</td>
                     <td className={TD}>{c.commissionRate}%</td>
                     <td className={`${TD} font-medium`}>{c.currency} {c.commissionAmount.toLocaleString()}</td>
-                    <td className={TD}>{c.partnerSharePct}%</td>
+                    <td className={TD} title={c.partnerSharePct == null ? "Collegepond Finance hasn't set the commission share for this student yet" : undefined}>{shareText(c.partnerSharePct)}</td>
                     <td className={`${TD} font-semibold text-[#067647]`}>{inr(c.claimableInr)}</td>
                     <td className={TD}>
                       <ClaimStatusPill status={c.status} />
+                      {c.sharePending && c.status === "claimable" && (
+                        <span className="mt-1 block text-[11px] text-[#B54708]">Share being set by Collegepond</span>
+                      )}
                       {c.tranches.length > 1 && <TrancheProgress tranches={c.tranches} />}
                     </td>
                     <td className={`${TD} text-center`}>{c.receivedAt ? <span className="text-[#067647]">✓</span> : "—"}</td>
@@ -458,7 +465,7 @@ function CommissionContent() {
       )}
 
       {detailFor && <StudentDetailModal claim={detailFor} onClose={() => setDetailFor(null)} />}
-      {loyaltyOpen && tierQ.data && <LoyaltyModal current={tierQ.data.tier} onClose={() => setLoyaltyOpen(false)} />}
+      {loyaltyOpen && tierQ.data && <LoyaltyModal status={tierQ.data} onClose={() => setLoyaltyOpen(false)} />}
       {wizard && (
         <InvoiceWizard
           claims={selectedClaims}
@@ -500,10 +507,10 @@ function YoYCard({ rows }: { rows: RO["partnerCommission"]["yearlyStats"] }) {
 }
 
 // ---- Loyalty modal ----------------------------------------------------------
-function LoyaltyModal({ current, onClose }: { current: number; onClose: () => void }) {
+function LoyaltyModal({ status, onClose }: { status: TierStatusView; onClose: () => void }) {
   return (
     <Modal open title="Loyalty Tiers" width="w-[640px]" onClose={onClose} footer={<Button onClick={onClose}>Close</Button>}>
-      <TierLadder current={current} />
+      <TierLadder status={status} />
     </Modal>
   );
 }
@@ -532,7 +539,7 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
         <SummaryCard label="Tuition" value={`${claim.currency} ${claim.tuition.toLocaleString()}`} />
         <SummaryCard label="Commission %" value={`${claim.commissionRate}%`} />
         <SummaryCard label="Total Commission" value={`${claim.currency} ${claim.commissionAmount.toLocaleString()}`} />
-        <SummaryCard label="% Share" value={`${claim.partnerSharePct}%`} />
+        <SummaryCard label="% Share" value={shareText(claim.partnerSharePct)} />
         <SummaryCard label="Claimable (₹)" value={inr(claim.claimableInr)} />
         <SummaryCard label="CP Commission (₹)" value={claim.cpCommissionInr > 0 ? inr(claim.cpCommissionInr) : "—"} />
       </div>
@@ -668,7 +675,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const downloadPdf = () => {
     const p = previewQ.data;
     if (!p) return;
-    const lines = claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${c.currency} ${c.commissionAmount.toLocaleString()}</td><td style="text-align:right">${c.partnerSharePct}%</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
+    const lines = claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${c.currency} ${c.commissionAmount.toLocaleString()}</td><td style="text-align:right">${shareText(c.partnerSharePct)}</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
     const taxRows = p.isInterstate === false
       ? `<tr><td>CGST @9%</td><td style="text-align:right">${inr(p.cgst)}</td></tr><tr><td>SGST @9%</td><td style="text-align:right">${inr(p.sgst)}</td></tr>`
       : p.isInterstate === true ? `<tr><td>IGST @18%</td><td style="text-align:right">${inr(p.igst)}</td></tr>`
@@ -753,7 +760,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                   <td className={`${TD} font-medium text-[#101828]`}>{c.studentName}<span className="block text-xs font-normal text-[#98A2B3]">{c.studentCode}</span></td>
                   <td className={TD}>{c.intake ?? "—"}</td>
                   <td className={TD}>{c.currency} {c.tuition.toLocaleString()}</td>
-                  <td className={TD}>{c.partnerSharePct}%</td>
+                  <td className={TD} title={c.partnerSharePct == null ? "Collegepond Finance hasn't set the commission share for this student yet" : undefined}>{shareText(c.partnerSharePct)}</td>
                   <td className={`${TD} text-right font-semibold`}>{inr(c.claimableInr)}</td>
                 </tr>
               ))}
@@ -856,7 +863,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                     <tr key={c.commissionId} className="border-b border-[#F2F4F7]">
                       <td className={TD}>{c.studentName}<span className="block text-xs text-[#98A2B3]">{c.university}</span></td>
                       <td className={`${TD} text-right`}>{c.currency} {c.commissionAmount.toLocaleString()}</td>
-                      <td className={`${TD} text-right`}>{c.partnerSharePct}%</td>
+                      <td className={`${TD} text-right`}>{shareText(c.partnerSharePct)}</td>
                       <td className={`${TD} text-right`}>{inr(c.claimableInr)}</td>
                     </tr>
                   ))}

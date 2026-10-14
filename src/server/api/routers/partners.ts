@@ -22,7 +22,6 @@ import {
   partnerPanHolder,
   setPartnerBdm,
   setPartnerPan,
-  setPartnerTier,
   type Application,
 } from "~/server/applications/store";
 import { normalizePan, panError } from "~/lib/utils/pan";
@@ -147,18 +146,6 @@ export const partnersRouter = createTRPCRouter({
       );
       // null = no email for this change; false = it failed (status still saved).
       return { ...app, emailSent };
-    }),
-
-  setTier: protectedAdminProcedure
-    .input(
-      z.object({
-        email: z.string().email(),
-        tier: z.number().int().min(0).max(4),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      await setPartnerTier(input.email, input.tier, ctx.cpUser.id);
-      return { success: true as const };
     }),
 
   setBdm: protectedAdminProcedure

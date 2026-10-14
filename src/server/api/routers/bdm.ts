@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { bdmPerformanceProcedure, createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { partnerTier } from "~/lib/constants/partner-relationship";
+import { currentTierFy, ladderFor, partnerTierStatuses, type PartnerRef } from "~/server/partner-tiers";
 import { AdminRole, UserType } from "~/server/db/enums";
 
 // application.status (UniApplicationStatus): 0 begin · 1 docs · 2 submitted · 3 review ·
@@ -24,8 +24,9 @@ function partnerStatus(userStatus: number): "Active" | "Pending" | "Deactivated"
   if (userStatus === 0) return "Pending";
   return "Deactivated";
 }
-// user.tier (0 = Silver … 4 = Diamond) — the tier Collegepond set on the partner.
-const tierLabel = (tier: number) => partnerTier(tier).name;
+// Tier columns are filled in by `overview` from the Partner Tiers master
+// (this FY's tier: automatic, or a Super Admin floor). Placeholders until then.
+const NO_TIER = { tier: 0, tierLabel: "—", tierColor: "#667085" };
 
 const MS_DAY = 86_400_000;
 function daysSince(d: Date | null): number | null {
@@ -40,7 +41,7 @@ function daysSince(d: Date | null): number | null {
 async function independentPartnerRows() {
   const people = await db.user.findMany({
     where: { type: UserType.INDEPENDENT_COUNSELLOR, org_id: null, deleted_at: null },
-    select: { id: true, first_name: true, last_name: true, city: true, country: true, bdm_id: true, tier: true, status: true },
+    select: { id: true, first_name: true, last_name: true, city: true, country: true, bdm_id: true, status: true },
   });
   if (people.length === 0) return [];
   const ids = people.map((p) => p.id);
@@ -89,8 +90,7 @@ async function independentPartnerRows() {
       city: u.city || "—",
       country: u.country || null,
       bdmId: u.bdm_id,
-      tier: u.tier,
-      tierLabel: tierLabel(u.tier),
+      ...NO_TIER,
       status: partnerStatus(u.status),
       students: students.get(u.id) ?? 0,
       apps: a,
@@ -153,8 +153,9 @@ export const bdmRouter = createTRPCRouter({
       const orgIds = orgs.map((o) => o.id);
 
       const [users, studentG, appG, depoG, commG, pipeG, lastG] = await Promise.all([
-        // Representative user per org (owner first), carrying bdm/tier/status.
-        db.user.findMany({ where: { org_id: { in: orgIds } }, select: { org_id: true, is_owner: true, bdm_id: true, tier: true, status: true }, orderBy: [{ is_owner: "desc" }, { id: "asc" }] }),
+        // Representative user per org (owner first), carrying bdm/status; the
+        // owner also holds the partner's tier override.
+        db.user.findMany({ where: { org_id: { in: orgIds } }, select: { id: true, org_id: true, is_owner: true, bdm_id: true, status: true }, orderBy: [{ is_owner: "desc" }, { id: "asc" }] }),
         db.student.groupBy({ by: ["org_id"], _count: { id: true } }),
         db.application.groupBy({ by: ["org_id"], where: { status: ACTIVE_APP }, _count: { id: true } }),
         db.application.groupBy({ by: ["org_id"], where: { status: { in: DEPOSIT_STATUSES } }, _count: { id: true } }),
@@ -163,8 +164,8 @@ export const bdmRouter = createTRPCRouter({
         db.application.groupBy({ by: ["org_id"], _max: { updated_at: true } }),
       ]);
 
-      const repByOrg = new Map<number, { bdm_id: number | null; tier: number; status: number }>();
-      for (const u of users) if (u.org_id != null && !repByOrg.has(u.org_id)) repByOrg.set(u.org_id, { bdm_id: u.bdm_id, tier: u.tier, status: u.status });
+      const repByOrg = new Map<number, { id: number; bdm_id: number | null; status: number }>();
+      for (const u of users) if (u.org_id != null && !repByOrg.has(u.org_id)) repByOrg.set(u.org_id, { id: u.id, bdm_id: u.bdm_id, status: u.status });
       const num = <T extends { org_id: number | null }>(g: T[], pick: (x: T) => number) => { const m = new Map<number, number>(); for (const r of g) if (r.org_id != null) m.set(r.org_id, pick(r)); return m; };
       const students = num(studentG, (r) => r._count.id);
       const apps = num(appG, (r) => r._count.id);
@@ -196,8 +197,7 @@ export const bdmRouter = createTRPCRouter({
           city: o.city ?? "—",
           country: o.country ?? null,
           bdmId: rep?.bdm_id ?? null,
-          tier: rep?.tier ?? 0,
-          tierLabel: tierLabel(rep?.tier ?? 0),
+          ...NO_TIER,
           status: partnerStatus(rep?.status ?? 0),
           students: students.get(o.id) ?? 0,
           apps: a,
@@ -209,6 +209,26 @@ export const bdmRouter = createTRPCRouter({
         };
       });
       let partners = [...agencyRows, ...(await independentPartnerRows())];
+
+      // Partner Tiers: each partner's tier this FY, held by the agency owner
+      // or the independent counsellor.
+      const tierRefs = new Map<string, PartnerRef>();
+      for (const o of orgs) {
+        const rep = repByOrg.get(o.id);
+        if (rep) tierRefs.set(`o:${o.id}`, { userId: rep.id, orgId: o.id });
+      }
+      for (const p of partners) {
+        if (p.key.startsWith("u:")) tierRefs.set(p.key, { userId: Number(p.key.slice(2)), orgId: null });
+      }
+      const [tierStatuses, ladder] = await Promise.all([
+        partnerTierStatuses([...tierRefs.values()]),
+        ladderFor(currentTierFy()),
+      ]);
+      partners = partners.map((p) => {
+        const ref = tierRefs.get(p.key);
+        const t = ref ? tierStatuses.get(ref.userId)?.effective : undefined;
+        return t ? { ...p, tier: t.rank, tierLabel: t.name, tierColor: t.badgeColor } : p;
+      });
 
       // Leaderboard (all BDMs, active partners only), Super Admin only. Computed
       // before the BDM filter so it always ranks everyone.
@@ -244,6 +264,8 @@ export const bdmRouter = createTRPCRouter({
         stats: { partners: partners.length, revenue: partners.reduce((s, p) => s + p.revenue, 0) },
         partners,
         leaderboard,
+        // This FY's ladder, bottom first, for the tier filter.
+        tierNames: ladder.steps.map((s) => s.name),
       };
     }),
 });

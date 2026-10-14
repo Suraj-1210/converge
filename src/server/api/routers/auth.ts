@@ -21,8 +21,9 @@ import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/a
 import { endImpersonationFromLogout } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType, partnerKindOf } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
-import { MOU_VERSION, MouSignatureKind } from "~/lib/constants/mou";
+import { MOU_VERSION, MouSignatureKind, mouSectionsFor } from "~/lib/constants/mou";
 import { MOU_USER_SELECT, executedMouFor, renderExecutedMou } from "~/server/mou-pdf";
+import { currentTierFy, ladderFor } from "~/server/partner-tiers";
 import { randomUUID } from "node:crypto";
 import { resolveStorageUrl, saveBuffer } from "~/server/storage";
 
@@ -298,12 +299,22 @@ export const authRouter = createTRPCRouter({
         version: MOU_VERSION,
       };
 
+      // The commission tier table comes from the Partner Tiers master (this
+      // FY's ladder) — the same one the signing screen showed.
+      const ladder = await ladderFor(currentTierFy(signedAt));
+      if (ladder.steps.length === 0) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "The MOU's commission tiers aren't set up yet. Please contact Collegepond.",
+        });
+      }
+
       // Freeze the executed MOU as signed. It's saved before the MOU is
       // marked signed, so a partner is never signed without their copy.
       let pdfUrl: string;
       try {
-        const pdf = await renderExecutedMou(
-          executedMouFor(
+        const pdf = await renderExecutedMou({
+          ...executedMouFor(
             {
               ...user,
               mou_signature: signature.data,
@@ -314,7 +325,8 @@ export const authRouter = createTRPCRouter({
             },
             signedAt,
           ),
-        );
+          sections: mouSectionsFor(ladder.steps),
+        });
         const stored = await saveBuffer(
           Buffer.from(pdf),
           `partner-mou/${ctx.cpPartner.id}/${randomUUID()}.pdf`,

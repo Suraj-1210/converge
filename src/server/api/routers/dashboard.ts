@@ -15,6 +15,12 @@ import {
   staffPartnerScope,
   staffStudentScope,
 } from "~/server/staff-access";
+import {
+  partnerRefForUser,
+  partnerTierStatus,
+  partnerTierStatuses,
+  serializeStatus,
+} from "~/server/partner-tiers";
 
 // ---------------------------------------------------------------------------
 // Dashboard aggregations.
@@ -255,17 +261,30 @@ export const dashboardRouter = createTRPCRouter({
     const revByOrg = new Map<number, number>();
     for (const g of revByOrgRaw)
       revByOrg.set(g.org_id, Number(g._sum.commision_amount ?? 0));
-    // The tier Collegepond set, which lives on the agency's owner.
+    // Partner Tiers: the agency's tier this FY (automatic, or a Super Admin
+    // floor), held by its owner.
     const owners = topOrgs.length
       ? await db.user.findMany({
-          where: { org_id: { in: topOrgs.map((g) => g.org_id) }, is_owner: 1 },
-          select: { org_id: true, tier: true },
+          where: {
+            org_id: { in: topOrgs.map((g) => g.org_id) },
+            is_owner: 1,
+            type: UserType.AGENCY_OWNER,
+            deleted_at: null,
+          },
+          select: { id: true, org_id: true },
         })
       : [];
-    const tierByOrg = new Map(owners.map((o) => [o.org_id, o.tier]));
+    const tierStatuses = await partnerTierStatuses(
+      owners.map((o) => ({ userId: o.id, orgId: o.org_id })),
+    );
+    const tierByOrg = new Map<number, ReturnType<typeof serializeStatus>>();
+    for (const o of owners) {
+      const t = o.org_id != null ? tierStatuses.get(o.id) : undefined;
+      if (t) tierByOrg.set(o.org_id!, serializeStatus(t));
+    }
     const topPartners = topOrgs.map((g) => ({
       orgId: g.org_id,
-      tier: tierByOrg.get(g.org_id) ?? 0,
+      tier: tierByOrg.get(g.org_id) ?? null,
       name: orgById.get(g.org_id)?.name ?? "—",
       city: orgById.get(g.org_id)?.city ?? null,
       students: g._count.id,
@@ -475,14 +494,16 @@ export const dashboardRouter = createTRPCRouter({
   // Agency counsellors get FORBIDDEN from payeeProcedure. The client hides
   // these for them too, but this is the enforcement.
 
-  // The loyalty tier Collegepond set on the partner (user.tier, 0 = Silver).
+  // The partner's loyalty tier from the Partner Tiers master: automatic from
+  // this FY's confirmed students, or a higher tier a Super Admin set.
   partnerTier: payeeProcedure.query(async ({ ctx }) => {
-    const me = await ctx.db.user.findUnique({
-      where: { id: ctx.payee.id },
-      select: { tier: true },
-    });
-    if (!me) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
-    return { tier: me.tier };
+    const ref = await partnerRefForUser(ctx.payee.id);
+    if (!ref) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
+    const status = await partnerTierStatus(ref);
+    if (!status) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Partner tiers aren't set up yet." });
+    }
+    return serializeStatus(status);
   }),
 
   partnerNotices: payeeProcedure.query(async ({ ctx }) => {

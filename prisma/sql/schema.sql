@@ -129,6 +129,73 @@ CREATE TABLE IF NOT EXISTS `counsellor_team_member` (
 
 
 -- -----------------------------------------------------
+-- partner_tier  (Settings -> Partner Tiers; display data, edits apply now)
+-- partner_tier_rule  (per-FY ladder: range + commission share. FY X uses the
+--   rows of the latest fy <= X, so edits are written for the next FY)
+-- partner_tier_override  (Super Admin floor for one partner; optional end date)
+-- See 20261014091941_partner_tiers.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `partner_tier` (
+  `id`            INT          NOT NULL AUTO_INCREMENT,
+  `name`          VARCHAR(50)  NOT NULL,
+  `display_order` INT          NOT NULL DEFAULT 0,
+  `badge_color`   CHAR(7)      NOT NULL DEFAULT '#344054',  -- #RRGGBB text colour; the badge tints it
+  `icon`          VARCHAR(16)  NULL DEFAULT NULL,           -- optional emoji shown on partner screens
+  `benefits`      JSON         NOT NULL,                    -- array of strings
+  `is_active`     TINYINT      NOT NULL DEFAULT 1,
+  `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_partner_tier_name` (`name` ASC) VISIBLE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `partner_tier_rule` (
+  `id`                 INT          NOT NULL AUTO_INCREMENT,
+  `fy`                 SMALLINT     NOT NULL,                -- FY start year: 2026 = Apr 2026 - Mar 2027
+  `tier_id`            INT          NOT NULL,
+  `min_students`       SMALLINT UNSIGNED NOT NULL,
+  `max_students`       SMALLINT UNSIGNED NULL DEFAULT NULL,  -- NULL = no upper limit (top tier)
+  `share_pct`          DECIMAL(5,2) NOT NULL,                -- partner's share of the university commission
+  `created_by_cp_user_id` INT       NULL DEFAULT NULL,
+  `created_at`         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_partner_tier_rule_fy_tier` (`fy` ASC, `tier_id` ASC) VISIBLE,
+  INDEX `fk_partner_tier_rule_tier_idx` (`tier_id` ASC) VISIBLE,
+  INDEX `fk_partner_tier_rule_cp_user_idx` (`created_by_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_partner_tier_rule_tier`
+    FOREIGN KEY (`tier_id`) REFERENCES `partner_tier` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_partner_tier_rule_cp_user`
+    FOREIGN KEY (`created_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `partner_tier_override` (
+  `id`                INT          NOT NULL AUTO_INCREMENT,
+  `user_id`           INT          NOT NULL,                 -- agency owner or independent counsellor
+  `tier_id`           INT          NOT NULL,
+  `ends_on`           DATE         NULL DEFAULT NULL,        -- last day it applies; NULL = no end
+  `reason`            VARCHAR(255) NULL DEFAULT NULL,
+  `is_migrated`       TINYINT      NOT NULL DEFAULT 0,       -- 1 = carried over from the manual user.tier
+  `set_by_cp_user_id` INT          NULL DEFAULT NULL,
+  `set_at`            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_partner_tier_override_user` (`user_id` ASC) VISIBLE,
+  INDEX `fk_partner_tier_override_tier_idx` (`tier_id` ASC) VISIBLE,
+  INDEX `fk_partner_tier_override_cp_user_idx` (`set_by_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_partner_tier_override_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_partner_tier_override_tier`
+    FOREIGN KEY (`tier_id`) REFERENCES `partner_tier` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_partner_tier_override_cp_user`
+    FOREIGN KEY (`set_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
 -- user  (FK -> organization, collegepond_user)
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `user` (
@@ -467,6 +534,8 @@ CREATE TABLE IF NOT EXISTS `commission` (
   -- partner_paid_at). The CommissionStatus badge is derived on read.
   `cp_share_pct`             DECIMAL(5,2)  NULL DEFAULT NULL,
   `partner_share_pct`        DECIMAL(5,2)  NULL DEFAULT NULL,
+  -- Tier whose share was stamped at billing confirmation (snapshot).
+  `partner_tier_id`          INT NULL DEFAULT NULL,
   `claimable_inr`            DECIMAL(14,2) NULL DEFAULT NULL,
   `received_fx_rate`         DECIMAL(12,4) NULL DEFAULT NULL,
   `vendor_id`                INT NULL DEFAULT NULL,
@@ -475,6 +544,7 @@ CREATE TABLE IF NOT EXISTS `commission` (
   UNIQUE INDEX `application_id_UNIQUE`    (`application_id` ASC) VISIBLE,
   INDEX `fk_commission_organization1_idx` (`org_id` ASC) VISIBLE,
   INDEX `fk_commission_vendor_idx`        (`vendor_id` ASC) VISIBLE,
+  INDEX `fk_commission_partner_tier_idx`  (`partner_tier_id` ASC) VISIBLE,
   CONSTRAINT `fk_commission_application`
     FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE,
@@ -483,7 +553,10 @@ CREATE TABLE IF NOT EXISTS `commission` (
     ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_commission_vendor`
     FOREIGN KEY (`vendor_id`) REFERENCES `vendor` (`id`)
-    ON DELETE SET NULL ON UPDATE CASCADE
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_commission_partner_tier`
+    FOREIGN KEY (`partner_tier_id`) REFERENCES `partner_tier` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
 

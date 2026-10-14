@@ -7,6 +7,7 @@ import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
+import { UnsetSharesModal } from "./unset-shares-modal";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
@@ -156,6 +157,9 @@ export default function AdminCommissionsPage() {
   const logExport = useExportLog();
   const listQ = api.commissions.list.useQuery(undefined, { enabled: canView && mounted });
   const rows = useMemo(() => listQ.data ?? [], [listQ.data]);
+  // Rows confirmed before Partner Tiers: no stamped share, so unclaimable.
+  const unsetShareCount = useMemo(() => rows.filter((r) => r.partnerSharePct == null).length, [rows]);
+  const [unsetOpen, setUnsetOpen] = useState(false);
 
   const bulkApprove = api.commissions.bulkApprove.useMutation({
     onSuccess: (r) => {
@@ -212,7 +216,7 @@ export default function AdminCommissionsPage() {
     const header = ["CP Student ID", "Student", "Partner", "University", "Country", "Program", "Intake", "Vendor", "Currency", "Tuition", "Rate %", "Commission", "INR Value", "Partner Share %", "Partner Share (INR)", "Status", "Tranches Collected", "Tranches Paid", "Vendor Invoice", "Partner Invoice"];
     const body = src.map((r) => [
       r.cpStudentId, r.studentName, r.partner, r.university, r.country, r.program, r.intake ?? "", r.vendorName,
-      r.currency, r.tuition, r.rate, r.commissionAmount, r.commissionInr, r.partnerSharePct, r.partnerShareInr,
+      r.currency, r.tuition, r.rate, r.commissionAmount, r.commissionInr, r.partnerSharePct ?? "Not set", r.partnerShareInr,
       CommissionStatusLabel[r.status as CommissionStatus] ?? "", `${r.tranche.collected}/${r.tranche.total}`, `${r.tranche.paid}/${r.tranche.total}`,
       r.vendorInvoice?.number ?? "", r.partnerInvoice?.number ?? "",
     ]);
@@ -260,6 +264,15 @@ export default function AdminCommissionsPage() {
           Every commission across all partners, end-to-end. The money-moving steps open the screens that record the real exchange rate and payment reference.
         </p>
       </div>
+
+      {canEdit && unsetShareCount > 0 && (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3">
+          <div className="text-sm text-[#93370D]">
+            <b>{unsetShareCount} commission{unsetShareCount === 1 ? "" : "s"}</b> confirmed before Partner Tiers {unsetShareCount === 1 ? "has" : "have"} no partner share, so partners can&apos;t claim {unsetShareCount === 1 ? "it" : "them"}.
+          </div>
+          <Button className="!h-9 !px-4 !text-[13px]" onClick={() => setUnsetOpen(true)}>Review and set shares</Button>
+        </div>
+      )}
 
       {/* Pipeline stat cards */}
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -327,6 +340,7 @@ export default function AdminCommissionsPage() {
                     <th className={TH}>Rate</th>
                     <th className={TH}>Commission</th>
                     <th className={TH}>INR Value</th>
+                    <th className={TH}>Partner Share</th>
                     <th className={TH}>Status</th>
                     <th className={TH}>Tranche</th>
                     <th className={`${TH} text-right`}>Next Step</th>
@@ -349,6 +363,13 @@ export default function AdminCommissionsPage() {
                       <td className={TD}>{r.rate}%</td>
                       <td className={`${TD} font-medium`}>{r.currency} {r.commissionAmount.toLocaleString()}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>{inr(r.commissionInr)}</td>
+                      <td className={TD}>
+                        {r.partnerSharePct == null ? (
+                          <span className="font-semibold text-[#B54708]" title="Confirmed before Partner Tiers — not claimable until a share is set">Not set</span>
+                        ) : (
+                          <>{r.partnerSharePct}%{r.partnerTier && <span className="block text-xs text-[#98A2B3]">{r.partnerTier}</span>}</>
+                        )}
+                      </td>
                       <td className={TD}><StatusPill status={r.status} /></td>
                       <td className={TD}><TrancheBar t={r.tranche} /></td>
                       <td className={`${TD} text-right`}><NextStep next={r.next} /></td>
@@ -374,6 +395,7 @@ export default function AdminCommissionsPage() {
       )}
 
       {detailFor && <CommissionDetailModal row={detailFor} onClose={() => setDetailFor(null)} />}
+      {unsetOpen && <UnsetSharesModal onClose={() => setUnsetOpen(false)} onDone={showToast} />}
       <Toast message={toastMsg} open={toastOpen} onClose={() => setToastOpen(false)} />
     </div>
   );
@@ -469,7 +491,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
         <SummaryCard label="Tuition" value={`${row.currency} ${row.tuition.toLocaleString()}`} />
         <SummaryCard label="Commission" value={`${row.currency} ${row.commissionAmount.toLocaleString()} (${row.rate}%)`} />
         <SummaryCard label="INR Value" value={inr(row.commissionInr)} />
-        <SummaryCard label="Partner Share" value={`${row.partnerSharePct}% · ${inr(row.partnerShareInr)}`} />
+        <SummaryCard label="Partner Share" value={row.partnerSharePct == null ? "Not set — not claimable" : `${row.partnerSharePct}%${row.partnerTier ? ` (${row.partnerTier})` : ""} · ${inr(row.partnerShareInr)}`} />
         <SummaryCard label="Available to Claim" value={row.claimableInr > 0 ? inr(row.claimableInr) : "—"} />
         <SummaryCard label="Financial Year" value={financialYearLabel(row.fy)} />
       </div>

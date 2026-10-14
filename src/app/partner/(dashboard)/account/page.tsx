@@ -715,8 +715,8 @@ function BankDetailsTab({ onToast }: { onToast: (m: string) => void }) {
   );
 }
 
-// Loyalty tab — the tier Collegepond set (user.tier) and the full tier ladder
-// with benefits. Same components as the Commission page banner/modal.
+// Loyalty tab — the partner's tier (Partner Tiers master) and the full ladder
+// with ranges, shares and benefits. Same components as the Commission page.
 function LoyaltyTab() {
   const tierQ = api.dashboard.partnerTier.useQuery();
   if (!tierQ.data) {
@@ -729,10 +729,10 @@ function LoyaltyTab() {
   return (
     <div className="rounded-2xl border border-[#E4E7EC] bg-white p-7">
       <div className="rounded-2xl border border-[#E9D7FE] bg-gradient-to-r from-[#F4F3FF] to-[#FFFFFF] px-5 py-4">
-        <CurrentTierLine tier={tierQ.data.tier} />
+        <CurrentTierLine status={tierQ.data} />
       </div>
       <div className="mt-5">
-        <TierLadder current={tierQ.data.tier} />
+        <TierLadder status={tierQ.data} />
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ import {
   MOU_SECTIONS,
   MouSignatureKind,
   type MouInline,
+  type MouSection,
 } from "~/lib/constants/mou";
 
 // Renders the executed partner MOU (the agreed text plus the partner's details
@@ -97,6 +98,9 @@ export interface ExecutedMou {
   signatureKind: number | null;
   signedIp: string | null;
   version: string | null;
+  // The terms as signed. Omitted = the original text (MOU_SECTIONS), which is
+  // what MOUs signed before frozen copies were kept must be re-rendered with.
+  sections?: MouSection[];
 }
 
 const A4 = { w: 595.28, h: 841.89 };
@@ -235,7 +239,7 @@ export async function renderExecutedMou(mou: ExecutedMou): Promise<Uint8Array> {
   y -= 18;
 
   // ---- Terms ----
-  MOU_SECTIONS.forEach((s, i) => {
+  (mou.sections ?? MOU_SECTIONS).forEach((s, i) => {
     ensure(40);
     paragraph([{ text: `${i + 1}. ${s.title}`, font: bold }], { size: 11.5, color: INK, gap: 4 });
     for (const b of s.blocks) {

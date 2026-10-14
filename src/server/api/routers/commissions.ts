@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
+  financeManagerProcedure,
   financeProcedure,
   operationsProcedure,
 } from "~/server/api/trpc";
@@ -14,6 +15,7 @@ import {
   financialYearOf,
   toINR,
 } from "~/server/db/enums";
+import { shareForConfirmation } from "~/server/partner-tiers";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -66,6 +68,7 @@ export const commissionsRouter = createTRPCRouter({
           },
         },
         vendor: { select: { name: true, type: true } },
+        partner_tier: { select: { name: true } },
         vendor_invoice_item: {
           select: { vendor_invoice: { select: { invoice_number: true, status: true } } },
         },
@@ -110,8 +113,11 @@ export const commissionsRouter = createTRPCRouter({
     });
 
     return comms.map((c) => {
-      const partnerSharePct = c.partner_share_pct == null ? 100 : num(c.partner_share_pct);
-      const share = (gross: number) => round2(gross * (partnerSharePct / 100));
+      // Stamped from the partner's tier at billing confirmation. Unset (rows
+      // confirmed before Partner Tiers) means unknown — never 100%.
+      const partnerSharePct = c.partner_share_pct == null ? null : num(c.partner_share_pct);
+      const share = (gross: number) =>
+        partnerSharePct == null ? 0 : round2(gross * (partnerSharePct / 100));
       const tranches = c.commission_tranche;
       const hasVendorInvoice = c.vendor_invoice_item != null;
 
@@ -202,7 +208,13 @@ export const commissionsRouter = createTRPCRouter({
         commissionAmount: num(c.commision_amount),
         commissionInr,
         partnerSharePct,
-        cpSharePct: c.cp_share_pct == null ? round2(100 - partnerSharePct) : num(c.cp_share_pct),
+        partnerTier: c.partner_tier?.name ?? null,
+        cpSharePct:
+          c.cp_share_pct != null
+            ? num(c.cp_share_pct)
+            : partnerSharePct == null
+              ? null
+              : round2(100 - partnerSharePct),
         partnerShareInr: share(commissionInr),
         status,
         tranche: { total, collected, paid },
@@ -323,5 +335,113 @@ export const commissionsRouter = createTRPCRouter({
         });
       }
       return { approved, skipped };
+    }),
+
+  // ---- Commission share for rows confirmed before Partner Tiers ------------
+  // Those rows have no stamped share, so partners can't claim them. Finance
+  // previews what stamping would set (the tier the partner would have had when
+  // the row was confirmed: that FY's ladder, students confirmed up to then,
+  // and the partner's current override) and then applies it to the rows they
+  // pick. Never run automatically.
+  unsetSharePreview: financeManagerProcedure.query(async () => {
+    const rows = await db.commission.findMany({
+      where: { partner_share_pct: null },
+      orderBy: { created_at: "asc" },
+      select: {
+        id: true,
+        org_id: true,
+        created_at: true,
+        currency: true,
+        commision_amount: true,
+        organization: { select: { name: true } },
+        application: {
+          select: { student: { select: { id: true, first_name: true, last_name: true } } },
+        },
+        commission_tranche: {
+          select: { status: true, amount_inr: true, invoice_item: { select: { amount: true } } },
+        },
+        invoice_item: { where: { commission_tranche_id: null }, select: { amount: true } },
+      },
+    });
+    const out = [];
+    for (const c of rows) {
+      const s = await shareForConfirmation(c.org_id, c.application.student.id, { at: c.created_at });
+      const grossInr = toINR(num(c.commision_amount), c.currency);
+      const unclaimedCollectedInr = c.commission_tranche
+        .filter((t) => t.status === TrancheStatus.RECEIVED && t.invoice_item == null)
+        .reduce((a, t) => a + num(t.amount_inr), 0);
+      const claimedInr =
+        c.commission_tranche.reduce((a, t) => a + num(t.invoice_item?.amount ?? null), 0) +
+        c.invoice_item.reduce((a, ii) => a + num(ii.amount), 0);
+      out.push({
+        commissionId: c.id,
+        partner: c.organization.name,
+        studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
+        confirmedAt: c.created_at.toISOString(),
+        grossInr: round2(grossInr),
+        // Before: no share, which the old code paid as 100%.
+        beforeSharePct: null,
+        beforeShareInr: round2(grossInr),
+        afterTier: s?.tier.name ?? null,
+        afterSharePct: s?.sharePct ?? null,
+        afterShareInr: s ? round2(grossInr * (s.sharePct / 100)) : null,
+        fyStudents: s?.students ?? null,
+        unclaimedCollectedInr: round2(unclaimedCollectedInr),
+        // Already invoiced by the partner (at 100%); stamping doesn't change those invoices.
+        claimedInr: round2(claimedInr),
+      });
+    }
+    return out;
+  }),
+
+  stampUnsetShares: financeManagerProcedure
+    .input(
+      z.object({
+        commissionIds: z.array(z.number().int().positive()).min(1).max(500),
+        confirm: z.literal(true, {
+          errorMap: () => ({ message: "Confirm the preview before applying it." }),
+        }),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rows = await db.commission.findMany({
+        where: { id: { in: input.commissionIds }, partner_share_pct: null },
+        select: {
+          id: true,
+          org_id: true,
+          created_at: true,
+          application: { select: { student_id: true } },
+        },
+      });
+      let stamped = 0;
+      for (const c of rows) {
+        const s = await shareForConfirmation(c.org_id, c.application.student_id, { at: c.created_at });
+        if (!s) continue;
+        // Only while still unset, so a concurrent stamp isn't overwritten.
+        const res = await db.commission.updateMany({
+          where: { id: c.id, partner_share_pct: null },
+          data: { partner_share_pct: s.sharePct, partner_tier_id: s.tier.id },
+        });
+        if (res.count === 0) continue;
+        stamped++;
+        await db.audit_log.create({
+          data: {
+            org_id: c.org_id,
+            action: "commission.share_stamped",
+            entity_type: "commission",
+            entity_id: c.id,
+            metadata: {
+              byCpUserId: ctx.cpUser.id,
+              via: "finance_backfill",
+              from: null,
+              tier: s.tier.name,
+              sharePct: s.sharePct,
+              fyStudents: s.students,
+              source: s.source,
+            },
+          },
+        });
+      }
+      return { stamped, skipped: input.commissionIds.length - stamped };
     }),
 });

@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
+import { partnerTierStatuses, serializeStatus } from "~/server/partner-tiers";
+import { type TierStatusView } from "~/lib/partner-tiers";
 import {
   DocumentStatus,
   OrganizationType,
@@ -361,7 +363,9 @@ export interface PartnerListing {
   updatedAt: string;
   documents: PartnerDocument[];
   // Partner-management extras surfaced in the table + detail slide-over.
-  tier: number;
+  userId: number;
+  // Partner Tiers: this FY's tier (automatic, or a Super Admin floor).
+  tier: TierStatusView | null;
   bdmId: number | null;
   bdmName: string | null;
   pan: string | null;
@@ -411,6 +415,13 @@ export async function listApplications(): Promise<PartnerListing[]> {
   const orgIds = users
     .map((u) => u.org_id)
     .filter((v): v is number => v !== null);
+
+  const tierStatuses = await partnerTierStatuses(
+    users.map((u) => ({
+      userId: u.id,
+      orgId: u.type === UserType.AGENCY_OWNER ? u.org_id : null,
+    })),
+  );
 
   const orgDocs = orgIds.length
     ? await db.document.findMany({ where: { org_id: { in: orgIds }, is_most_recent: 1 } })
@@ -470,7 +481,11 @@ export async function listApplications(): Promise<PartnerListing[]> {
       submittedAt: user.created_at.toISOString(),
       updatedAt: user.updated_at.toISOString(),
       documents,
-      tier: user.tier,
+      userId: user.id,
+      tier: (() => {
+        const t = tierStatuses.get(user.id);
+        return t ? serializeStatus(t) : null;
+      })(),
       bdmId: user.bdm_id,
       bdmName: bdm ? `${bdm.first_name} ${bdm.last_name}`.trim() : null,
       pan:
@@ -616,33 +631,9 @@ export async function setApplicationStatus(
   return getApplicationByEmail(email);
 }
 
-// Set a partner's tier (0=Silver … 4=Diamond — see PARTNER_TIERS). It is set
-// on the agency owner or independent, and is what the partner portal shows.
-export async function setPartnerTier(
-  email: string,
-  tier: number,
-  byCpUserId: number,
-): Promise<void> {
-  const user = await db.user.findUnique({
-    where: { email: email.toLowerCase() },
-    select: { id: true, org_id: true, tier: true },
-  });
-  if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found." });
-  if (user.tier === tier) return;
-  await db.$transaction([
-    db.user.update({ where: { id: user.id }, data: { tier } }),
-    db.audit_log.create({
-      data: {
-        user_id: user.id,
-        org_id: user.org_id,
-        action: "partner.tier_updated",
-        entity_type: "user",
-        entity_id: user.id,
-        metadata: { from: user.tier, to: tier, byCpUserId },
-      },
-    }),
-  ]);
-}
+// A partner's tier is no longer set here: it's computed from the Partner
+// Tiers master, with a Super Admin override (routers/partner-tiers.ts).
+// user.tier is frozen and no longer written.
 
 // Reassign (or clear) the BDM (a cp_user) who owns this partner relationship.
 export async function setPartnerBdm(

@@ -69,6 +69,17 @@ function requireOrgId(orgId: number | null): number {
   return orgId;
 }
 
+// A claim may only include commissions whose share Finance has stamped.
+function refuseUnsetShare(comms: { partner_share_pct: unknown }[]): void {
+  const n = comms.filter((c) => c.partner_share_pct == null).length;
+  if (n > 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Collegepond Finance hasn't set the commission share for ${n === 1 ? "one selected student" : `${n} selected students`} yet, so ${n === 1 ? "it" : "they"} can't be claimed. Remove ${n === 1 ? "it" : "them"} and claim the rest, or try again once it's set.`,
+    });
+  }
+}
+
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
 
 export const partnerCommissionRouter = createTRPCRouter({
@@ -116,8 +127,12 @@ export const partnerCommissionRouter = createTRPCRouter({
     });
 
     return comms.map((c) => {
-      const partnerSharePct = c.partner_share_pct == null ? 100 : num(c.partner_share_pct);
-      const share = (gross: number) => round2(gross * (partnerSharePct / 100));
+      // The share is stamped from the partner's tier when Finance confirms the
+      // student. Without one the amount is unknown and it can't be claimed —
+      // never treated as 100%.
+      const partnerSharePct = c.partner_share_pct == null ? null : num(c.partner_share_pct);
+      const share = (gross: number) =>
+        partnerSharePct == null ? 0 : round2(gross * (partnerSharePct / 100));
       const tranches = c.commission_tranche;
 
       let claimableGross: number;
@@ -175,7 +190,8 @@ export const partnerCommissionRouter = createTRPCRouter({
         commissionAmount: num(c.commision_amount),
         partnerSharePct,
         claimableInr: claimable,
-        cpCommissionInr: round2(claimableGross - claimable),
+        cpCommissionInr: partnerSharePct == null ? 0 : round2(claimableGross - claimable),
+        sharePending: partnerSharePct == null,
         receivedAt: c.collegepond_received_at,
         paidAt: c.partner_paid_at,
         // Per-tranche breakdown for the UI (empty for legacy commissions). Both
@@ -193,7 +209,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         invoiceNumber: invoice?.invoice_number ?? null,
         invoiceStatus: invoice?.status ?? null,
         status,
-        selectable: status === "claimable",
+        selectable: status === "claimable" && partnerSharePct != null,
       };
     });
   }),
@@ -410,9 +426,11 @@ export const partnerCommissionRouter = createTRPCRouter({
         });
       }
 
+      refuseUnsetShare(comms);
+
       // One invoice line per claimed tranche (pay-as-collected).
       const lineItems = comms.flatMap((c) => {
-        const sharePct = c.partner_share_pct == null ? 100 : num(c.partner_share_pct);
+        const sharePct = num(c.partner_share_pct);
         return c.commission_tranche.map((t) => ({
           commissionId: c.id,
           trancheId: t.id,
@@ -479,9 +497,10 @@ export const partnerCommissionRouter = createTRPCRouter({
           },
         },
       });
+      refuseUnsetShare(comms);
       const subtotal = round2(
         comms.reduce((s, c) => {
-          const sharePct = c.partner_share_pct == null ? 100 : num(c.partner_share_pct);
+          const sharePct = num(c.partner_share_pct);
           const gross = c.commission_tranche.reduce((a, t) => a + num(t.amount_inr), 0);
           return s + round2(gross * (sharePct / 100));
         }, 0),
@@ -558,7 +577,8 @@ export const partnerCommissionRouter = createTRPCRouter({
     const byFy = new Map<number, { students: number; earned: number; paid: number }>();
     for (const c of comms) {
       const fy = financialYearOf(c.created_at);
-      const share = c.partner_share_pct == null ? 100 : num(c.partner_share_pct);
+      // No stamped share yet: nothing is earned on it until Finance sets one.
+      const share = c.partner_share_pct == null ? 0 : num(c.partner_share_pct);
       const claimable = round2((num(c.claimable_inr) * share) / 100);
       const e = byFy.get(fy) ?? { students: 0, earned: 0, paid: 0 };
       e.students += 1;

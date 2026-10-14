@@ -15,6 +15,7 @@ import {
   financialYearOf,
   toINR,
 } from "~/server/db/enums";
+import { shareForConfirmation } from "~/server/partner-tiers";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -139,14 +140,17 @@ export const universityBillingRouter = createTRPCRouter({
 
   // Confirm a student for billing — creates the commission from the
   // university's default rate. Requires a default contract for that university.
+  // Also stamps the partner's commission share from their tier (Partner Tiers
+  // master) as a snapshot: later tier changes never alter a confirmed row.
   confirmBilling: financeManagerProcedure
     .input(z.object({ applicationId: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const app = await db.application.findUnique({
         where: { id: input.applicationId },
         select: {
           id: true,
           org_id: true,
+          student_id: true,
           status: true,
           commission: { select: { id: true } },
           course: {
@@ -176,6 +180,15 @@ export const universityBillingRouter = createTRPCRouter({
           message: `Set a default commission rate for ${app.course.university.name} in Commission Rates first.`,
         });
       }
+      // The student being confirmed counts toward the tier (the 11th is Gold).
+      const confirmedAt = new Date();
+      const share = await shareForConfirmation(app.org_id, app.student_id, { at: confirmedAt });
+      if (!share) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Partner Tiers aren't set up, so the partner's commission share can't be worked out. Ask a Super Admin to check Settings → Partner Tiers.",
+        });
+      }
       const tuition = num(app.course.tuition_fee);
       const amount = grossCommission(tuition, resolved.rate, resolved.commissionType);
       const created = await db.commission.create({
@@ -189,6 +202,25 @@ export const universityBillingRouter = createTRPCRouter({
             resolved.commissionType === CommissionType.FLAT ? 0 : resolved.rate,
           commision_amount: amount,
           vendor_id: resolved.vendorId,
+          partner_share_pct: share.sharePct,
+          partner_tier_id: share.tier.id,
+          created_at: confirmedAt,
+        },
+      });
+      await db.audit_log.create({
+        data: {
+          org_id: app.org_id,
+          action: "commission.share_stamped",
+          entity_type: "commission",
+          entity_id: created.id,
+          metadata: {
+            byCpUserId: ctx.cpUser.id,
+            via: "confirm_billing",
+            tier: share.tier.name,
+            sharePct: share.sharePct,
+            fyStudents: share.students,
+            source: share.source,
+          },
         },
       });
       // Materialize tranche instances from the contract's tranche schedule so the

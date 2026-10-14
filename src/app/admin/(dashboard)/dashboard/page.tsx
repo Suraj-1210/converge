@@ -31,7 +31,7 @@ import {
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { AutoAssignCard } from "./auto-assign-card";
-import { partnerTier } from "~/lib/constants/partner-relationship";
+import { tierBadgeStyle } from "~/lib/partner-tiers";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -318,8 +318,8 @@ export default function DashboardPage() {
                 </thead>
                 <tbody>
                   {partners.map((p, i) => {
-                    // The tier Collegepond set on the partner, not derived.
-                    const tier = partnerTier(p.tier);
+                    // Partner Tiers: this FY's tier (automatic or a Super Admin floor).
+                    const tier = p.tier;
                     const conv =
                       p.students > 0 ? Math.round((p.deposits / p.students) * 100) : 0;
                     const convColor =
@@ -352,12 +352,17 @@ export default function DashboardPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <span
-                            className="rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                            style={{ background: tier.bg, color: tier.fg }}
-                          >
-                            {tier.name}
-                          </span>
+                          {tier ? (
+                            <span
+                              className="rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                              style={tierBadgeStyle(tier.effective.badgeColor)}
+                              title={`${tier.label} · ${tier.students} confirmed in ${tier.fyLabel}`}
+                            >
+                              {tier.effective.name}
+                            </span>
+                          ) : (
+                            <span className="text-[#98A2B3]">—</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 font-semibold text-[#101828]">
                           {p.students}
