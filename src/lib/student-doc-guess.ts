@@ -18,6 +18,8 @@ const GUESSES: [RegExp, string][] = [
     "transcript_bachelors",
   ],
   [/offer/i, "offer_letter"],
+  // A refusal letter before the general visa match (Phase 3A, 17 Oct 2026).
+  [/visa.*(refus|reject|denial)|(refus|reject|denial).*visa/i, "visa_refusal"],
   [/visa/i, "visa"],
   [/deposit/i, "deposit_receipt"],
   [/tuition|fee.?receipt/i, "tuition_receipt"],

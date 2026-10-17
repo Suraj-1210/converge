@@ -36,6 +36,7 @@ import { tierBadgeStyle } from "~/lib/partner-tiers";
 const num = (n: number) => n.toLocaleString("en-IN");
 
 // Happy-path application stages (0–7) for the pipeline funnel, with colors.
+// In pipeline order: Visa Filed (code 9) sits between Deposit and Visa.
 const FUNNEL_STAGES: { status: number; color: string }[] = [
   { status: 0, color: "#1570EF" },
   { status: 1, color: "#0BA5EC" },
@@ -44,6 +45,7 @@ const FUNNEL_STAGES: { status: number; color: string }[] = [
   { status: 4, color: "#9E77ED" },
   { status: 5, color: "#6941C6" },
   { status: 6, color: "#F79009" },
+  { status: 9, color: "#36BFFA" },
   { status: 7, color: "#12B76A" },
   { status: 8, color: "#039855" },
 ];

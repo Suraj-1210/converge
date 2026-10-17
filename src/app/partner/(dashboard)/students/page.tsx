@@ -13,7 +13,7 @@ import {
   StudentStatusBadge,
   StudentStatusGroup,
   StudentStatusLabel,
-  STUDENT_STATUS_CODES,
+  STUDENT_STATUS_ORDER,
   studentStatusGroup,
   type CourseLevel,
 } from "~/components/students/status";
@@ -21,6 +21,8 @@ import { api, type RouterOutputs } from "~/trpc/react";
 import { Skeleton, SkeletonTable } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { stageLabel } from "~/components/dashboard/format";
+import { furthestOpen } from "~/lib/application-stages";
+import { LeadPipelineCompact } from "~/components/students/lead-pipeline-bar";
 import {
   AddStudentModal,
   COUNTRY_NAME,
@@ -79,18 +81,14 @@ function levelShort(level: number | null): string {
   return label ?? "—";
 }
 
-// University/program shown on the row: in-flight application (status < 20)
-// at its furthest stage wins; otherwise any application; otherwise fall back
-// to the pre-application program of interest.
+// University/program shown on the row: the in-flight application at its
+// furthest stage (by pipeline position) wins; otherwise any application;
+// otherwise fall back to the pre-application program of interest.
 function derivedApplication(s: PartnerStudent): {
   university: string;
   program: string;
 } {
-  const inFlight = s.applications.filter((a) => a.status < 20);
-  const pick =
-    inFlight.length > 0
-      ? inFlight.reduce((best, a) => (a.status > best.status ? a : best))
-      : s.applications[0];
+  const pick = furthestOpen(s.applications) ?? s.applications[0];
   if (pick) return { university: pick.university, program: pick.program };
   return { university: "Not Assigned", program: s.interestedProgram ?? "—" };
 }
@@ -287,9 +285,9 @@ function StudentsPage() {
     return counts;
   }, [baseFiltered]);
 
-  // Pills: one per status with count > 0, in status-code order.
+  // Pills: one per status with count > 0, in pipeline order.
   const pillCodes = useMemo(
-    () => STUDENT_STATUS_CODES.filter((c) => (statusCounts.get(c) ?? 0) > 0),
+    () => STUDENT_STATUS_ORDER.filter((c) => (statusCounts.get(c) ?? 0) > 0),
     [statusCounts],
   );
 
@@ -538,6 +536,7 @@ function StudentsPage() {
                   <Th>Level</Th>
                   <Th>Country / Intake</Th>
                   <Th>Status</Th>
+                  <Th>Pipeline</Th>
                   <th className="px-3 py-3">
                     <button
                       type="button"
@@ -573,7 +572,7 @@ function StudentsPage() {
                 {tableRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={7 + (canAssign ? 1 : 0) + (showCounsellor ? 1 : 0)}
+                      colSpan={8 + (canAssign ? 1 : 0) + (showCounsellor ? 1 : 0)}
                       className="px-4 py-12 text-center text-sm text-[#98A2B3]"
                     >
                       No students match the current filters
@@ -775,6 +774,9 @@ function StudentRow({
       <td className="px-3 py-3">
         <StudentStatusBadge status={s.status} />
       </td>
+      <td className="px-3 py-3">
+        <LeadPipelineCompact student={s} />
+      </td>
       <td
         className="px-3 py-3 text-sm whitespace-nowrap text-[#667085]"
         title={new Date(s.updatedAt).toLocaleString("en-IN")}
@@ -877,6 +879,9 @@ function PartnerStudentSlideOver({
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <StudentStatusBadge status={s.status} />
                 <span className="text-xs text-[#98A2B3]">CP-{s.id}</span>
+              </div>
+              <div className="mt-2">
+                <LeadPipelineCompact student={s} />
               </div>
               <Link
                 href={`/partner/students/${s.id}`}

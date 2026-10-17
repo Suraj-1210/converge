@@ -8,6 +8,9 @@ import { flushSync } from "react-dom";
 import { Button } from "~/components/ui/button";
 import { Toast } from "~/components/ui/toast";
 import {
+  OverallStatusBadge,
+  StudentOverallStatus,
+  StudentOverallStatusLabel,
   StudentStatusBadge,
   StudentStatusGroup,
   studentStatusGroup,
@@ -63,6 +66,7 @@ type SortKey =
   | "partner"
   | "id"
   | "phone"
+  | "overall"
   | "status"
   | "vendor"
   | "university"
@@ -78,6 +82,7 @@ const SORTABLE_COLUMNS: { key: SortKey; label: string }[] = [
   { key: "partner", label: "Partner" },
   { key: "id", label: "ID" },
   { key: "phone", label: "Phone" },
+  { key: "overall", label: "Student Status" },
   { key: "status", label: "Status" },
   { key: "vendor", label: "Vendor" },
   { key: "university", label: "University" },
@@ -99,6 +104,8 @@ function sortValue(s: AdminStudent, key: SortKey): string | number {
       return s.id;
     case "phone":
       return (s.phone ?? "").toLowerCase();
+    case "overall":
+      return StudentOverallStatusLabel[s.overallStatus];
     case "status":
       return statusLabel(s.status).toLowerCase();
     case "vendor":
@@ -124,6 +131,7 @@ interface Filters {
   search: string;
   partner: string;
   status: string;
+  overall: string;
   intake: string;
   country: string;
   university: string;
@@ -136,6 +144,7 @@ const emptyFilters: Filters = {
   search: "",
   partner: "",
   status: "",
+  overall: "",
   intake: "",
   country: "",
   university: "",
@@ -331,6 +340,7 @@ export default function StudentsPage() {
         if (!haystack.includes(q)) return false;
       }
       if (filters.partner && s.orgName !== filters.partner) return false;
+      if (filters.overall && s.overallStatus !== filters.overall) return false;
       if (filters.status !== "" && s.status !== Number(filters.status)) {
         return false;
       }
@@ -407,6 +417,7 @@ export default function StudentsPage() {
         "Partner",
         "ID",
         "Phone",
+        "Student Status",
         "Status",
         "Vendor",
         "University",
@@ -423,6 +434,7 @@ export default function StudentsPage() {
         s.orgName,
         displayId(s.id),
         s.phone ?? "",
+        StudentOverallStatusLabel[s.overallStatus],
         statusLabel(s.status),
         "Not set",
         derivedUniversity(s),
@@ -544,6 +556,15 @@ export default function StudentsPage() {
           onChange={(partner) => setFilter({ partner })}
           options={partnerOptions.map((p) => ({ value: p, label: p }))}
           placeholder="All Partners"
+        />
+        <FilterSelect
+          value={filters.overall}
+          onChange={(overall) => setFilter({ overall })}
+          options={Object.values(StudentOverallStatus).map((v) => ({
+            value: v,
+            label: StudentOverallStatusLabel[v],
+          }))}
+          placeholder="All Student Statuses"
         />
         <StatusGroupedSelect
           value={filters.status}
@@ -855,6 +876,9 @@ function StudentRow({
         </Link>
       </td>
       <td className={`${td} whitespace-nowrap`}>{s.phone ?? "—"}</td>
+      <td className="px-3.5 py-3">
+        <OverallStatusBadge status={s.overallStatus} inactive={s.inactive} />
+      </td>
       <td className="px-3.5 py-3">
         <StudentStatusBadge status={s.status} />
       </td>

@@ -9,17 +9,20 @@ import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { StatCard, SkeletonTable } from "~/components/dashboard/widgets";
 import { countryFlag, formatDate } from "~/components/dashboard/format";
+import { UniApplicationStatus } from "~/server/db/enums";
+import { isClosedStage } from "~/lib/application-stages";
+import { PendingDocsModal } from "~/app/admin/(dashboard)/students/[id]/pipeline-panels";
 
 type StatusOption = { code: number; label: string };
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
 const TD = "px-3 py-3 text-[13px] whitespace-nowrap text-[#344054]";
 
-// Stage badge tone by status code (0–8 happy path, 20+ terminal).
+// Stage badge tone by status code (< 20 happy path, 20+ terminal).
 function stageTone(status: number): string {
   if (status >= 20) return "bg-[#FEF3F2] text-[#B42318]"; // closed/rejected
   if (status === 8) return "bg-[#ECFDF3] text-[#067647]"; // enrolled
-  if (status === 6 || status === 7) return "bg-[#ECFDF3] text-[#027A48]"; // deposit / visa
+  if (status === 6 || status === 9 || status === 7) return "bg-[#ECFDF3] text-[#027A48]"; // deposit / visa filed / visa
   if (status === 4 || status === 5) return "bg-[#F5F3FF] text-[#6941C6]"; // offers
   if (status === 2 || status === 3) return "bg-[#FFFAEB] text-[#B54708]"; // submitted / review
   return "bg-[#EFF8FF] text-[#175CD3]"; // begin / docs
@@ -197,15 +200,28 @@ function StageSelect({
 }) {
   const utils = api.useUtils();
   const label = (code: number) => statuses.find((s) => s.code === code)?.label ?? `Stage ${code}`;
+  // Documents Pending names the documents first (applied from the modal).
+  const [pickDocs, setPickDocs] = useState(false);
   const mut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       void utils.applications.invalidate();
+      setPickDocs(false);
       onDone(`Stage updated to ${label(vars.status)}`);
     },
     onError: (e) => onDone(e.message),
   });
-  const happy = statuses.filter((s) => s.code < 20);
-  const terminal = statuses.filter((s) => s.code >= 20);
+  const happy = statuses.filter((s) => !isClosedStage(s.code));
+  const terminal = statuses.filter((s) => isClosedStage(s.code));
+  // At Visa Filed the next step is the visa outcome.
+  const visaOutcomes =
+    current === UniApplicationStatus.VISA_FILED
+      ? [
+          { code: UniApplicationStatus.VISA_SECURED as number, label: "Visa Approved → Visa Secured" },
+          { code: UniApplicationStatus.VISA_REJECTED as number, label: "Visa Rejected" },
+          { code: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE as number, label: "Deferred to Next Intake" },
+          { code: UniApplicationStatus.COURSE_CLOSED as number, label: "Case Closed" },
+        ]
+      : [];
 
   return (
     <span className="relative inline-flex items-center">
@@ -215,10 +231,19 @@ function StageSelect({
         disabled={mut.isPending}
         onChange={(e) => {
           const code = Number(e.target.value);
-          if (code !== current) mut.mutate({ applicationId, status: code });
+          if (code === current) return;
+          if (code === UniApplicationStatus.DOCUMENTS_PENDING) setPickDocs(true);
+          else mut.mutate({ applicationId, status: code });
         }}
         className={`cursor-pointer appearance-none rounded-full py-0.5 pr-6 pl-2.5 text-[11px] font-semibold outline-none focus:ring-2 focus:ring-[#B2DDFF] ${stageTone(current)} ${mut.isPending ? "opacity-60" : ""}`}
       >
+        {visaOutcomes.length > 0 && (
+          <optgroup label="Visa outcome">
+            {visaOutcomes.map((s) => (
+              <option key={`visa-${s.code}`} value={s.code}>{s.label}</option>
+            ))}
+          </optgroup>
+        )}
         <optgroup label="Move to stage">
           {happy.map((s) => (
             <option key={s.code} value={s.code}>{s.label}</option>
@@ -233,6 +258,17 @@ function StageSelect({
       <svg viewBox="0 0 24 24" className="pointer-events-none absolute right-1.5 h-3 w-3 opacity-60" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
         <path d="m6 9 6 6 6-6" />
       </svg>
+      {pickDocs && (
+        <PendingDocsModal
+          open
+          initial={[]}
+          busy={mut.isPending}
+          onClose={() => setPickDocs(false)}
+          onSubmit={(picks) =>
+            mut.mutate({ applicationId, status: UniApplicationStatus.DOCUMENTS_PENDING, pendingDocs: picks })
+          }
+        />
+      )}
     </span>
   );
 }

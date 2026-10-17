@@ -27,6 +27,7 @@ import { AssigneeLabel } from "../assignee-label";
 import { DocumentsChecklist, expectedProgress } from "../upload-documents-modal";
 import { ApplicationsTab } from "./applications-tab";
 import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
+import { LeadPipelineBar } from "~/components/students/lead-pipeline-bar";
 
 function usePartnerRefresh() {
   const utils = api.useUtils();
@@ -210,6 +211,9 @@ export default function PartnerStudentProfilePage() {
             </div>
           </div>
 
+          {/* Student Added → … → Application Started; then the application tracks. */}
+          <LeadPipelineBar student={s} />
+
           {/* Tabs */}
           <div className="mb-6 flex gap-1 overflow-x-auto overflow-y-hidden border-b-2 border-[#E4E7EC]" role="tablist">
             {TABS.map((t) => {
@@ -254,7 +258,17 @@ export default function PartnerStudentProfilePage() {
               <DocumentsChecklist student={s} onUploaded={showToast} />
             </div>
           )}
-          {tab === "applications" && <ApplicationsTab student={s} />}
+          {tab === "applications" && (
+            <ApplicationsTab
+              student={s}
+              viewerKind={viewer?.kind}
+              onChanged={() => {
+                void studentQ.refetch();
+                void docs.refetch();
+              }}
+              onToast={showToast}
+            />
+          )}
           {tab === "chat" && <PartnerChatPanel side="partner" studentId={Number(s.id)} onToast={showToast} />}
 
           {assignOpen && viewer && (

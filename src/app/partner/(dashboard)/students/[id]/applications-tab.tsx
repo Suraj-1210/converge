@@ -7,34 +7,21 @@ import {
 } from "~/server/db/enums";
 import { type AdminStudentFull } from "~/app/admin/(dashboard)/students/lib";
 import { applicationSummary, isClosedApplication, splitByClosed } from "~/lib/application-summary";
+import {
+  APPLICATION_STAGE_ORDER,
+  isNegativeClosedStage,
+  stageIndex,
+  stageShortLabel,
+  stageTrackColour,
+} from "~/lib/application-stages";
+import { PendingDocsChecklist, ReportAction, ReportStatus } from "./pipeline-actions";
 
 type Card = AdminStudentFull["applicationCards"][number];
 type Shortlist = AdminStudentFull["shortlists"][number];
 
-// The happy path an application moves along, in order.
-const STAGES = [
-  UniApplicationStatus.BEGIN_APPLICATION,
-  UniApplicationStatus.DOCUMENTS_PENDING,
-  UniApplicationStatus.APPLICATION_SUBMITTED,
-  UniApplicationStatus.APPLICATION_UNDER_REVIEW,
-  UniApplicationStatus.CONDITIONAL_OFFER,
-  UniApplicationStatus.UNCONDITIONAL_OFFER,
-  UniApplicationStatus.DEPOSIT_PAID,
-  UniApplicationStatus.VISA_SECURED,
-  UniApplicationStatus.ENROLLED,
-] as const;
-
-const SHORT: Record<number, string> = {
-  [UniApplicationStatus.BEGIN_APPLICATION]: "Started",
-  [UniApplicationStatus.DOCUMENTS_PENDING]: "Documents",
-  [UniApplicationStatus.APPLICATION_SUBMITTED]: "Submitted",
-  [UniApplicationStatus.APPLICATION_UNDER_REVIEW]: "Review",
-  [UniApplicationStatus.CONDITIONAL_OFFER]: "Conditional",
-  [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Offer",
-  [UniApplicationStatus.DEPOSIT_PAID]: "Deposit",
-  [UniApplicationStatus.VISA_SECURED]: "Visa",
-  [UniApplicationStatus.ENROLLED]: "Enrolled",
-};
+// The happy path an application moves along, in pipeline order (Visa Filed
+// sits between Deposit and Visa; ~/lib/application-stages).
+const STAGES = APPLICATION_STAGE_ORDER;
 
 const statusLabel = (s: number) =>
   (UniApplicationStatusLabel as Record<number, string | undefined>)[s] ?? "In progress";
@@ -54,9 +41,26 @@ function intake(c: { intakeMonth: string | null; intakeYear: number | null }) {
   return [c.intakeMonth, c.intakeYear].filter(Boolean).join(" ") || null;
 }
 
-// Read-only for partners: Collegepond runs the applications. Portal logins,
-// vendor and status controls stay on the admin side.
-export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
+// Collegepond runs the applications: portal logins, vendor and status
+// controls stay on the admin side. Partners upload the documents named at
+// Documents Pending and report Deposit Paid / the visa outcome for
+// Collegepond to confirm. `viewerKind` decides whether the commission hint
+// shows (owners and independents; commission is hidden from agency
+// counsellors).
+export function ApplicationsTab({
+  student,
+  viewerKind,
+  onChanged,
+  onToast,
+}: {
+  student: AdminStudentFull;
+  viewerKind?: "agency" | "counsellor" | "independent";
+  onChanged?: () => void;
+  onToast?: (msg: string) => void;
+}) {
+  const changed = onChanged ?? (() => undefined);
+  const toast = onToast ?? (() => undefined);
+  const cardProps = { studentId: student.id, viewerKind, onChanged: changed, onToast: toast };
   const apps = student.applicationCards;
   // Every application stays listed: in progress first, closed below.
   const { open, closed } = splitByClosed(apps);
@@ -81,7 +85,7 @@ export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
         ) : (
           <ul className="space-y-4">
             {open.map((a) => (
-              <ApplicationCard key={a.id} a={a} />
+              <ApplicationCard key={a.id} a={a} {...cardProps} />
             ))}
             {closed.length > 0 && (
               <li className="flex items-center gap-3 pt-2" aria-hidden>
@@ -92,7 +96,7 @@ export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
               </li>
             )}
             {closed.map((a) => (
-              <ApplicationCard key={a.id} a={a} />
+              <ApplicationCard key={a.id} a={a} {...cardProps} />
             ))}
           </ul>
         )}
@@ -152,8 +156,22 @@ function UniHead({ c }: { c: Card | Shortlist }) {
   );
 }
 
-function ApplicationCard({ a }: { a: Card }) {
+function ApplicationCard({
+  a,
+  studentId,
+  viewerKind,
+  onChanged,
+  onToast,
+}: {
+  a: Card;
+  studentId: number;
+  viewerKind?: "agency" | "counsellor" | "independent";
+  onChanged: () => void;
+  onToast: (msg: string) => void;
+}) {
   const closed = isClosedApplication(a.status);
+  const enrolled = a.status === UniApplicationStatus.ENROLLED;
+  const fill = stageTrackColour(a.status);
   const reachedAt = new Map(a.stageHistory.map((h) => [h.stage, h.date]));
   const facts: [string, string | null][] = [
     ["Submitted", fmtDate(a.submittedAt)],
@@ -166,38 +184,72 @@ function ApplicationCard({ a }: { a: Card }) {
     <li className="rounded-xl border border-[#E4E7EC] p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <UniHead c={a} />
-        <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold ${
-            closed ? "bg-[#FEF3F2] text-[#B42318]" : "bg-[#EFF8FF] text-[#175CD3]"
-          }`}
-        >
-          {statusLabel(a.status)}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <ReportAction
+            app={a}
+            onDone={(msg) => {
+              onToast(msg);
+              onChanged();
+            }}
+          />
+          <span
+            className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ${
+              closed
+                ? isNegativeClosedStage(a.status)
+                  ? "bg-[#FEF3F2] text-[#B42318]"
+                  : "bg-[#F2F4F7] text-[#475467]"
+                : enrolled
+                  ? "bg-[#ECFDF3] text-[#067647]"
+                  : "bg-[#EFF8FF] text-[#175CD3]"
+            }`}
+          >
+            {statusLabel(a.status)}
+          </span>
+        </div>
       </div>
 
-      {/* Stage track: filled up to the furthest stage reached. */}
-      <ol className="mt-4 grid grid-cols-9 gap-1" aria-label="Application progress">
+      {/* Stage track: filled up to the furthest stage reached. A closed
+          application shows its outcome at the stage it stopped. */}
+      <ol className="mt-4 grid grid-cols-10 gap-1" aria-label="Application progress">
         {STAGES.map((st) => {
-          const reached = a.stage >= st;
-          const current = !closed && a.status === st;
+          const reached = stageIndex(st) <= stageIndex(a.stage);
+          const current = closed ? st === a.stage : a.status === st;
           return (
             <li key={st} className="min-w-0" title={`${statusLabel(st)}${reachedAt.get(st) ? ` · ${fmtDate(reachedAt.get(st)!)}` : ""}`}>
               <div
-                className={`h-1.5 rounded-full ${
-                  reached ? (closed ? "bg-[#FDA29B]" : "bg-[#1570EF]") : "bg-[#EAECF0]"
-                } ${current ? "ring-2 ring-[#B2CCFF]" : ""}`}
+                className={`h-1.5 rounded-full ${current && !closed ? "ring-2 ring-[#B2CCFF]" : ""}`}
+                style={{ background: reached ? fill : "#EAECF0" }}
               />
               <div
                 className={`mt-1 truncate text-[10px] ${
-                  current ? "font-semibold text-[#1570EF]" : reached ? "text-[#475467]" : "text-[#98A2B3]"
+                  current
+                    ? closed
+                      ? "font-semibold text-[#B42318]"
+                      : "font-semibold text-[#1570EF]"
+                    : reached
+                      ? "text-[#475467]"
+                      : "text-[#98A2B3]"
                 }`}
               >
-                {SHORT[st]}
+                {current && closed ? stageShortLabel(a.status) : stageShortLabel(st)}
               </div>
             </li>
           );
         })}
       </ol>
+
+      {/* Enrolled is the commission-claim milestone (owners/independents). */}
+      {enrolled && (
+        <div className="mt-3 rounded-lg bg-[#ECFDF3] px-3.5 py-2 text-[13px] text-[#067647]">
+          <span className="font-semibold">Enrolled</span>
+          {viewerKind === "agency" || viewerKind === "independent"
+            ? " — commission for this student can now be claimed from Commission & Payouts."
+            : " — the student is confirmed enrolled at the university."}
+        </div>
+      )}
+
+      <ReportStatus app={a} />
+      <PendingDocsChecklist app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
 
       {facts.some(([, v]) => v) && (
         <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-[13px] sm:grid-cols-3">

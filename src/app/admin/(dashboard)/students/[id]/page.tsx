@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { StudentStatusBadge } from "~/components/students/status";
+import { OverallStatusBadge, StudentStatusBadge } from "~/components/students/status";
+import { InactiveControl } from "./pipeline-panels";
 import { Toast } from "~/components/ui/toast";
 import { api } from "~/trpc/react";
 import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
@@ -139,6 +140,8 @@ export default function StudentProfilePage() {
                     {displayId(hero.id)}
                   </span>
                   <StudentStatusBadge status={hero.status} />
+                  <OverallStatusBadge status={hero.overallStatus} inactive={hero.inactive} />
+                  {student && <InactiveControl student={student} onToast={showToast} />}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[13px] text-[#667085]">
                   <HeroMeta icon={<MailIcon />}>{hero.email ?? "—"}</HeroMeta>

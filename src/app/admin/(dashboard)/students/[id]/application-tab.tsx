@@ -30,18 +30,33 @@ import {
   type ShortlistCard,
 } from "../lib";
 import { LeadPipeline } from "./lead-pipeline";
+import {
+  APPLICATION_STAGE_ORDER,
+  NEGATIVE_CLOSED_STAGES,
+  isClosedStage,
+  previousStage,
+  stageAtLeast,
+  stageIndex,
+} from "~/lib/application-stages";
+import {
+  PartnerReportPanel,
+  PendingDocsModal,
+  PendingDocsPanel,
+  type PendingDocPick,
+} from "./pipeline-panels";
 
 // ---------------------------------------------------------------------------
 // Pipeline config (mirrors the mock's APP_STAGES / STAGE_ALTERNATIVES)
 // ---------------------------------------------------------------------------
 
-// Happy-path stages, in order (UniApplicationStatus 0–8, ending at Enrolled).
-const PIPELINE_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
+// Happy-path stages, in pipeline order (codes are not in order: Visa Filed
+// is 9, between Deposit Paid 6 and Visa Secured 7).
+const PIPELINE_STAGES = APPLICATION_STAGE_ORDER;
 
 interface StageOption {
   label: string;
   kind: "current" | "advance" | "revert" | "terminal";
-  // advance/revert: target stage (0–7); terminal: status code (>= 20).
+  // advance/revert: target stage code; terminal: status code (>= 20).
   to?: number;
   negative?: boolean;
 }
@@ -94,7 +109,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   ],
   6: [
     { label: "Deposit Paid", kind: "current" },
-    { label: "Advance to Visa Secured", kind: "advance", to: 7 },
+    { label: "Advance to Visa Filed", kind: "advance", to: UniApplicationStatus.VISA_FILED },
     {
       label: "Application Withdrawn",
       kind: "terminal",
@@ -108,9 +123,10 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
       negative: true,
     },
   ],
-  7: [
-    { label: "Visa Secured", kind: "current" },
-    { label: "Advance to Enrolled", kind: "advance", to: 8 },
+  // Visa Filed: the next step is the visa outcome (17 Oct 2026).
+  [UniApplicationStatus.VISA_FILED]: [
+    { label: "Visa Filed", kind: "current" },
+    { label: "Visa Approved → Visa Secured", kind: "advance", to: UniApplicationStatus.VISA_SECURED },
     {
       label: "Visa Rejected",
       kind: "terminal",
@@ -123,10 +139,25 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
       to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE,
     },
     {
-      label: "Course Closed",
+      label: "Case Closed",
       kind: "terminal",
       to: UniApplicationStatus.COURSE_CLOSED,
     },
+  ],
+  7: [
+    { label: "Visa Secured", kind: "current" },
+    { label: "Advance to Enrolled", kind: "advance", to: 8 },
+    {
+      label: "Deferred to Next Intake",
+      kind: "terminal",
+      to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE,
+    },
+    {
+      label: "Case Closed",
+      kind: "terminal",
+      to: UniApplicationStatus.COURSE_CLOSED,
+    },
+    { label: "Revert to Visa Filed", kind: "revert", to: UniApplicationStatus.VISA_FILED },
   ],
   8: [
     { label: "Enrolled", kind: "current" },
@@ -135,12 +166,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
 };
 
 // Negative terminals get the red X treatment; deferred/closed stay neutral.
-const NEGATIVE_TERMINALS = new Set<number>([
-  UniApplicationStatus.REJECTED_BY_UNIVERSITY,
-  UniApplicationStatus.APPLICATION_WITHDRAWAL,
-  UniApplicationStatus.DECLINED_BY_STUDENT,
-  UniApplicationStatus.VISA_REJECTED,
-]);
+const NEGATIVE_TERMINALS = new Set<number>(NEGATIVE_CLOSED_STAGES);
 
 // Counsellor Choice options. Static until the commissions module gives
 // vendors a table; "Recommended" stays Not Set for the same reason.
@@ -241,7 +267,9 @@ export function ApplicationTab({
     for (const a of student.applicationCards) {
       counts.set(a.status, (counts.get(a.status) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((a, b) => a[0] - b[0]);
+    // Pipeline order, closed outcomes last.
+    const order = (s: number) => (stageIndex(s) >= 0 ? stageIndex(s) : 100 + s);
+    return [...counts.entries()].sort((a, b) => order(a[0]) - order(b[0]));
   }, [student.applicationCards]);
 
   const shortlistBusy = applyMut.isPending || removeShortlistMut.isPending;
@@ -457,15 +485,22 @@ function AppCard({
   onToast: (msg: string) => void;
   invalidate: () => void;
 }) {
-  const terminal = a.status >= 20;
+  const terminal = isClosedStage(a.status);
   const negative = NEGATIVE_TERMINALS.has(a.status);
   const badge = uniAppBadge(a.status);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // Moving to (or editing) Documents Pending asks which documents first.
+  const [pickDocs, setPickDocs] = useState(false);
 
   const statusMut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       invalidate();
-      onToast(`Status updated to: ${stageLabel(vars.status)}`);
+      setPickDocs(false);
+      onToast(
+        vars.status === a.status && vars.pendingDocs
+          ? "Pending documents updated — the partner has been told"
+          : `Status updated to: ${stageLabel(vars.status)}`,
+      );
     },
     onError: (err) => onToast(err.message),
   });
@@ -479,8 +514,20 @@ function AppCard({
 
   const setStatus = (status: number) => {
     if (status === a.status) return;
+    // Entering Documents Pending names the documents (unless reverting
+    // back into it with a list already there).
+    if (status === UniApplicationStatus.DOCUMENTS_PENDING && a.pendingDocs.length === 0) {
+      setPickDocs(true);
+      return;
+    }
     statusMut.mutate({ applicationId: a.id, status });
   };
+  const submitDocs = (picks: PendingDocPick[]) =>
+    statusMut.mutate({
+      applicationId: a.id,
+      status: UniApplicationStatus.DOCUMENTS_PENDING,
+      pendingDocs: picks,
+    });
 
   return (
     <div className="rounded-[14px] border border-[#E4E7EC] bg-white p-6 transition-shadow hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]">
@@ -570,12 +617,34 @@ function AppCard({
       )}
 
       {/* Application ID capture (from Application Submitted onwards) */}
-      {a.stage >= UniApplicationStatus.APPLICATION_SUBMITTED && (
+      {stageAtLeast(a.stage, UniApplicationStatus.APPLICATION_SUBMITTED) && (
         <AppIdSection app={a} onToast={onToast} invalidate={invalidate} />
       )}
 
       {/* Pipeline stepper */}
       <Stepper app={a} onSelect={setStatus} busy={statusMut.isPending} />
+
+      {/* A partner's Deposit Paid / visa outcome awaiting confirmation */}
+      <PartnerReportPanel app={a} onToast={onToast} invalidate={invalidate} />
+
+      {/* Documents named at Documents Pending, ticked as they arrive */}
+      {a.status === UniApplicationStatus.DOCUMENTS_PENDING && (
+        <PendingDocsPanel
+          app={a}
+          onEdit={() => setPickDocs(true)}
+          onToast={onToast}
+          invalidate={invalidate}
+        />
+      )}
+      {pickDocs && (
+        <PendingDocsModal
+          open
+          initial={a.pendingDocs}
+          busy={statusMut.isPending}
+          onClose={() => setPickDocs(false)}
+          onSubmit={submitDocs}
+        />
+      )}
 
       {/* Conditional offer document checklist */}
       {a.stage === UniApplicationStatus.CONDITIONAL_OFFER && !terminal && (
@@ -583,7 +652,7 @@ function AppCard({
       )}
 
       {/* Deposit details (from Unconditional Offer onwards) */}
-      {a.stage >= UniApplicationStatus.UNCONDITIONAL_OFFER && !negative && (
+      {stageAtLeast(a.stage, UniApplicationStatus.UNCONDITIONAL_OFFER) && !negative && (
         <DepositDetails app={a} onToast={onToast} invalidate={invalidate} />
       )}
     </div>
@@ -631,7 +700,7 @@ function Stepper({
     setOpen({ stage, x: r.left + r.width / 2, y: r.bottom + 6 });
   };
 
-  const terminal = a.status >= 20;
+  const terminal = isClosedStage(a.status);
   const negative = NEGATIVE_TERMINALS.has(a.status);
 
   const pick = (option: StageOption) => {
@@ -645,7 +714,7 @@ function Stepper({
   return (
     <div ref={ref} className="mt-6 flex items-start overflow-x-auto pb-1">
       {PIPELINE_STAGES.map((stage, i) => {
-        const done = stage < a.stage;
+        const done = stageIndex(stage) < stageIndex(a.stage);
         const active = stage === a.stage;
         const reached = done || active;
         const history = a.stageHistory.find((h) => h.stage === stage);
@@ -775,17 +844,17 @@ function Stepper({
                       </DropdownItem>
                     );
                   })}
-                  {stage > 0 && !hasExplicitRevert && (
+                  {previousStage(stage) !== null && !hasExplicitRevert && (
                     <>
                       <div className="my-1 h-px bg-[#F2F4F7]" />
                       <DropdownItem
                         kind="revert"
                         onClick={() => {
                           setOpen(null);
-                          onSelect(stage - 1);
+                          onSelect(previousStage(stage)!);
                         }}
                       >
-                        Revert to {stageLabel(stage - 1)}
+                        Revert to {stageLabel(previousStage(stage)!)}
                       </DropdownItem>
                     </>
                   )}
