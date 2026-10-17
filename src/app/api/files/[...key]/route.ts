@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
@@ -55,7 +56,11 @@ export async function GET(
     const staff = token ? await verifySessionJwt(token) : null;
     let ok = staff != null && isChatStaffRole(staff.role) && (await canSeeStudent(staff, studentId));
     if (!ok) {
-      const partner = await resolvePartnerSession(jar.get(PARTNER_SESSION_COOKIE_NAME)?.value, token);
+      const partner = await resolvePartnerSession(
+        jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
+        token,
+        jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
+      );
       if (partner) {
         const scope = await partnerChatScope(partner.id);
         ok = (await db.student.count({ where: { AND: [{ id: studentId }, scope] } })) > 0;
@@ -89,6 +94,7 @@ export async function GET(
     const partner = await resolvePartnerSession(
       jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
       adminToken,
+      jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
     );
     if (!partner) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

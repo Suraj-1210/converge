@@ -6,6 +6,7 @@ import { staffStudentScope } from "~/server/staff-access";
 import { staffChatSignals } from "~/server/partner-chat";
 import {
   AdminRole,
+  DocumentStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
   UserStatus,
@@ -66,6 +67,7 @@ export const notificationsRouter = createTRPCRouter({
       bankPending,
       partnerEdited,
       chat,
+      partnerDocsPending,
     ] = await Promise.all([
         db.user.count({
           where: {
@@ -109,6 +111,25 @@ export const notificationsRouter = createTRPCRouter({
         // Partner chat: unread threads and replies due or overdue (TAT), for
         // the student's counsellor, their lead and Super Admins only.
         staffChatSignals(ctx.cpUser, studentScope),
+        // An approved partner's KYC document back at Pending: a GST
+        // certificate after the owner changed the GST number, or a file
+        // uploaded on a partner's behalf. (Applicants' documents are reviewed
+        // with their application instead.)
+        db.document.count({
+          where: {
+            status: DocumentStatus.PENDING,
+            is_most_recent: 1,
+            student_id: null,
+            OR: [
+              { user: { status: UserStatus.APPROVED, deleted_at: null } },
+              {
+                organization: {
+                  user: { some: { is_owner: 1, status: UserStatus.APPROVED, deleted_at: null } },
+                },
+              },
+            ],
+          },
+        }),
       ]);
 
     const notifications: AdminNotification[] = [];
@@ -127,6 +148,16 @@ export const notificationsRouter = createTRPCRouter({
       notifications.push({
         id: "partner-approvals",
         title: `${plural(pendingPartners, "partner application")} awaiting review`,
+        time: "Needs review",
+        tone: "orange",
+        unread: true,
+        href: "/admin/partners",
+      });
+    }
+    if (partnerDocsPending > 0) {
+      notifications.push({
+        id: "partner-documents",
+        title: `${plural(partnerDocsPending, "partner document")} awaiting verification`,
         time: "Needs review",
         tone: "orange",
         unread: true,

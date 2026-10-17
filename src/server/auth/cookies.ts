@@ -1,4 +1,8 @@
-import { PARTNER_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME } from "~/server/auth/jwt";
+import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
+  PARTNER_SESSION_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+} from "~/server/auth/jwt";
 
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8; // matches the JWT TTL
 
@@ -30,4 +34,24 @@ export function buildPartnerSessionCookie(token: string, maxAge = SESSION_MAX_AG
 
 export function clearPartnerSessionCookie(): string {
   return cookie(PARTNER_SESSION_COOKIE_NAME, "", 0);
+}
+
+// The agency owner's own session, parked while they view as a counsellor.
+export function buildPartnerOwnerSessionCookie(token: string, maxAge: number): string {
+  return cookie(PARTNER_OWNER_SESSION_COOKIE_NAME, token, maxAge);
+}
+
+export function clearPartnerOwnerSessionCookie(): string {
+  return cookie(PARTNER_OWNER_SESSION_COOKIE_NAME, "", 0);
+}
+
+// A cookie's raw value from request headers (tRPC context, route handlers).
+export function readCookie(headers: Headers, name: string): string | null {
+  const raw = headers.get("cookie");
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return rest.join("=");
+  }
+  return null;
 }

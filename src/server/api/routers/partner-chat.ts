@@ -87,6 +87,8 @@ export const partnerChatRouter = createTRPCRouter({
 
   partnerMarkRead: protectedPartnerProcedure.input(readInput).mutation(async ({ ctx, input }) => {
     await requirePartnerChatStudent(ctx.cpPartner.id, input.studentId);
+    // An agency owner viewing as this counsellor doesn't use up their unread.
+    if (ctx.cpPartner.ownerImpersonatorId) return { ok: true as const, skipped: "impersonating" as const };
     return markRead(partnerActor(ctx), input.studentId, input.upToId);
   }),
 

@@ -1,25 +1,36 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  agencyOwnerProcedure,
   createTRPCRouter,
   protectedAdminProcedure,
   publicProcedure,
 } from "~/server/api/trpc";
-import { signPartnerSessionJwt, signSessionJwt } from "~/server/auth/jwt";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
+  PARTNER_SESSION_COOKIE_NAME,
+  signPartnerSessionJwt,
+  signSessionJwt,
+  verifyPartnerSessionJwt,
+} from "~/server/auth/jwt";
+import {
+  buildPartnerOwnerSessionCookie,
   buildPartnerSessionCookie,
   buildSessionCookie,
   clearPartnerSessionCookie,
   maxAgeUntil,
+  readCookie,
 } from "~/server/auth/cookies";
 import {
   PARTNER_TYPE_LABEL,
   PARTNER_USER_TYPES,
   describeTarget,
+  endOwnerImpersonation,
   endPartnerImpersonation,
   endStaffImpersonation,
   staffRoleLabel,
   writeImpersonationAudit,
+  writeOwnerImpersonationAudit,
 } from "~/server/auth/impersonation";
 import { partnerRedirectFor } from "~/server/api/routers/auth";
 import { AdminRole, UserStatus, UserType, statusLabelFromCode } from "~/server/db/enums";
@@ -41,18 +52,45 @@ const impersonatorProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
 // pending-verification screen). Rejected / inactive accounts are locked out.
 const SIGN_IN_STATUSES: number[] = [UserStatus.APPROVED, UserStatus.UNDER_REVIEW];
 
+// Counsellors an agency owner may view as: their own agency's, active or
+// deactivated. Removed (soft-deleted), pending and rejected ones are not.
+const OWNER_VIEWABLE_STATUSES: number[] = [UserStatus.APPROVED, UserStatus.INACTIVE];
+
 export const impersonationRouter = createTRPCRouter({
   // Drives the amber banner. Public so the banner query never errors; returns
   // null unless the caller's session on that side is an impersonation.
   current: publicProcedure
     .input(z.object({ side: z.enum(["admin", "partner"]) }))
     .query(async ({ ctx, input }) => {
+      const partner = ctx.cpPartner;
+      // An agency owner viewing as one of their counsellors.
+      if (input.side === "partner" && partner?.ownerImpersonatorId) {
+        const t = await ctx.db.user.findUnique({
+          where: { id: partner.id },
+          select: { first_name: true, last_name: true, status: true },
+        });
+        if (!t) return null;
+        return {
+          kind: "partner" as const,
+          by: "owner" as const,
+          name: `${t.first_name} ${t.last_name}`.trim(),
+          roleLabel: PARTNER_TYPE_LABEL[UserType.AGENCY_COUNSELLOR] ?? "Agency Counsellor",
+          // A deactivated counsellor can be looked at, not acted for.
+          readOnly: t.status === UserStatus.INACTIVE,
+        };
+      }
       const realId =
-        input.side === "admin" ? ctx.cpUser?.realId : ctx.cpPartner?.impersonatorId;
-      const targetId = input.side === "admin" ? ctx.cpUser?.id : ctx.cpPartner?.id;
+        input.side === "admin" ? ctx.cpUser?.realId : partner?.impersonatorId;
+      const targetId = input.side === "admin" ? ctx.cpUser?.id : partner?.id;
       if (!realId || !targetId) return null;
       const target = await describeTarget(input.side === "admin" ? "staff" : "partner", targetId);
-      return target ? { kind: input.side === "admin" ? "staff" : "partner", ...target } : null;
+      if (!target) return null;
+      return {
+        kind: input.side === "admin" ? ("staff" as const) : ("partner" as const),
+        by: "admin" as const,
+        readOnly: false,
+        ...target,
+      };
     }),
 
   // Everyone the Super Admin can impersonate, for the header dropdown.
@@ -102,12 +140,16 @@ export const impersonationRouter = createTRPCRouter({
       const real = ctx.cpUser;
 
       // A partner impersonation left open from this admin session is closed
-      // first so its end is recorded rather than silently orphaned.
+      // first so its end is recorded rather than silently orphaned. So is an
+      // agency owner's view-as in this browser: the new partner session
+      // replaces it anyway.
       if (ctx.cpPartner?.impersonatorId) {
         await endPartnerImpersonation({
           ...ctx,
           cpPartner: { ...ctx.cpPartner, impersonatorId: ctx.cpPartner.impersonatorId },
         });
+      } else if (ctx.cpPartner?.ownerImpersonatorId) {
+        await endOwnerImpersonation(ctx, { restore: false });
       }
 
       if (input.kind === "staff") {
@@ -147,6 +189,57 @@ export const impersonationRouter = createTRPCRouter({
       };
     }),
 
+  // Agency owner: "View as" one of their own counsellors, from the
+  // Counsellors page. Never contacts the counsellor (no OTP, no email).
+  // Not available to a Super Admin who is impersonating the owner: they
+  // impersonate the counsellor directly instead, so there is only ever one
+  // level of "viewing as" to exit from.
+  startAsCounsellor: agencyOwnerProcedure
+    .input(z.object({ counsellorId: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      if (ctx.cpPartner.impersonatorId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "You are impersonating this agency owner. Exit, then impersonate the counsellor directly from the admin portal.",
+        });
+      }
+      const ownerToken = readCookie(ctx.headers, PARTNER_SESSION_COOKIE_NAME);
+      const own = ownerToken ? await verifyPartnerSessionJwt(ownerToken) : null;
+      if (
+        !ownerToken ||
+        own?.id !== ctx.owner.id ||
+        own.impersonatorId ||
+        own.ownerImpersonatorId ||
+        !own.exp
+      ) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Please sign in again." });
+      }
+      const target = await ctx.db.user.findFirst({
+        where: {
+          id: input.counsellorId,
+          org_id: ctx.owner.orgId,
+          type: UserType.AGENCY_COUNSELLOR,
+          deleted_at: null,
+          status: { in: OWNER_VIEWABLE_STATUSES },
+        },
+        select: { id: true },
+      });
+      if (!target) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "That counsellor isn't in your agency." });
+      }
+      // The owner's session is parked unchanged; the counsellor session
+      // expires with it, so viewing as never extends the owner's login.
+      const token = await signPartnerSessionJwt(
+        { id: target.id, ownerImpersonatorId: ctx.owner.id },
+        own.exp,
+      );
+      ctx.resHeaders.append("Set-Cookie", buildPartnerOwnerSessionCookie(ownerToken, maxAgeUntil(own.exp)));
+      ctx.resHeaders.append("Set-Cookie", buildPartnerSessionCookie(token, maxAgeUntil(own.exp)));
+      await writeOwnerImpersonationAudit("started", ctx.owner.id, target.id);
+      return { redirectUrl: "/partner/dashboard" };
+    }),
+
   // "Exit Impersonation". Public so it still works when the impersonated
   // account was deactivated mid-session (its procedures would 401).
   stop: publicProcedure
@@ -161,6 +254,16 @@ export const impersonationRouter = createTRPCRouter({
       if (cpPartner?.impersonatorId) {
         await endPartnerImpersonation({ ...ctx, cpPartner: { ...cpPartner, impersonatorId: cpPartner.impersonatorId } });
         return { redirectUrl: "/admin/dashboard" };
+      }
+      // An owner viewing as a counsellor goes back to their own session (also
+      // when the counsellor session no longer resolves, e.g. they were removed
+      // mid-view, as long as the parked owner session is still good).
+      if (
+        cpPartner?.ownerImpersonatorId ||
+        (!cpPartner && readCookie(ctx.headers, PARTNER_OWNER_SESSION_COOKIE_NAME))
+      ) {
+        const restored = await endOwnerImpersonation(ctx);
+        return { redirectUrl: restored ? "/partner/counsellors" : "/login" };
       }
       // No live impersonation (e.g. the admin session already expired): just
       // drop whatever partner cookie is left.

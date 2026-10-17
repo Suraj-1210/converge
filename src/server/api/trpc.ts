@@ -15,12 +15,14 @@ import { db } from "~/server/db";
 import {
   type AdminSessionClaims,
   type PartnerSessionClaims,
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { runWithImpersonation } from "~/server/auth/impersonation-context";
+import { readCookie } from "~/server/auth/cookies";
 import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
 
 // `id`/`role` are the EFFECTIVE user: while a Super Admin impersonates a staff
@@ -28,18 +30,10 @@ import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
 // `realId ?? id` wherever the real person matters (attribution, exports).
 type CpUser = AdminSessionClaims;
 
-// `impersonatorId` is set while a Super Admin is impersonating this partner.
+// `impersonatorId` is set while a Super Admin is impersonating this partner;
+// `ownerImpersonatorId` while their agency owner is viewing as this counsellor.
 type CpPartner = PartnerSessionClaims;
 
-function readCookie(headers: Headers, name: string): string | null {
-  const raw = headers.get("cookie");
-  if (!raw) return null;
-  for (const part of raw.split(";")) {
-    const [k, ...rest] = part.trim().split("=");
-    if (k === name) return rest.join("=");
-  }
-  return null;
-}
 
 export const createTRPCContext = async (opts: {
   headers: Headers;
@@ -54,6 +48,7 @@ export const createTRPCContext = async (opts: {
   const cpPartner: CpPartner | null = await resolvePartnerSession(
     readCookie(opts.headers, PARTNER_SESSION_COOKIE_NAME),
     adminToken,
+    readCookie(opts.headers, PARTNER_OWNER_SESSION_COOKIE_NAME),
   );
 
   return {
@@ -231,50 +226,148 @@ export const bdmPerformanceProcedure = protectedAdminProcedure.use(({ ctx, next 
   return next();
 });
 
+// A partner request made under impersonation runs with the real person
+// recorded (see impersonation-context), after checking they may still do it:
+//   Super Admin  → must still be an active Super Admin.
+//   Agency owner → must still be the approved owner of this counsellor's
+//                  agency. Full access (decided with Suraj, 17 Oct 2026),
+//                  except that a deactivated counsellor can be looked at but
+//                  not acted for. Every mutation also leaves an
+//                  impersonation.action audit row, so actions with no audit
+//                  row of their own (chat, notes…) still trace to the owner.
+type PartnerRow = {
+  first_name: string;
+  last_name: string;
+  status: number;
+  type: number;
+  org_id: number | null;
+};
+async function runAsPartner<T extends { ok: boolean }>(
+  database: typeof db,
+  cpPartner: CpPartner,
+  row: PartnerRow,
+  op: { type: string; path: string; getRawInput: () => Promise<unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const as = { kind: "partner" as const, id: cpPartner.id, name: `${row.first_name} ${row.last_name}`.trim() };
+  if (cpPartner.impersonatorId) {
+    await assertActiveImpersonator(database, cpPartner.impersonatorId);
+    return runWithImpersonation({ realCpUserId: cpPartner.impersonatorId, as }, run);
+  }
+  const ownerId = cpPartner.ownerImpersonatorId;
+  if (!ownerId) return run();
+
+  await assertOwnerOfCounsellor(database, ownerId, row);
+  // Bookkeeping the portal fires on its own, which does nothing while an
+  // owner is viewing (no login recorded, no read receipts used up).
+  if (OWNER_VIEW_NO_OPS.has(op.path)) return runWithImpersonation({ realUserId: ownerId, as }, run);
+  if (op.type === "mutation" && row.status === UserStatus.INACTIVE) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This counsellor is deactivated: you can view their portal but not act for them.",
+    });
+  }
+  return runWithImpersonation({ realUserId: ownerId, as }, async () => {
+    const result = await run();
+    if (op.type === "mutation" && result.ok) {
+      const raw = await op.getRawInput().catch(() => undefined);
+      const studentId =
+        raw && typeof raw === "object" && "studentId" in raw && typeof raw.studentId === "number"
+          ? raw.studentId
+          : null;
+      await database.audit_log.create({
+        data: {
+          user_id: ownerId,
+          org_id: row.org_id,
+          action: "impersonation.action",
+          entity_type: "user",
+          entity_id: cpPartner.id,
+          metadata: { procedure: op.path, ...(studentId ? { studentId } : {}) },
+        },
+      });
+    }
+    return result;
+  });
+}
+
+const OWNER_VIEW_NO_OPS = new Set(["auth.recordDashboardVisit", "partnerChat.partnerMarkRead"]);
+
+// Viewing as a counsellor is only valid while the real owner is still the
+// approved owner of that counsellor's agency (checked per request).
+async function assertOwnerOfCounsellor(
+  database: typeof db,
+  ownerId: number,
+  target: PartnerRow,
+): Promise<void> {
+  const owner = await database.user.findUnique({
+    where: { id: ownerId },
+    select: { type: true, is_owner: true, org_id: true, status: true, deleted_at: true },
+  });
+  if (
+    owner?.type !== UserType.AGENCY_OWNER ||
+    owner.is_owner !== 1 ||
+    owner.status !== UserStatus.APPROVED ||
+    owner.deleted_at ||
+    owner.org_id === null ||
+    owner.org_id !== target.org_id ||
+    target.type !== UserType.AGENCY_COUNSELLOR
+  ) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "Viewing as this counsellor is no longer permitted. Exit and sign in again.",
+    });
+  }
+}
+
+const PARTNER_ROW_SELECT = {
+  first_name: true,
+  last_name: true,
+  status: true,
+  type: true,
+  org_id: true,
+  deleted_at: true,
+} as const;
+
 // Requires a valid partner (user table) session cookie.
 // Any signed-in partner, whatever their status: only for showing a partner
 // their own account/application state (under review, rejected, inactive).
 // Everything else uses protectedPartnerProcedure, which blocks rejected and
 // deactivated accounts.
-export const partnerSelfProcedure = publicProcedure.use(async ({ ctx, next }) => {
+export const partnerSelfProcedure = publicProcedure.use(async ({ ctx, next, type, path, getRawInput }) => {
   if (!ctx.cpPartner) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
   const cpPartner = ctx.cpPartner;
   const row = await ctx.db.user.findUnique({
     where: { id: cpPartner.id },
-    select: { first_name: true, last_name: true, deleted_at: true },
+    select: PARTNER_ROW_SELECT,
   });
   // A counsellor removed by their agency has no account left to look at.
   if (!row || row.deleted_at) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
-  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
-
-  await assertActiveImpersonator(ctx.db, cpPartner.impersonatorId);
-  return runWithImpersonation(
-    {
-      realCpUserId: cpPartner.impersonatorId,
-      as: { kind: "partner", id: cpPartner.id, name: `${row.first_name} ${row.last_name}`.trim() },
-    },
-    () => next({ ctx: { ...ctx, cpPartner } }),
+  return runAsPartner(ctx.db, cpPartner, row, { type, path, getRawInput }, () =>
+    next({ ctx: { ...ctx, cpPartner } }),
   );
 });
 
-export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next }) => {
+export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next, type, path, getRawInput }) => {
   if (!ctx.cpPartner) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
   // Block immediately if the partner was deactivated/rejected mid-session.
+  // An owner viewing as a deactivated counsellor still gets in (read-only,
+  // see runAsPartner); a removed one is gone for everyone.
   const row = await ctx.db.user.findUnique({
     where: { id: ctx.cpPartner.id },
-    select: { status: true, first_name: true, last_name: true, deleted_at: true },
+    select: PARTNER_ROW_SELECT,
   });
+  const ownerView = !!ctx.cpPartner.ownerImpersonatorId;
   if (
     !row ||
     row.deleted_at ||
     row.status === UserStatus.REJECTED ||
-    row.status === UserStatus.INACTIVE
+    (row.status === UserStatus.INACTIVE && !ownerView)
   ) {
     throw new TRPCError({
       code: "UNAUTHORIZED",
@@ -282,15 +375,8 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next 
     });
   }
   const cpPartner = ctx.cpPartner;
-  if (!cpPartner.impersonatorId) return next({ ctx: { ...ctx, cpPartner } });
-
-  await assertActiveImpersonator(ctx.db, cpPartner.impersonatorId);
-  return runWithImpersonation(
-    {
-      realCpUserId: cpPartner.impersonatorId,
-      as: { kind: "partner", id: cpPartner.id, name: `${row.first_name} ${row.last_name}`.trim() },
-    },
-    () => next({ ctx: { ...ctx, cpPartner } }),
+  return runAsPartner(ctx.db, cpPartner, row, { type, path, getRawInput }, () =>
+    next({ ctx: { ...ctx, cpPartner } }),
   );
 });
 

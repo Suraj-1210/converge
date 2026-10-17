@@ -684,3 +684,40 @@ export function adminNewSignupEmail(
     ],
   );
 }
+
+// To ADMIN_EMAIL when an agency owner changes their GST number on My Account.
+// The GST certificate on file was for the old number, so it goes back to
+// Pending for re-verification.
+export function adminGstChangedEmail(
+  a: {
+    company: string;
+    ownerName: string;
+    from: string | null;
+    to: string;
+    warnings: string[];
+    certificateReverify: boolean;
+  },
+  appUrl: string,
+): EmailMessage {
+  return build(
+    `GST number changed: ${a.company}`,
+    "Partner GST number changed",
+    "Hello,",
+    [
+      { p: `${a.ownerName} changed ${a.company}'s GST number on the partner portal.` },
+      {
+        list: [
+          `Old: ${a.from ?? "(none)"}`,
+          `New: ${a.to}`,
+          ...a.warnings.map((w) => `Check: ${w}`),
+        ],
+      },
+      {
+        p: a.certificateReverify
+          ? "Their GST certificate is back to Pending. Please re-verify it against the new number, or ask the partner for an updated certificate."
+          : "There is no GST certificate on file for this agency. Please ask the partner for one.",
+      },
+      { button: { label: "Open Partner Management", url: `${appUrl.replace(/\/+$/, "")}/admin/partners` } },
+    ],
+  );
+}

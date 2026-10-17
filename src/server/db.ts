@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Prisma, PrismaClient } from "../../generated/prisma";
 import { env } from "~/env";
-import { attributeAuditMetadata, currentImpersonation } from "~/server/auth/impersonation-context";
+import {
+  attributeAuditMetadata,
+  attributeAuditUserId,
+  currentImpersonation,
+} from "~/server/auth/impersonation-context";
 
 // DigitalOcean Managed MySQL requires TLS. Prisma's MySQL connector uses the
 // `sslaccept` / `sslcert` query params — NOT the `?ssl-mode=REQUIRED` that DO
@@ -54,8 +58,9 @@ function resolveDatabaseUrl(): string {
   return url.toString();
 }
 
-// While a Super Admin is impersonating someone, every audit_log row is
-// attributed to the real admin (see ~/server/auth/impersonation-context).
+// While someone is impersonating (a Super Admin, or an agency owner viewing as
+// their counsellor), every audit_log row is attributed to the real person
+// (see ~/server/auth/impersonation-context).
 function withAuditAttribution(client: PrismaClient) {
   return client.$extends({
     query: {
@@ -64,6 +69,9 @@ function withAuditAttribution(client: PrismaClient) {
           const imp = currentImpersonation();
           if (imp) {
             args.data.metadata = attributeAuditMetadata(args.data.metadata, imp) as Prisma.InputJsonObject;
+            if ("user_id" in args.data) {
+              args.data.user_id = attributeAuditUserId(args.data.user_id, imp) as number | null | undefined;
+            }
           }
           return query(args);
         },
@@ -74,6 +82,7 @@ function withAuditAttribution(client: PrismaClient) {
             args.data = rows.map((r) => ({
               ...r,
               metadata: attributeAuditMetadata(r.metadata, imp) as Prisma.InputJsonObject,
+              user_id: attributeAuditUserId(r.user_id, imp) as number | null | undefined,
             }));
           }
           return query(args);

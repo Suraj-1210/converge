@@ -43,8 +43,8 @@ const ACTION_STRINGS = [
   "counselling_team.auto_assign_off", "counselling_team.auto_assign_on", "counselling_team.updated",
   "event.created", "event.deleted", "event.updated",
   "export.downloaded",
-  "impersonation.ended", "impersonation.started",
-  "partner.documents_approved", "partner.status_updated",
+  "impersonation.action", "impersonation.ended", "impersonation.started",
+  "partner.documents_approved", "partner.gst_number_changed", "partner.status_updated",
   "student.academics_updated", "student.application_created", "student.cp_counsellor_assigned", "student.cp_counsellor_auto_assigned", "student.document_removed", "student.document_uploaded", "student.profile_updated", "student.shortlist_removed", "student.shortlisted", "student.status_updated", "student.tests_updated", "student.work_experience_updated",
 ];
 
@@ -73,6 +73,12 @@ function actorIdOf(metadata: unknown): number | null {
   const v = asRecord(metadata).byCpUserId;
   return typeof v === "number" ? v : null;
 }
+// The partner who acted, where no staff member did: metadata.byUserId (an
+// agency owner viewing as their counsellor) before the row's user_id.
+function partnerActorIdOf(r: { metadata: unknown; user_id: number | null }): number | null {
+  const v = asRecord(r.metadata).byUserId;
+  return typeof v === "number" ? v : r.user_id;
+}
 function s(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
@@ -87,11 +93,17 @@ function humanize(action: string, entityId: number | null, metadata: unknown): s
   // Anything done while impersonating names who the admin was acting as.
   const imp = asRecord(meta.impersonation);
   const asPart = typeof imp.name === "string" ? ` [as ${imp.name}]` : "";
+  if (action === "impersonation.action") {
+    return `Acted as ${s(imp.name) || "counsellor"}: ${s(meta.procedure)}${meta.studentId ? ` (student #${s(meta.studentId)})` : ""}`;
+  }
   if (action.startsWith("impersonation.")) {
     const who = `${s(meta.targetName) || `#${s(meta.targetId)}`}${meta.targetRole ? ` (${s(meta.targetRole)})` : ""}`;
     return action === "impersonation.started" ? `Started impersonating ${who}` : `Stopped impersonating ${who}`;
   }
   if (action.startsWith("bank.")) return humanizeBank(action, meta) + asPart;
+  if (action === "partner.gst_number_changed") {
+    return `GST number changed: ${s(meta.from) || "(none)"} → ${s(meta.to)}${meta.certificateId ? " — certificate back to Pending" : ""}${asPart}`;
+  }
   if (action === "export.downloaded") {
     const rows = typeof meta.rows === "number" ? ` — ${meta.rows} rows` : "";
     return `Exported ${s(meta.file)}${rows}${asPart}`;
@@ -169,7 +181,12 @@ async function resolveActors(rows: { metadata: unknown; user_id: number | null }
   // Partner-portal actions (e.g. a partner saving bank details) have no staff
   // actor; they name the partner user instead.
   const partnerIds = Array.from(
-    new Set(rows.filter((r) => actorIdOf(r.metadata) == null && r.user_id != null).map((r) => r.user_id!)),
+    new Set(
+      rows
+        .filter((r) => actorIdOf(r.metadata) == null)
+        .map(partnerActorIdOf)
+        .filter((x): x is number => x != null),
+    ),
   );
   const [actors, partners] = await Promise.all([
     ids.length
@@ -186,7 +203,8 @@ async function resolveActors(rows: { metadata: unknown; user_id: number | null }
 }
 function mapRow(r: { id: number; created_at: Date; action: string; entity_type: string | null; entity_id: number | null; user_id: number | null; metadata: unknown }, actorMap: Actors) {
   const actorId = actorIdOf(r.metadata);
-  const partnerName = actorId == null && r.user_id != null ? actorMap.partners.get(r.user_id) : undefined;
+  const partnerId = actorId == null ? partnerActorIdOf(r) : null;
+  const partnerName = partnerId != null ? actorMap.partners.get(partnerId) : undefined;
   return {
     id: r.id,
     timestamp: r.created_at.toISOString(),

@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
@@ -117,6 +118,7 @@ export async function POST(req: Request) {
         : await resolvePartnerSession(
             jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
             jar.get(SESSION_COOKIE_NAME)?.value,
+            jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
           );
     if (!ok) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

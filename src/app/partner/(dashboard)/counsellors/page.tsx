@@ -8,6 +8,7 @@ import { EmptyState, SkeletonTable } from "~/components/dashboard/widgets";
 import { Modal } from "~/components/ui/modal";
 import { PhoneInput } from "~/components/ui/phone-input";
 import { Toast } from "~/components/ui/toast";
+import { useImpersonation } from "~/components/dashboard/impersonation";
 import {
   ContactVerification,
   emailError,
@@ -122,6 +123,18 @@ export default function PartnerCounsellorsPage() {
   const [editing, setEditing] = useState<Counsellor | null>(null);
   const [offboard, setOffboard] = useState<{ c: Counsellor; mode: "deactivate" | "remove" } | null>(null);
 
+  // "View as": see the portal exactly as one of your counsellors does. Not
+  // offered while a Super Admin is impersonating you (they view as the
+  // counsellor directly instead).
+  const impersonated = useImpersonation("partner");
+  const viewAs = api.impersonation.startAsCounsellor.useMutation({
+    // Hard navigation so the new session cookie and a clean cache take effect.
+    onSuccess: ({ redirectUrl }) => {
+      window.location.href = redirectUrl;
+    },
+    onError: (e) => setToast(e.message),
+  });
+
   const reactivate = api.counsellors.reactivateCounsellor.useMutation({
     onSuccess: (_r, v) => {
       const c = rows.find((r) => r.id === v.counsellorId);
@@ -215,6 +228,18 @@ export default function PartnerCounsellorsPage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex justify-end gap-3 text-[12px] font-semibold whitespace-nowrap">
+                          {!impersonated &&
+                            (c.status === UserStatus.APPROVED || inactive) && (
+                              <button
+                                type="button"
+                                className="text-[#6941C6] hover:underline disabled:opacity-50"
+                                title={`See the portal as ${c.name} sees it`}
+                                disabled={viewAs.isPending}
+                                onClick={() => viewAs.mutate({ counsellorId: c.id })}
+                              >
+                                View as
+                              </button>
+                            )}
                           <button
                             type="button"
                             className="text-[#1570EF] hover:underline"

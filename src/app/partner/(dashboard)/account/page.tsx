@@ -19,6 +19,7 @@ import { MouViewer } from "~/components/partner/mou-viewer";
 import { CurrentTierLine, TierLadder } from "~/components/partner/loyalty-tiers";
 import { RELATIONSHIP_MANAGER_LABEL } from "~/lib/constants/partner-relationship";
 import { PARTNER_FIELD_LABELS as FIELD } from "~/lib/constants/partner-labels";
+import { gstinError, gstinWarnings, normalizeGstin } from "~/lib/utils/gstin";
 
 type TabKey = "profile" | "business" | "bank" | "documents" | "loyalty" | "notifications";
 
@@ -398,10 +399,15 @@ export default function PartnerAccountPage() {
           <p className="mb-5 text-xs text-[#98A2B3]">
             Business information is managed by Collegepond. To request changes,
             contact your {RELATIONSHIP_MANAGER_LABEL}.
+            {data.business.canEditGst && " You can update your GST number yourself."}
           </p>
           <dl className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
             <ReadOnlyRow label={FIELD.companyName} value={data.business.name} />
-            <ReadOnlyRow label="GST Number" value={data.business.gstNumber} />
+            {data.business.canEditGst ? (
+              <GstNumberRow business={data.business} onToast={showToast} />
+            ) : (
+              <ReadOnlyRow label="GST Number" value={data.business.gstNumber} />
+            )}
             <ReadOnlyRow label={FIELD.address} value={data.business.address} />
             <ReadOnlyRow label={FIELD.city} value={data.business.city} />
             <ReadOnlyRow label={FIELD.state} value={data.business.state} />
@@ -775,6 +781,115 @@ function Field({
       </label>
       {children}
       {error && <span className="text-xs text-[#F04438]">{error}</span>}
+    </div>
+  );
+}
+
+// The agency owner's editable GST number. Manual entry only: format and
+// checksum must pass; a PAN or state that differs from what's on file is a
+// warning, not a block. Saving sends the GST certificate back to Collegepond
+// for re-verification.
+function GstNumberRow({
+  business,
+  onToast,
+}: {
+  business: { gstNumber: string | null; companyPan: string | null; state: string | null; country: string | null };
+  onToast: (m: string) => void;
+}) {
+  const utils = api.useUtils();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [touched, setTouched] = useState(false);
+  const save = api.account.updateGstNumber.useMutation({
+    onSuccess: async (res) => {
+      setEditing(false);
+      await utils.account.get.invalidate();
+      onToast(
+        !res.changed
+          ? "GST number unchanged"
+          : res.certificateReverify
+            ? "GST number updated. Your GST certificate is back with Collegepond for re-verification."
+            : "GST number updated. Collegepond has been notified.",
+      );
+    },
+  });
+
+  const gstin = normalizeGstin(value);
+  const error = gstin ? gstinError(gstin) : "GST number is required";
+  const warnings = !error
+    ? gstinWarnings(gstin, { pan: business.companyPan, state: business.state, country: business.country })
+    : [];
+  const unchanged = !!business.gstNumber && gstin === normalizeGstin(business.gstNumber);
+
+  if (!editing) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <dt className="flex items-center justify-between text-[13px] font-semibold text-[#344054]">
+          GST Number
+          <button
+            type="button"
+            onClick={() => {
+              setValue(business.gstNumber ?? "");
+              setTouched(false);
+              save.reset();
+              setEditing(true);
+            }}
+            className="cursor-pointer border-none bg-transparent p-0 text-[13px] font-semibold text-[#1570EF] hover:underline"
+          >
+            {business.gstNumber ? "Edit" : "Add"}
+          </button>
+        </dt>
+        <dd className="rounded-lg border border-[#D0D5DD] bg-[#F9FAFB] px-3.5 py-2.5 text-sm text-[#667085]">
+          {business.gstNumber ?? "—"}
+        </dd>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor="gst-number" className="text-[13px] font-semibold text-[#344054]">
+        GST Number
+      </label>
+      <input
+        id="gst-number"
+        autoFocus
+        value={value}
+        maxLength={20}
+        onChange={(e) => setValue(e.target.value.toUpperCase())}
+        onBlur={() => setTouched(true)}
+        placeholder="e.g. 27ABCPE1234F1Z5"
+        className="rounded-lg border border-[#D0D5DD] px-3.5 py-2.5 font-mono text-sm tracking-wide text-[#101828] outline-none focus:border-[#84CAFF] focus:ring-4 focus:ring-[#D1E9FF]"
+      />
+      {error && (touched || gstin.length >= 15) && <span className="text-xs text-[#F04438]">{error}</span>}
+      {warnings.map((w) => (
+        <span key={w} className="rounded-md bg-[#FFFAEB] px-2.5 py-1.5 text-xs text-[#B54708]">
+          {w}
+        </span>
+      ))}
+      {!error && !unchanged && (
+        <span className="text-xs text-[#667085]">
+          Saving sends your GST certificate back to Collegepond for re-verification.
+        </span>
+      )}
+      {save.error && <span className="text-xs text-[#F04438]">{save.error.message}</span>}
+      <div className="mt-1 flex gap-2">
+        <button
+          type="button"
+          disabled={!!error || unchanged || save.isPending}
+          onClick={() => save.mutate({ gstNumber: gstin })}
+          className="cursor-pointer rounded-lg border-none bg-[#1570EF] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#175CD3] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {save.isPending ? "Saving…" : warnings.length > 0 ? "Save anyway" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-4 py-2 text-[13px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

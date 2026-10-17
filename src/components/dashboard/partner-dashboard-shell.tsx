@@ -13,7 +13,8 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const me = api.auth.me.useQuery(undefined, { retry: false });
   const utils = api.useUtils();
   const logout = api.auth.logout.useMutation();
-  // Non-null while a Super Admin is impersonating this partner.
+  // Non-null while a Super Admin is impersonating this partner, or the agency
+  // owner is viewing as this counsellor.
   const impersonating = useImpersonation("partner");
 
   // Persistent partner notification feed (counsellor decisions, etc.).
@@ -64,9 +65,10 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       // middleware re-checks auth on a fresh request (a soft replace would stay
       // in the still-authenticated SPA); the reload also discards the cache.
     }
-    // Logging out of an impersonated partner session ends the impersonation;
-    // the admin's own session is intact, so return to the admin portal.
-    window.location.href = impersonating ? "/admin/dashboard" : "/login";
+    // Logging out of a Super Admin's partner impersonation ends it; the
+    // admin's own session is intact, so return to the admin portal. An owner
+    // viewing as a counsellor is signed out altogether.
+    window.location.href = impersonating?.by === "admin" ? "/admin/dashboard" : "/login";
   }
 
   return (

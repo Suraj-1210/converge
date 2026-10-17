@@ -7,6 +7,10 @@ const SESSION_TTL = "8h";
 // same browser without colliding (e.g. devs logged into both at once).
 export const SESSION_COOKIE_NAME = "cp_session";
 export const PARTNER_SESSION_COOKIE_NAME = "cp_partner_session";
+// While an agency owner views the portal as one of their counsellors, their
+// own partner session is parked here and cp_partner_session holds the
+// counsellor's (see resolvePartnerSession).
+export const PARTNER_OWNER_SESSION_COOKIE_NAME = "cp_partner_owner_session";
 
 function secret(): Uint8Array {
   return new TextEncoder().encode(env.AUTH_SECRET);
@@ -73,15 +77,23 @@ export interface PartnerSessionClaims {
   id: number;
   /** Set while a Super Admin is impersonating this partner: the real admin. */
   impersonatorId?: number;
+  /**
+   * Set while an agency owner is viewing as this counsellor: the owner's
+   * user id. Never set together with impersonatorId.
+   */
+  ownerImpersonatorId?: number;
+  /** Expiry, epoch seconds. */
+  exp?: number;
 }
 
 export async function signPartnerSessionJwt(
-  claims: { id: number; impersonatorId?: number },
+  claims: { id: number; impersonatorId?: number; ownerImpersonatorId?: number },
   expiresAt?: number,
 ): Promise<string> {
   return new SignJWT({
     kind: "partner",
     ...(claims.impersonatorId ? { imp: claims.impersonatorId } : {}),
+    ...(claims.ownerImpersonatorId ? { own: claims.ownerImpersonatorId } : {}),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(String(claims.id))
@@ -103,23 +115,52 @@ export async function verifyPartnerSessionJwt(
     if (imp !== undefined && (typeof imp !== "number" || !Number.isInteger(imp) || imp <= 0)) {
       return null;
     }
-    return { id, ...(imp ? { impersonatorId: imp } : {}) };
+    const own = payload.own;
+    if (own !== undefined && (typeof own !== "number" || !Number.isInteger(own) || own <= 0)) {
+      return null;
+    }
+    // One impersonation at a time: a token claiming both is never issued.
+    if (imp && own) return null;
+    return {
+      id,
+      ...(imp ? { impersonatorId: imp } : {}),
+      ...(own ? { ownerImpersonatorId: own } : {}),
+      ...(typeof payload.exp === "number" ? { exp: payload.exp } : {}),
+    };
   } catch {
     return null;
   }
 }
 
 // Resolves the partner session for a request. An impersonation session is only
-// honoured alongside the impersonating admin's own (non-impersonating) admin
-// session, so signing out of the admin portal also ends any partner
-// impersonation. Use this rather than verifyPartnerSessionJwt when
-// authorizing a request.
+// honoured alongside the impersonator's own session:
+//   - Super Admin → partner: the admin's own (non-impersonating) admin session,
+//     so signing out of the admin portal also ends the impersonation;
+//   - agency owner → counsellor: the owner's own partner session, parked in
+//     cp_partner_owner_session, which must itself be a plain session (not one
+//     a Super Admin is impersonating).
+// Use this rather than verifyPartnerSessionJwt when authorizing a request.
+// Whether the owner still owns the counsellor's agency is checked per request
+// in the tRPC partner procedures (this runs in edge middleware too: no DB).
 export async function resolvePartnerSession(
   partnerToken: string | null | undefined,
   adminToken: string | null | undefined,
+  ownerToken?: string | null,
 ): Promise<PartnerSessionClaims | null> {
   if (!partnerToken) return null;
   const partner = await verifyPartnerSessionJwt(partnerToken);
+  if (partner?.ownerImpersonatorId) {
+    const owner = ownerToken ? await verifyPartnerSessionJwt(ownerToken) : null;
+    if (
+      !owner ||
+      owner.impersonatorId ||
+      owner.ownerImpersonatorId ||
+      owner.id !== partner.ownerImpersonatorId
+    ) {
+      return null;
+    }
+    return partner;
+  }
   if (!partner?.impersonatorId) return partner;
   const admin = adminToken ? await verifySessionJwt(adminToken) : null;
   if (!admin || admin.realId || admin.id !== partner.impersonatorId) return null;

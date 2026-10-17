@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
@@ -47,7 +48,11 @@ export async function POST(req: Request) {
       await requireStaffChatStudent(claims, studentId);
       actor = { side: "staff", id: claims.id, role: claims.role, impersonatorId: claims.realId ?? null };
     } else {
-      const partner = await resolvePartnerSession(jar.get(PARTNER_SESSION_COOKIE_NAME)?.value, adminToken);
+      const partner = await resolvePartnerSession(
+        jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
+        adminToken,
+        jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
+      );
       if (!partner) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       const me = await db.user.findUnique({ where: { id: partner.id }, select: { status: true, deleted_at: true } });
       if (!me || me.deleted_at || me.status === UserStatus.REJECTED || me.status === UserStatus.INACTIVE) {
