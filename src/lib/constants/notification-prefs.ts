@@ -31,6 +31,14 @@ export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRo
       { key: "app.status", code: 1, label: "Application Status Change", email: true },
       { key: "app.doc", code: 2, label: "Document Uploaded by Partner", email: false },
       { key: "app.offer", code: 3, label: "Offer Letter Received", email: true },
+      {
+        key: "app.shortlist",
+        code: 13,
+        label: "University Shortlist Proposals & Decisions",
+        email: true,
+        inApp: true,
+        hint: "When Collegepond proposes a university for your student, or approves or rejects one you proposed.",
+      },
     ],
   },
   {
@@ -86,7 +94,7 @@ export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRo
 export const NOTIFICATION_PREF_ROWS = NOTIFICATION_PREF_GROUPS.flatMap((g) => g.rows);
 
 export type NotificationPrefKey =
-  | "app.new" | "app.status" | "app.doc" | "app.offer"
+  | "app.new" | "app.status" | "app.doc" | "app.offer" | "app.shortlist"
   | "fin.commission" | "fin.invoice" | "fin.payment"
   | "evt.reminder"
   | "team.assign"

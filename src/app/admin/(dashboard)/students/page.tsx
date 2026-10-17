@@ -22,6 +22,7 @@ import {
   countryName,
   derivedProgram,
   derivedUniversity,
+  derivedVendors,
   displayId,
   downloadCsv,
   levelShort,
@@ -109,7 +110,7 @@ function sortValue(s: AdminStudent, key: SortKey): string | number {
     case "status":
       return statusLabel(s.status).toLowerCase();
     case "vendor":
-      return "not set"; // vendor table doesn't exist yet
+      return (derivedVendors(s)[0] ?? "~").toLowerCase(); // unset sorts last
     case "university":
       return derivedUniversity(s).toLowerCase();
     case "program":
@@ -436,7 +437,7 @@ export default function StudentsPage() {
         s.phone ?? "",
         StudentOverallStatusLabel[s.overallStatus],
         statusLabel(s.status),
-        "Not set",
+        derivedVendors(s).join(", ") || "Not set",
         derivedUniversity(s),
         derivedProgram(s),
         levelShort(s.courseLevel),
@@ -823,6 +824,7 @@ function StudentRow({
   assigning: boolean;
 }) {
   const program = derivedProgram(s);
+  const vendors = derivedVendors(s);
   const td = "px-3.5 py-3 text-sm text-[#344054]";
   return (
     <tr
@@ -882,8 +884,18 @@ function StudentRow({
       <td className="px-3.5 py-3">
         <StudentStatusBadge status={s.status} />
       </td>
-      <td className={td}>
-        <span className="text-xs text-[#98A2B3] italic">Not set</span>
+      <td className={`${td} whitespace-nowrap`}>
+        {vendors.length > 0 ? (
+          <span
+            className="rounded-md bg-[#F4F3FF] px-2 py-0.5 text-xs font-medium text-[#5925DC]"
+            title={`Counsellor's vendor choice: ${vendors.join(", ")}`}
+          >
+            {vendors[0]}
+            {vendors.length > 1 ? ` +${vendors.length - 1}` : ""}
+          </span>
+        ) : (
+          <span className="text-xs text-[#98A2B3] italic">Not set</span>
+        )}
       </td>
       <td className={`${td} whitespace-nowrap`}>{derivedUniversity(s)}</td>
       <td className={td}>

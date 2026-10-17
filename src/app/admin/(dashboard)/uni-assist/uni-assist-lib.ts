@@ -300,6 +300,28 @@ export function formatTuition(
   return `${ccy} ${fee.toLocaleString("en-US")}/yr`.trim();
 }
 
+// Application fee as the Universities page shows it (course currency + amount),
+// noting a fee waiver when the course has one. Null when neither is recorded.
+export function appFeeAmount(
+  fee: number | null,
+  currency: string | null,
+  hasWaiver: boolean,
+): string | null {
+  if (fee === null) return hasWaiver ? "Waiver available" : null;
+  const amount = fee === 0 ? "None" : `${currency ?? ""} ${fee.toLocaleString("en-US")}`.trim();
+  return `${amount}${hasWaiver && fee > 0 ? " (waiver available)" : ""}`;
+}
+
+// The same, labelled for a card's meta line ("App fee: USD 75").
+export function formatAppFee(
+  fee: number | null,
+  currency: string | null,
+  hasWaiver: boolean,
+): string | null {
+  const amount = appFeeAmount(fee, currency, hasWaiver);
+  return amount === null ? null : `App fee: ${amount}`;
+}
+
 export function formatIntake(
   month: string | null,
   year: number | null,

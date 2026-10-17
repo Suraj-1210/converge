@@ -660,6 +660,106 @@ export function partnerChatTatAlertEmail(
   ]);
 }
 
+// 24. University shortlist proposal awaiting the other side's approval.
+// `toStaff`: a partner proposed it and Collegepond's counselling team
+// reviews; otherwise Collegepond proposed it and the partner reviews.
+export function shortlistProposedEmail(
+  r: { name: string },
+  a: {
+    toStaff: boolean;
+    studentName: string;
+    studentId: number;
+    proposedBy: string;
+    programs: { university: string; program: string }[];
+    note?: string | null;
+    reproposed?: boolean;
+  },
+  appUrl: string,
+): EmailMessage {
+  const n = a.programs.length;
+  const one = n === 1 ? a.programs[0]! : null;
+  const what = one ? `${one.university}` : `${n} universities`;
+  const verb = a.reproposed ? "re-proposed" : "proposed";
+  const link = a.toStaff
+    ? portal(appUrl, `/admin/students/${a.studentId}?tab=application`)
+    : portal(appUrl, `/partner/students/${a.studentId}?tab=applications`);
+  return build(
+    `Approval Needed: ${what} for ${a.studentName}`,
+    "University shortlist awaiting your approval",
+    hello(r.name),
+    [
+      {
+        p: `${a.proposedBy} ${verb} ${one ? "a university" : `${n} universities`} for ${a.studentName}${
+          a.toStaff ? ` (CP-${a.studentId})` : ""
+        }. Please approve or reject ${one ? "it" : "each one"}:`,
+      },
+      { list: a.programs.slice(0, 25).map((p) => `${p.university} – ${p.program}`) },
+      ...(a.note?.trim() ? [{ quote: a.note.trim(), label: "Note" } as Block] : []),
+      {
+        p: a.toStaff
+          ? "An application can't be started until the proposal is approved."
+          : "Collegepond starts the application once you approve. If you reject, please give a reason so your counsellor can suggest an alternative.",
+      },
+      {
+        button: {
+          label: a.toStaff ? "Review in the Admin Portal" : "Review in the Partner Portal",
+          url: link,
+        },
+      },
+    ],
+  );
+}
+
+// 25. The other side approved or rejected a university shortlist proposal.
+export function shortlistDecisionEmail(
+  r: { name: string },
+  a: {
+    toStaff: boolean;
+    studentName: string;
+    studentId: number;
+    university: string;
+    program: string;
+    approved: boolean;
+    decidedBy: string;
+    reason?: string | null;
+  },
+  appUrl: string,
+): EmailMessage {
+  const outcome = a.approved ? "Approved" : "Rejected";
+  const link = a.toStaff
+    ? portal(appUrl, `/admin/students/${a.studentId}?tab=application`)
+    : portal(appUrl, `/partner/students/${a.studentId}?tab=applications`);
+  return build(
+    `Shortlist ${outcome}: ${a.university} for ${a.studentName}`,
+    `University shortlist ${outcome.toLowerCase()}`,
+    hello(r.name),
+    [
+      {
+        p: `${a.decidedBy} ${outcome.toLowerCase()} this university for ${a.studentName}${
+          a.toStaff ? ` (CP-${a.studentId})` : ""
+        }:`,
+      },
+      { list: [`University: ${a.university}`, `Program: ${a.program}`] },
+      ...(!a.approved && a.reason?.trim() ? [{ quote: a.reason.trim(), label: "Reason" } as Block] : []),
+      {
+        p: a.approved
+          ? a.toStaff
+            ? "You can now start the application from the student's Application tab."
+            : "Collegepond can now start the application."
+          : a.toStaff
+            ? "The shortlist entry stays on the student's profile, marked rejected. You can re-propose it with a note or remove it."
+            : "The shortlist entry stays on the student's profile, marked rejected. You can re-propose it or remove it.",
+      },
+      {
+        button: {
+          label: a.toStaff ? "View in the Admin Portal" : "View in the Partner Portal",
+          url: link,
+        },
+      },
+    ],
+  );
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).

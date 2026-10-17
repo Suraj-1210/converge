@@ -12,6 +12,12 @@ import {
 } from "react";
 import { UniLogo } from "~/components/ui/uni-logo";
 import {
+  ShortlistApprovalNotes,
+  ShortlistStatusBadge,
+  ShortlistTextDialog,
+  shortlistView,
+} from "~/components/students/shortlist-approval";
+import {
   UniApplicationStatus,
   UniApplicationStatusLabel,
 } from "~/server/db/enums";
@@ -19,6 +25,7 @@ import { api } from "~/trpc/react";
 import { applicationSummary, splitByClosed } from "~/lib/application-summary";
 import {
   COUNTRY_NAME,
+  formatAppFee,
   formatDuration,
   formatIntake,
   formatTuition,
@@ -262,6 +269,34 @@ export function ApplicationTab({
     onError: (err) => onToast(err.message),
   });
 
+  // Approval of partner-proposed universities, and re-proposing ours that
+  // the partner rejected.
+  const [dialog, setDialog] = useState<{
+    mode: "reject" | "repropose";
+    courseId: number;
+    subject: string;
+  } | null>(null);
+  const decideMut = api.students.decideShortlist.useMutation({
+    onSuccess: (_res, vars) => {
+      invalidate();
+      setDialog(null);
+      onToast(
+        vars.approve
+          ? "Approved. You can now start the application."
+          : "Rejected. The partner has been told why.",
+      );
+    },
+    onError: (err) => onToast(err.message),
+  });
+  const reproposeMut = api.students.reproposeShortlist.useMutation({
+    onSuccess: () => {
+      invalidate();
+      setDialog(null);
+      onToast("Sent back to the partner for approval");
+    },
+    onError: (err) => onToast(err.message),
+  });
+
   const statusCounts = useMemo(() => {
     const counts = new Map<number, number>();
     for (const a of student.applicationCards) {
@@ -272,7 +307,11 @@ export function ApplicationTab({
     return [...counts.entries()].sort((a, b) => order(a[0]) - order(b[0]));
   }, [student.applicationCards]);
 
-  const shortlistBusy = applyMut.isPending || removeShortlistMut.isPending;
+  const shortlistBusy =
+    applyMut.isPending ||
+    removeShortlistMut.isPending ||
+    decideMut.isPending ||
+    reproposeMut.isPending;
   // Every application stays listed: in progress first, closed below.
   const { open: openApps, closed: closedApps } = splitByClosed(
     student.applicationCards,
@@ -337,67 +376,158 @@ export function ApplicationTab({
           </div>
         ) : (
           <div className="space-y-2.5">
-            {student.shortlists.map((s) => (
-              <div
-                key={s.id}
-                className="flex flex-wrap items-center gap-4 rounded-[10px] border border-[#E4E7EC] px-4 py-3.5"
-              >
-                <UniLogo
-                  name={s.university}
-                  logoUrl={s.universityLogoUrl}
-                  size={44}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-[#101828]">
-                    {s.university}
+            {student.shortlists.map((s) => {
+              const view = shortlistView(s, "admin");
+              return (
+                <div
+                  key={s.id}
+                  className={`flex flex-wrap items-center gap-4 rounded-[10px] border px-4 py-3.5 ${
+                    view.rejected
+                      ? "border-[#FECDCA] bg-[#FFFBFA]"
+                      : "border-[#E4E7EC]"
+                  }`}
+                >
+                  <div className={view.rejected ? "opacity-60" : undefined}>
+                    <UniLogo
+                      name={s.university}
+                      logoUrl={s.universityLogoUrl}
+                      size={44}
+                    />
                   </div>
-                  <div className="truncate text-[13px] font-medium text-[#1570EF]">
-                    {s.program}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-[#101828]">
+                        {s.university}
+                      </span>
+                      <ShortlistStatusBadge view={view} />
+                    </div>
+                    <div className="truncate text-[13px] font-medium text-[#1570EF]">
+                      {s.program}
+                    </div>
+                    <CardMeta card={s} location={cardLocation(s)} />
+                    <ShortlistApprovalNotes s={s} viewer="admin" />
                   </div>
-                  <CardMeta card={s} location={cardLocation(s)} />
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <button
-                    type="button"
-                    disabled={shortlistBusy}
-                    onClick={() =>
-                      applyMut.mutate({
-                        studentId: student.id,
-                        courseId: s.courseId,
-                      })
-                    }
-                    className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#12B76A] px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-[#0e9f5c] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                      className="h-3.5 w-3.5"
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {view.canDecide && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={shortlistBusy}
+                          onClick={() =>
+                            decideMut.mutate({
+                              studentId: student.id,
+                              courseId: s.courseId,
+                              approve: true,
+                            })
+                          }
+                          className="cursor-pointer rounded-lg border border-[#ABEFC6] bg-[#ECFDF3] px-3.5 py-2 text-[13px] font-semibold text-[#067647] hover:bg-[#D1FADF] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={shortlistBusy}
+                          onClick={() =>
+                            setDialog({
+                              mode: "reject",
+                              courseId: s.courseId,
+                              subject: `${s.university} – ${s.program}, proposed by ${s.addedByName}.`,
+                            })
+                          }
+                          className="cursor-pointer rounded-lg border border-[#FECDCA] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#B42318] hover:bg-[#FEF3F2] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                    {view.canRepropose && (
+                      <button
+                        type="button"
+                        disabled={shortlistBusy}
+                        onClick={() =>
+                          setDialog({
+                            mode: "repropose",
+                            courseId: s.courseId,
+                            subject: `Send ${s.university} – ${s.program} back to the partner for approval.`,
+                          })
+                        }
+                        className="cursor-pointer rounded-lg border border-[#B2DDFF] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#1570EF] hover:bg-[#F0F7FF] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Re-propose
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={shortlistBusy || !view.approved}
+                      title={
+                        view.approved
+                          ? undefined
+                          : "An application can start once this university is approved"
+                      }
+                      onClick={() =>
+                        applyMut.mutate({
+                          studentId: student.id,
+                          courseId: s.courseId,
+                        })
+                      }
+                      className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#12B76A] px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-[#0e9f5c] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                    Apply
-                  </button>
-                  <button
-                    type="button"
-                    disabled={shortlistBusy}
-                    onClick={() =>
-                      removeShortlistMut.mutate({
-                        studentIds: [student.id],
-                        courseId: s.courseId,
-                      })
-                    }
-                    className="cursor-pointer rounded-lg border border-[#E4E7EC] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#667085] hover:border-[#FDA29B] hover:bg-[#FEF3F2] hover:text-[#F04438] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Remove
-                  </button>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2.5}
+                        className="h-3.5 w-3.5"
+                      >
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      Apply
+                    </button>
+                    <button
+                      type="button"
+                      disabled={shortlistBusy}
+                      onClick={() =>
+                        removeShortlistMut.mutate({
+                          studentIds: [student.id],
+                          courseId: s.courseId,
+                        })
+                      }
+                      className="cursor-pointer rounded-lg border border-[#E4E7EC] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#667085] hover:border-[#FDA29B] hover:bg-[#FEF3F2] hover:text-[#F04438] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
+
+      <ShortlistTextDialog
+        open={dialog !== null}
+        mode={dialog?.mode ?? "reject"}
+        subject={dialog?.subject ?? ""}
+        busy={decideMut.isPending || reproposeMut.isPending}
+        onClose={() => setDialog(null)}
+        onSubmit={(text) => {
+          if (!dialog) return;
+          if (dialog.mode === "reject") {
+            decideMut.mutate({
+              studentId: student.id,
+              courseId: dialog.courseId,
+              approve: false,
+              reason: text,
+            });
+          } else {
+            reproposeMut.mutate({
+              studentId: student.id,
+              courseId: dialog.courseId,
+              note: text || undefined,
+            });
+          }
+        }}
+      />
 
       {/* All applications (closed ones included, listed after the rest) */}
       <div className="mb-3 flex items-center gap-3">
@@ -1532,6 +1662,7 @@ function CardMeta({
     : null;
   const intake = formatIntake(card.intakeMonth, card.intakeYear);
   const tuition = formatTuition(card.tuitionFee, card.currency);
+  const appFee = formatAppFee(card.appFee, card.currency, card.hasAppFeeWaiver);
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#667085]">
       {location && (
@@ -1556,6 +1687,12 @@ function CardMeta({
         <Meta>
           <MoneyIcon />
           {tuition}
+        </Meta>
+      )}
+      {appFee && (
+        <Meta>
+          <MoneyIcon />
+          {appFee}
         </Meta>
       )}
     </div>

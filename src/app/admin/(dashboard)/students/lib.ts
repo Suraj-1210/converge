@@ -215,6 +215,21 @@ export function derivedUniversity(s: Pick<AdminStudent, "applications">): string
   return primaryApplication(s)?.university ?? "Not Assigned";
 }
 
+// The counsellors' vendor picks (Direct, SiUK, KC Overseas…) across the
+// student's applications: the primary application's first (the one the
+// University column shows), then any other distinct ones. Empty when none.
+export function derivedVendors(s: Pick<AdminStudent, "applications">): string[] {
+  const primary = primaryApplication(s);
+  const ordered = primary
+    ? [primary, ...s.applications.filter((a) => a.id !== primary.id)]
+    : s.applications;
+  return [
+    ...new Set(
+      ordered.map((a) => a.counsellorVendor).filter((v): v is string => !!v),
+    ),
+  ];
+}
+
 export function derivedProgram(
   s: Pick<AdminStudent, "applications" | "interestedProgram">,
 ): string {

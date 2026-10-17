@@ -2,6 +2,7 @@ import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
 import { flushPartnerUpdateEmails, partnerEditedStudentIds } from "~/server/student-changes";
+import { shortlistBellItems } from "~/server/shortlist-approval";
 import { staffStudentScope } from "~/server/staff-access";
 import { staffChatSignals } from "~/server/partner-chat";
 import {
@@ -177,6 +178,10 @@ export const notificationsRouter = createTRPCRouter({
       });
     }
     notifications.push(...chat.items);
+    // University shortlist approvals waiting on Collegepond (Phase 3B).
+    if (seesPartnerEdits) {
+      notifications.push(...(await shortlistBellItems(studentScope)));
+    }
     if (newStudents > 0) {
       notifications.push({
         id: "students",

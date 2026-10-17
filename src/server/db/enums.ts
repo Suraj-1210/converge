@@ -577,6 +577,31 @@ export const InactiveReasonLabel: Record<InactiveReason, string> = {
 export const INACTIVE_REASON_CODES = Object.values(InactiveReason) as InactiveReason[];
 
 // ---------------------------------------------------------------------------
+// Shortlist approval (university assignment, Phase 3B)
+// ---------------------------------------------------------------------------
+// A shortlist row is one side's proposal (shortlist.added_by) that the other
+// side approves or rejects (shortlist.approval_status). Apply is refused
+// until it is approved. Decided with Suraj, 17 Oct 2026.
+export const ShortlistSource = {
+  COLLEGEPOND: 0,
+  PARTNER: 1,
+} as const;
+export type ShortlistSource = (typeof ShortlistSource)[keyof typeof ShortlistSource];
+
+export const ShortlistApproval = {
+  PENDING: 0,
+  APPROVED: 1,
+  REJECTED: 2,
+} as const;
+export type ShortlistApproval = (typeof ShortlistApproval)[keyof typeof ShortlistApproval];
+
+export const ShortlistApprovalLabel: Record<ShortlistApproval, string> = {
+  [ShortlistApproval.PENDING]: "Awaiting approval",
+  [ShortlistApproval.APPROVED]: "Approved",
+  [ShortlistApproval.REJECTED]: "Rejected",
+};
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 export const EventType = {

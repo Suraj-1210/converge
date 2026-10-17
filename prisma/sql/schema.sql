@@ -1002,11 +1002,27 @@ CREATE TABLE IF NOT EXISTS `shortlist` (
   `student_id`          INT NOT NULL,
   `course_id`           INT NOT NULL,
   `collegepond_user_id` INT NULL DEFAULT NULL,
+  -- Who proposed it: 0 = Collegepond counsellor, 1 = partner (ShortlistSource).
+  `added_by`              TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `added_by_user_id`      INT NULL DEFAULT NULL,
+  -- The other side's decision: 0 pending, 1 approved, 2 rejected
+  -- (ShortlistApproval). Apply is refused until approved.
+  `approval_status`       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `proposed_at`           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `proposal_note`         VARCHAR(500) NULL DEFAULT NULL,
+  `decided_at`            TIMESTAMP NULL DEFAULT NULL,
+  `decided_by_user_id`    INT NULL DEFAULT NULL,
+  `decided_by_cp_user_id` INT NULL DEFAULT NULL,
+  `reject_reason`         VARCHAR(500) NULL DEFAULT NULL,
   `created_at`          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uq_shortlist_student_course` (`student_id` ASC, `course_id` ASC) VISIBLE,
   INDEX `fk_shortlist_course_idx` (`course_id` ASC) VISIBLE,
   INDEX `fk_shortlist_cp_user_idx` (`collegepond_user_id` ASC) VISIBLE,
+  INDEX `idx_shortlist_approval` (`approval_status` ASC) VISIBLE,
+  INDEX `fk_shortlist_added_by_user_idx` (`added_by_user_id` ASC) VISIBLE,
+  INDEX `fk_shortlist_decided_by_user_idx` (`decided_by_user_id` ASC) VISIBLE,
+  INDEX `fk_shortlist_decided_by_cp_user_idx` (`decided_by_cp_user_id` ASC) VISIBLE,
   CONSTRAINT `fk_shortlist_student`
     FOREIGN KEY (`student_id`) REFERENCES `student` (`id`)
     ON DELETE CASCADE,
@@ -1015,6 +1031,15 @@ CREATE TABLE IF NOT EXISTS `shortlist` (
     ON DELETE CASCADE,
   CONSTRAINT `fk_shortlist_cp_user`
     FOREIGN KEY (`collegepond_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL,
+  CONSTRAINT `fk_shortlist_added_by_user`
+    FOREIGN KEY (`added_by_user_id`) REFERENCES `user` (`id`)
+    ON DELETE SET NULL,
+  CONSTRAINT `fk_shortlist_decided_by_user`
+    FOREIGN KEY (`decided_by_user_id`) REFERENCES `user` (`id`)
+    ON DELETE SET NULL,
+  CONSTRAINT `fk_shortlist_decided_by_cp_user`
+    FOREIGN KEY (`decided_by_cp_user_id`) REFERENCES `cp_user` (`id`)
     ON DELETE SET NULL
 ) ENGINE = InnoDB;
 

@@ -8,6 +8,13 @@ import {
 } from "~/server/api/trpc";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import {
+  hasPartnerSide,
+  notifyCollegepondOfDecision,
+  notifyCollegepondOfProposal,
+  notifyPartnerOfDecision,
+  notifyPartnerOfProposal,
+} from "~/server/shortlist-approval";
+import {
   academicsSnapshot,
   diffSnapshots,
   pendingPartnerUpdates,
@@ -57,6 +64,8 @@ import {
   MARITAL_STATUS_CODES,
   NOTE_PRIORITY_CODES,
   STUDENT_STATUS_CODES,
+  ShortlistApproval,
+  ShortlistSource,
   StudentStatus,
   PartnerReportStatus,
   UNI_APP_STATUS_CODES,
@@ -99,6 +108,7 @@ const studentInclude = {
       id: true,
       status: true,
       stage_history: { select: { stage: true } },
+      counsellor_vendor: true,
       course: {
         select: {
           id: true,
@@ -193,6 +203,9 @@ function toApi(s: DbStudent) {
       stage: currentStage(a.status, a.stage_history),
       program: a.course.name,
       university: a.course.university.name,
+      // Counsellor's vendor pick (admin Students list). Collegepond-internal:
+      // hideVendor() blanks it on every partner payload.
+      counsellorVendor: a.counsellor_vendor,
     })),
     // Overall student status (Students tab) and the partner lead pipeline
     // step: src/lib/student-pipeline.ts.
@@ -212,6 +225,11 @@ function toApi(s: DbStudent) {
   };
 }
 
+// The application vendor never reaches the partner portal.
+function hideVendor<T extends { counsellorVendor: string | null }>(apps: T[]): T[] {
+  return apps.map((a) => ({ ...a, counsellorVendor: null }));
+}
+
 // Course + university details for the profile page's Application tab cards
 // (both shortlist entries and applications render the same meta line).
 const courseCardSelect = {
@@ -223,6 +241,8 @@ const courseCardSelect = {
   currency: true,
   intake_month: true,
   intake_year: true,
+  app_fee: true,
+  has_app_fee_waiver: true,
   university: {
     select: {
       id: true,
@@ -244,6 +264,8 @@ function toCourseCard(c: {
   currency: string | null;
   intake_month: string | null;
   intake_year: number | null;
+  app_fee: { toNumber: () => number } | null;
+  has_app_fee_waiver: number | null;
   university: {
     id: number;
     name: string;
@@ -262,6 +284,9 @@ function toCourseCard(c: {
     currency: c.currency,
     intakeMonth: c.intake_month,
     intakeYear: c.intake_year,
+    // Application fee in the course currency (null = not recorded).
+    appFee: c.app_fee === null ? null : c.app_fee.toNumber(),
+    hasAppFeeWaiver: c.has_app_fee_waiver === 1,
     university: c.university.name,
     universityCity: c.university.city,
     universityCountry: c.university.country,
@@ -426,9 +451,110 @@ function toPartnerApi(s: DbStudent) {
   void cpCounsellorName;
   void cpAutoAssigned;
   void bdmName;
-  // The partner sees that (and why) a student is Inactive, not the note.
-  return { ...rest, inactive: rest.inactive ? { ...rest.inactive, note: null } : null };
+  // The partner sees that (and why) a student is Inactive, not the note,
+  // and never the application vendor.
+  return {
+    ...rest,
+    applications: hideVendor(rest.applications),
+    inactive: rest.inactive ? { ...rest.inactive, note: null } : null,
+  };
 }
+
+// Shortlist rows as the profile pages show them, with the approval state.
+const shortlistCardSelect = {
+  id: true,
+  created_at: true,
+  added_by: true,
+  approval_status: true,
+  proposed_at: true,
+  proposal_note: true,
+  decided_at: true,
+  reject_reason: true,
+  collegepond_user: { select: { first_name: true, last_name: true } },
+  added_by_user: { select: { first_name: true, last_name: true } },
+  decided_by_user: { select: { first_name: true, last_name: true } },
+  decided_by_cp_user: { select: { first_name: true, last_name: true } },
+  course: { select: courseCardSelect },
+} as const;
+
+type Who = { first_name: string; last_name: string } | null;
+
+function toShortlistCard(r: {
+  id: number;
+  created_at: Date;
+  added_by: number;
+  approval_status: number;
+  proposed_at: Date;
+  proposal_note: string | null;
+  decided_at: Date | null;
+  reject_reason: string | null;
+  collegepond_user: Who;
+  added_by_user: Who;
+  decided_by_user: Who;
+  decided_by_cp_user: Who;
+  course: Parameters<typeof toCourseCard>[0];
+}) {
+  const byPartner = r.added_by === ShortlistSource.PARTNER;
+  return {
+    id: r.id,
+    shortlistedAt: r.created_at.toISOString(),
+    addedBy: byPartner ? ("partner" as const) : ("collegepond" as const),
+    addedByName: byPartner
+      ? r.added_by_user
+        ? fullName(r.added_by_user)
+        : "Partner"
+      : r.collegepond_user
+        ? fullName(r.collegepond_user)
+        : "Collegepond",
+    approvalStatus: r.approval_status,
+    proposedAt: r.proposed_at.toISOString(),
+    proposalNote: r.proposal_note,
+    decidedAt: r.decided_at?.toISOString() ?? null,
+    decidedBy: r.decided_by_user
+      ? ("partner" as const)
+      : r.decided_by_cp_user
+        ? ("collegepond" as const)
+        : null,
+    decidedByName: r.decided_by_user
+      ? fullName(r.decided_by_user)
+      : r.decided_by_cp_user
+        ? fullName(r.decided_by_cp_user)
+        : null,
+    rejectReason: r.reject_reason,
+    ...toCourseCard(r.course),
+  };
+}
+
+// Why Apply is refused for a shortlist row that isn't approved yet.
+function applyBlockedMessage(row: { added_by: number; approval_status: number }): string {
+  const byPartner = row.added_by === ShortlistSource.PARTNER;
+  if (row.approval_status === ShortlistApproval.REJECTED) {
+    return byPartner
+      ? "Collegepond rejected this partner proposal. Approve it before starting an application."
+      : "The partner rejected this university. Re-propose it and wait for their approval, or pick another.";
+  }
+  return byPartner
+    ? "The partner proposed this university. Approve it before starting an application."
+    : "Waiting for the partner to approve this university before an application can start.";
+}
+
+const decisionInput = z
+  .object({
+    studentId: z.number().int().positive(),
+    courseId: z.number().int().positive(),
+    approve: z.boolean(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .refine((v) => v.approve || (v.reason ?? "").length >= 3, {
+    message: "Give a reason for the rejection",
+    path: ["reason"],
+  });
+
+const reproposeInput = z.object({
+  studentId: z.number().int().positive(),
+  courseId: z.number().int().positive(),
+  note: z.string().trim().max(500).optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Profile saves, shared by the admin and partner profile pages
@@ -784,7 +910,7 @@ async function loadStudentFull(id: number) {
     db.shortlist.findMany({
       where: { student_id: id },
       orderBy: { created_at: "desc" },
-      select: { id: true, created_at: true, course: { select: courseCardSelect } },
+      select: shortlistCardSelect,
     }),
   ]);
   const [contacts, education, work, tests, notes, documents] =
@@ -917,11 +1043,7 @@ async function loadStudentFull(id: number) {
       portalCredentialUsername: a.portal_credential?.username ?? null,
       ...toCourseCard(a.course),
     })),
-    shortlists: shortlists.map((r) => ({
-      id: r.id,
-      shortlistedAt: r.created_at.toISOString(),
-      ...toCourseCard(r.course),
-    })),
+    shortlists: shortlists.map(toShortlistCard),
   };
 }
 
@@ -973,10 +1095,17 @@ function toPartnerFull(full: Awaited<ReturnType<typeof loadStudentFull>>) {
     notes: [],
     inactive: full.inactive ? { ...full.inactive, note: null } : null,
     partnerUpdates: [] as Awaited<ReturnType<typeof pendingPartnerUpdates>>,
+    applications: hideVendor(full.applications),
     applicationCards: full.applicationCards.map((a) => ({
       ...a,
       counsellorVendor: null,
       portalCredentialUsername: null,
+    })),
+    // Partners see "Collegepond", never which staff member proposed/decided.
+    shortlists: full.shortlists.map((s) => ({
+      ...s,
+      addedByName: s.addedBy === "collegepond" ? "Collegepond" : s.addedByName,
+      decidedByName: s.decidedBy === "collegepond" ? "Collegepond" : s.decidedByName,
     })),
   };
 }
@@ -1398,7 +1527,8 @@ export const studentsRouter = createTRPCRouter({
 
   // ---- Shortlists (Uni Assist) ---------------------------------------------
 
-  // Flat (studentId, courseId) pairs for the Uni Assist page's button state.
+  // Flat (studentId, courseId) pairs for the Uni Assist page's button state,
+  // with who proposed each and where its approval stands.
   shortlistsForStudents: protectedAdminProcedure
     .input(
       z.object({
@@ -1412,11 +1542,13 @@ export const studentsRouter = createTRPCRouter({
           student_id: { in: input.studentIds },
           student: await staffStudentScope(ctx.cpUser),
         },
-        select: { student_id: true, course_id: true },
+        select: { student_id: true, course_id: true, added_by: true, approval_status: true },
       });
       return rows.map((r) => ({
         studentId: r.student_id,
         courseId: r.course_id,
+        byPartner: r.added_by === ShortlistSource.PARTNER,
+        approvalStatus: r.approval_status,
       }));
     }),
 
@@ -1436,24 +1568,200 @@ export const studentsRouter = createTRPCRouter({
       if (!course) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Course not found" });
       }
+      const [students, existing] = await Promise.all([
+        db.student.findMany({
+          where: { id: { in: input.studentIds } },
+          select: { id: true, org_id: true, created_by_user_id: true },
+        }),
+        db.shortlist.findMany({
+          where: { student_id: { in: input.studentIds }, course_id: input.courseId },
+          select: { id: true, student_id: true, added_by: true, approval_status: true },
+        }),
+      ]);
+      const taken = new Set(existing.map((r) => r.student_id));
+      const fresh = students.filter((s) => !taken.has(s.id));
+      // The partner approves a Collegepond proposal; a student with nobody on
+      // the partner side has no one to ask, so theirs is approved at once.
+      const now = new Date();
       const result = await db.shortlist.createMany({
-        data: input.studentIds.map((student_id) => ({
-          student_id,
-          course_id: input.courseId,
-          collegepond_user_id: ctx.cpUser.id,
-        })),
+        data: fresh.map((s) => {
+          const ask = hasPartnerSide(s);
+          return {
+            student_id: s.id,
+            course_id: input.courseId,
+            collegepond_user_id: ctx.cpUser.id,
+            added_by: ShortlistSource.COLLEGEPOND,
+            approval_status: ask ? ShortlistApproval.PENDING : ShortlistApproval.APPROVED,
+            decided_at: ask ? null : now,
+            decided_by_cp_user_id: ask ? null : ctx.cpUser.id,
+          };
+        }),
         skipDuplicates: true,
       });
+      // Shortlisting a program the partner already proposed approves it.
+      const partnerPicks = existing.filter(
+        (r) =>
+          r.added_by === ShortlistSource.PARTNER &&
+          r.approval_status !== ShortlistApproval.APPROVED,
+      );
+      if (partnerPicks.length > 0) {
+        await db.shortlist.updateMany({
+          where: { id: { in: partnerPicks.map((r) => r.id) } },
+          data: {
+            approval_status: ShortlistApproval.APPROVED,
+            decided_at: now,
+            decided_by_cp_user_id: ctx.cpUser.id,
+            decided_by_user_id: null,
+            reject_reason: null,
+          },
+        });
+      }
       await markStudentsShortlisted(input.studentIds);
       await db.audit_log.createMany({
-        data: input.studentIds.map((id) => ({
-          action: "student.shortlisted",
-          entity_type: "student",
-          entity_id: id,
-          metadata: { courseId: input.courseId, byCpUserId: ctx.cpUser.id },
-        })),
+        data: [
+          ...fresh.map((s) => ({
+            action: "student.shortlisted",
+            entity_type: "student",
+            entity_id: s.id,
+            metadata: {
+              courseId: input.courseId,
+              byCpUserId: ctx.cpUser.id,
+              approval: hasPartnerSide(s) ? "pending" : "approved (no partner)",
+            },
+          })),
+          ...partnerPicks.map((r) => ({
+            action: "student.shortlist_approved",
+            entity_type: "student",
+            entity_id: r.student_id,
+            metadata: { courseId: input.courseId, byCpUserId: ctx.cpUser.id, via: "shortlisted" },
+          })),
+        ],
       });
-      return { added: result.count };
+      const asked = fresh.filter(hasPartnerSide);
+      void Promise.all([
+        ...asked.map((s) =>
+          notifyPartnerOfProposal({ studentId: s.id, courseIds: [input.courseId] }),
+        ),
+        ...partnerPicks.map((r) =>
+          notifyPartnerOfDecision({ studentId: r.student_id, courseId: input.courseId, approved: true }),
+        ),
+      ]);
+      return {
+        added: result.count,
+        awaitingPartner: asked.length,
+        approvedPartnerPicks: partnerPicks.length,
+      };
+    }),
+
+  // Approve or reject a program the PARTNER proposed (Collegepond's side of
+  // the approval; the partner decides on Collegepond's proposals).
+  decideShortlist: protectedAdminProcedure
+    .input(decisionInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
+      const row = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: input.studentId, course_id: input.courseId },
+        },
+        select: { id: true, added_by: true, approval_status: true },
+      });
+      if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Shortlist entry not found" });
+      }
+      if (row.added_by !== ShortlistSource.PARTNER) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Collegepond proposed this university, so the partner approves or rejects it.",
+        });
+      }
+      const reason = input.approve ? null : (input.reason ?? null);
+      const result = await db.shortlist.updateMany({
+        where: { id: row.id, approval_status: ShortlistApproval.PENDING },
+        data: {
+          approval_status: input.approve ? ShortlistApproval.APPROVED : ShortlistApproval.REJECTED,
+          decided_at: new Date(),
+          decided_by_cp_user_id: ctx.cpUser.id,
+          decided_by_user_id: null,
+          reject_reason: reason,
+        },
+      });
+      if (result.count === 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "This proposal has already been decided.",
+        });
+      }
+      await db.audit_log.create({
+        data: {
+          action: input.approve ? "student.shortlist_approved" : "student.shortlist_rejected",
+          entity_type: "student",
+          entity_id: input.studentId,
+          metadata: { courseId: input.courseId, byCpUserId: ctx.cpUser.id, reason },
+        },
+      });
+      void notifyPartnerOfDecision({
+        studentId: input.studentId,
+        courseId: input.courseId,
+        approved: input.approve,
+        reason,
+      });
+      return { ok: true as const };
+    }),
+
+  // Send a Collegepond proposal the partner rejected back for approval.
+  reproposeShortlist: protectedAdminProcedure
+    .input(reproposeInput)
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffStudent(ctx.cpUser, input.studentId);
+      const row = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: input.studentId, course_id: input.courseId },
+        },
+        select: { id: true, added_by: true, reject_reason: true },
+      });
+      if (row?.added_by !== ShortlistSource.COLLEGEPOND) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Shortlist entry not found" });
+      }
+      const note = input.note === "" ? null : (input.note ?? null);
+      const result = await db.shortlist.updateMany({
+        where: { id: row.id, approval_status: ShortlistApproval.REJECTED },
+        data: {
+          approval_status: ShortlistApproval.PENDING,
+          collegepond_user_id: ctx.cpUser.id,
+          proposed_at: new Date(),
+          proposal_note: note,
+          decided_at: null,
+          decided_by_user_id: null,
+          decided_by_cp_user_id: null,
+          reject_reason: null,
+        },
+      });
+      if (result.count === 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Only a rejected university can be re-proposed.",
+        });
+      }
+      await db.audit_log.create({
+        data: {
+          action: "student.shortlist_reproposed",
+          entity_type: "student",
+          entity_id: input.studentId,
+          metadata: {
+            courseId: input.courseId,
+            byCpUserId: ctx.cpUser.id,
+            note,
+            previousReason: row.reject_reason,
+          },
+        },
+      });
+      void notifyPartnerOfProposal({
+        studentId: input.studentId,
+        courseIds: [input.courseId],
+        note,
+        reproposed: true,
+      });
+      return { ok: true as const };
     }),
 
   removeShortlist: protectedAdminProcedure
@@ -1483,7 +1791,9 @@ export const studentsRouter = createTRPCRouter({
     }),
 
   // "Apply" on a shortlisted card: creates the application (Begin
-  // Application) and consumes the shortlist row.
+  // Application) and consumes the shortlist row. Refused until the other
+  // side has approved the shortlist entry. This is the only path that
+  // creates an application.
   applyShortlist: protectedAdminProcedure
     .input(
       z.object({
@@ -1512,6 +1822,25 @@ export const studentsRouter = createTRPCRouter({
       if (existing) {
         await consumeShortlist();
         return { applicationId: existing.id, created: false };
+      }
+
+      const entry = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: input.studentId, course_id: input.courseId },
+        },
+        select: { added_by: true, approval_status: true },
+      });
+      if (!entry) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Shortlist this program for the student before applying.",
+        });
+      }
+      if (entry.approval_status !== ShortlistApproval.APPROVED) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: applyBlockedMessage(entry),
+        });
       }
 
       const app = await db.application.create({
@@ -1948,10 +2277,10 @@ export const studentsRouter = createTRPCRouter({
 
   // ---- Partner shortlists (/partner/uni-assist) ---------------------------
   // Anyone who can see the student (owner, assigned counsellor, the
-  // independent who created them) may shortlist programs for them; another
-  // agency's student is "not found". Rows a partner adds carry no staff id
-  // (collegepond_user_id NULL) and show on the admin profile like any other
-  // shortlist. Partners can remove only their own picks: Collegepond's stay.
+  // independent who created them) may shortlist programs for them, and
+  // approve or reject what Collegepond proposes; another agency's student is
+  // "not found". A partner's pick (added_by PARTNER) waits for Collegepond's
+  // approval. Partners can remove only their own picks: Collegepond's stay.
 
   partnerShortlist: protectedPartnerProcedure
     .input(z.object({ studentId: z.number().int().positive() }))
@@ -1959,11 +2288,12 @@ export const studentsRouter = createTRPCRouter({
       await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
       const rows = await db.shortlist.findMany({
         where: { student_id: input.studentId },
-        select: { course_id: true, collegepond_user_id: true },
+        select: { course_id: true, added_by: true, approval_status: true },
       });
       return rows.map((r) => ({
         courseId: r.course_id,
-        byCollegepond: r.collegepond_user_id !== null,
+        byCollegepond: r.added_by === ShortlistSource.COLLEGEPOND,
+        approvalStatus: r.approval_status,
       }));
     }),
 
@@ -1983,8 +2313,59 @@ export const studentsRouter = createTRPCRouter({
       if (!course) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Course not found" });
       }
+      const existing = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: student.id, course_id: course.id },
+        },
+        select: { id: true, added_by: true, approval_status: true, collegepond_user_id: true },
+      });
+      if (existing) {
+        // Shortlisting a program Collegepond proposed approves it.
+        if (
+          existing.added_by === ShortlistSource.COLLEGEPOND &&
+          existing.approval_status !== ShortlistApproval.APPROVED
+        ) {
+          await db.shortlist.update({
+            where: { id: existing.id },
+            data: {
+              approval_status: ShortlistApproval.APPROVED,
+              decided_at: new Date(),
+              decided_by_user_id: ctx.cpPartner.id,
+              decided_by_cp_user_id: null,
+              reject_reason: null,
+            },
+          });
+          await db.audit_log.create({
+            data: {
+              user_id: ctx.cpPartner.id,
+              org_id: student.org_id,
+              action: "student.shortlist_approved",
+              entity_type: "student",
+              entity_id: student.id,
+              metadata: { courseId: course.id, byPartnerUserId: ctx.cpPartner.id, via: "shortlisted" },
+            },
+          });
+          void notifyCollegepondOfDecision({
+            studentId: student.id,
+            courseId: course.id,
+            partnerUserId: ctx.cpPartner.id,
+            proposerCpUserId: existing.collegepond_user_id,
+            approved: true,
+          });
+          return { added: 0, approved: 1 };
+        }
+        return { added: 0, approved: 0 };
+      }
       const result = await db.shortlist.createMany({
-        data: [{ student_id: student.id, course_id: course.id }],
+        data: [
+          {
+            student_id: student.id,
+            course_id: course.id,
+            added_by: ShortlistSource.PARTNER,
+            added_by_user_id: ctx.cpPartner.id,
+            approval_status: ShortlistApproval.PENDING,
+          },
+        ],
         skipDuplicates: true,
       });
       if (result.count > 0) {
@@ -1996,11 +2377,133 @@ export const studentsRouter = createTRPCRouter({
             action: "student.shortlisted",
             entity_type: "student",
             entity_id: student.id,
-            metadata: { courseId: course.id, byPartnerUserId: ctx.cpPartner.id },
+            metadata: { courseId: course.id, byPartnerUserId: ctx.cpPartner.id, approval: "pending" },
           },
         });
+        void notifyCollegepondOfProposal({
+          studentId: student.id,
+          courseId: course.id,
+          partnerUserId: ctx.cpPartner.id,
+        });
       }
-      return { added: result.count };
+      return { added: result.count, approved: 0 };
+    }),
+
+  // Approve or reject a program COLLEGEPOND proposed for the student.
+  partnerDecideShortlist: protectedPartnerProcedure
+    .input(decisionInput)
+    .mutation(async ({ ctx, input }) => {
+      const student = await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const row = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: student.id, course_id: input.courseId },
+        },
+        select: { id: true, added_by: true, collegepond_user_id: true },
+      });
+      if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Shortlist entry not found" });
+      }
+      if (row.added_by !== ShortlistSource.COLLEGEPOND) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You proposed this university, so Collegepond approves or rejects it.",
+        });
+      }
+      const reason = input.approve ? null : (input.reason ?? null);
+      const result = await db.shortlist.updateMany({
+        where: { id: row.id, approval_status: ShortlistApproval.PENDING },
+        data: {
+          approval_status: input.approve ? ShortlistApproval.APPROVED : ShortlistApproval.REJECTED,
+          decided_at: new Date(),
+          decided_by_user_id: ctx.cpPartner.id,
+          decided_by_cp_user_id: null,
+          reject_reason: reason,
+        },
+      });
+      if (result.count === 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "This university has already been approved or rejected.",
+        });
+      }
+      await db.audit_log.create({
+        data: {
+          user_id: ctx.cpPartner.id,
+          org_id: student.org_id,
+          action: input.approve ? "student.shortlist_approved" : "student.shortlist_rejected",
+          entity_type: "student",
+          entity_id: student.id,
+          metadata: { courseId: input.courseId, byPartnerUserId: ctx.cpPartner.id, reason },
+        },
+      });
+      void notifyCollegepondOfDecision({
+        studentId: student.id,
+        courseId: input.courseId,
+        partnerUserId: ctx.cpPartner.id,
+        proposerCpUserId: row.collegepond_user_id,
+        approved: input.approve,
+        reason,
+      });
+      return { ok: true as const };
+    }),
+
+  // Send the partner's own pick that Collegepond rejected back for approval.
+  partnerReproposeShortlist: protectedPartnerProcedure
+    .input(reproposeInput)
+    .mutation(async ({ ctx, input }) => {
+      const student = await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const row = await db.shortlist.findUnique({
+        where: {
+          student_id_course_id: { student_id: student.id, course_id: input.courseId },
+        },
+        select: { id: true, added_by: true, reject_reason: true },
+      });
+      if (row?.added_by !== ShortlistSource.PARTNER) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Shortlist entry not found" });
+      }
+      const note = input.note === "" ? null : (input.note ?? null);
+      const result = await db.shortlist.updateMany({
+        where: { id: row.id, approval_status: ShortlistApproval.REJECTED },
+        data: {
+          approval_status: ShortlistApproval.PENDING,
+          added_by_user_id: ctx.cpPartner.id,
+          proposed_at: new Date(),
+          proposal_note: note,
+          decided_at: null,
+          decided_by_user_id: null,
+          decided_by_cp_user_id: null,
+          reject_reason: null,
+        },
+      });
+      if (result.count === 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Only a rejected university can be re-proposed.",
+        });
+      }
+      await db.audit_log.create({
+        data: {
+          user_id: ctx.cpPartner.id,
+          org_id: student.org_id,
+          action: "student.shortlist_reproposed",
+          entity_type: "student",
+          entity_id: student.id,
+          metadata: {
+            courseId: input.courseId,
+            byPartnerUserId: ctx.cpPartner.id,
+            note,
+            previousReason: row.reject_reason,
+          },
+        },
+      });
+      void notifyCollegepondOfProposal({
+        studentId: student.id,
+        courseId: input.courseId,
+        partnerUserId: ctx.cpPartner.id,
+        note,
+        reproposed: true,
+      });
+      return { ok: true as const };
     }),
 
   partnerRemoveShortlist: protectedPartnerProcedure
@@ -2016,7 +2519,7 @@ export const studentsRouter = createTRPCRouter({
         where: {
           student_id: student.id,
           course_id: input.courseId,
-          collegepond_user_id: null,
+          added_by: ShortlistSource.PARTNER,
         },
       });
       if (result.count === 0) {
@@ -2085,11 +2588,13 @@ export const studentsRouter = createTRPCRouter({
         applyProfileUpdate(input),
       );
       // Same type as adminUpdate's result (the shared form takes either).
+      const base = toApi(updated);
       const student: ReturnType<typeof toApi> = {
-        ...toApi(updated),
+        ...base,
         cpCounsellorId: null,
         cpCounsellorName: null,
         bdmName: null,
+        applications: hideVendor(base.applications),
       };
       return { ok: true as const, student };
     }),

@@ -1,11 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import {
   UniApplicationStatus,
   UniApplicationStatusLabel,
 } from "~/server/db/enums";
+import { api } from "~/trpc/react";
 import { type AdminStudentFull } from "~/app/admin/(dashboard)/students/lib";
+import { appFeeAmount, formatAppFee } from "~/app/admin/(dashboard)/uni-assist/uni-assist-lib";
+import {
+  ShortlistApprovalNotes,
+  ShortlistStatusBadge,
+  ShortlistTextDialog,
+  shortlistView,
+} from "~/components/students/shortlist-approval";
 import { applicationSummary, isClosedApplication, splitByClosed } from "~/lib/application-summary";
 import {
   APPLICATION_STAGE_ORDER,
@@ -66,6 +75,47 @@ export function ApplicationsTab({
   const { open, closed } = splitByClosed(apps);
   const shortlist = student.shortlists;
 
+  const utils = api.useUtils();
+  const refresh = () => {
+    changed();
+    void utils.students.partnerGet.invalidate({ id: student.id });
+    void utils.students.partnerShortlist.invalidate({ studentId: student.id });
+  };
+  const [dialog, setDialog] = useState<{
+    mode: "reject" | "repropose";
+    courseId: number;
+    subject: string;
+  } | null>(null);
+  const decide = api.students.partnerDecideShortlist.useMutation({
+    onSuccess: (_r, vars) => {
+      refresh();
+      setDialog(null);
+      toast(
+        vars.approve
+          ? "Approved. Collegepond can now start the application."
+          : "Rejected. Collegepond has been told why.",
+      );
+    },
+    onError: (e) => toast(e.message),
+  });
+  const repropose = api.students.partnerReproposeShortlist.useMutation({
+    onSuccess: () => {
+      refresh();
+      setDialog(null);
+      toast("Sent back to Collegepond for approval");
+    },
+    onError: (e) => toast(e.message),
+  });
+  const remove = api.students.partnerRemoveShortlist.useMutation({
+    onSuccess: () => {
+      refresh();
+      toast("Removed from shortlist");
+    },
+    onError: (e) => toast(e.message),
+  });
+  const busy = decide.isPending || repropose.isPending || remove.isPending;
+  const awaitingYou = shortlist.filter((s) => shortlistView(s, "partner").canDecide).length;
+
   return (
     <div className="space-y-6">
       <section className="rounded-[14px] border border-[#E4E7EC] bg-white p-6">
@@ -104,7 +154,14 @@ export function ApplicationsTab({
 
       <section className="rounded-[14px] border border-[#E4E7EC] bg-white p-6">
         <div className="mb-4 flex items-baseline justify-between gap-3">
-          <h3 className="text-[15px] font-semibold text-[#101828]">Shortlist ({shortlist.length})</h3>
+          <h3 className="text-[15px] font-semibold text-[#101828]">
+            Shortlist ({shortlist.length})
+            {awaitingYou > 0 && (
+              <span className="ml-2 rounded-full bg-[#F4F3FF] px-2 py-0.5 text-[12px] font-semibold text-[#5925DC]">
+                {awaitingYou} awaiting your approval
+              </span>
+            )}
+          </h3>
           <Link
             href={`/partner/uni-assist?student=${student.id}`}
             className="text-[13px] font-semibold text-[#1570EF] hover:underline"
@@ -119,11 +176,58 @@ export function ApplicationsTab({
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {shortlist.map((s) => (
-              <ShortlistCard key={s.id} s={s} />
+              <ShortlistCard
+                key={s.id}
+                s={s}
+                busy={busy}
+                onApprove={() =>
+                  decide.mutate({ studentId: student.id, courseId: s.courseId, approve: true })
+                }
+                onReject={() =>
+                  setDialog({
+                    mode: "reject",
+                    courseId: s.courseId,
+                    subject: `${s.university} – ${s.program}, proposed by Collegepond.`,
+                  })
+                }
+                onRepropose={() =>
+                  setDialog({
+                    mode: "repropose",
+                    courseId: s.courseId,
+                    subject: `Send ${s.university} – ${s.program} back to Collegepond for approval.`,
+                  })
+                }
+                onRemove={() => remove.mutate({ studentId: student.id, courseId: s.courseId })}
+              />
             ))}
           </ul>
         )}
       </section>
+
+      <ShortlistTextDialog
+        open={dialog !== null}
+        mode={dialog?.mode ?? "reject"}
+        subject={dialog?.subject ?? ""}
+        busy={decide.isPending || repropose.isPending}
+        onClose={() => setDialog(null)}
+        onSubmit={(text) => {
+          if (!dialog) return;
+          if (dialog.mode === "reject") {
+            decide.mutate({
+              studentId: student.id,
+              courseId: dialog.courseId,
+              approve: false,
+              reason: text,
+            });
+          } else {
+            repropose.mutate({
+              studentId: student.id,
+              courseId: dialog.courseId,
+              note: text || undefined,
+            });
+          }
+        }}
+      />
     </div>
   );
 }
@@ -174,6 +278,7 @@ function ApplicationCard({
   const fill = stageTrackColour(a.status);
   const reachedAt = new Map(a.stageHistory.map((h) => [h.stage, h.date]));
   const facts: [string, string | null][] = [
+    ["Application fee", appFeeAmount(a.appFee, a.currency, a.hasAppFeeWaiver)],
     ["Submitted", fmtDate(a.submittedAt)],
     ["Decision", fmtDate(a.decidedAt)],
     ["University application ID", a.universityAppId],
@@ -278,14 +383,86 @@ function ApplicationCard({
   );
 }
 
-function ShortlistCard({ s }: { s: Shortlist }) {
+const actionBtn =
+  "cursor-pointer rounded-lg border px-3 py-1.5 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50";
+
+function ShortlistCard({
+  s,
+  busy,
+  onApprove,
+  onReject,
+  onRepropose,
+  onRemove,
+}: {
+  s: Shortlist;
+  busy: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+  onRepropose: () => void;
+  onRemove: () => void;
+}) {
+  const view = shortlistView(s, "partner");
+  const mine = s.addedBy === "partner";
+  const appFee = formatAppFee(s.appFee, s.currency, s.hasAppFeeWaiver);
+  const facts = [
+    s.tuitionFee !== null ? `Tuition ${money(s.tuitionFee, s.currency)}` : null,
+    s.durationMonths ? `${s.durationMonths} months` : null,
+    appFee,
+  ].filter(Boolean);
   return (
-    <li className="rounded-xl border border-[#E4E7EC] p-4">
+    <li
+      className={`rounded-xl border p-4 ${
+        view.rejected ? "border-[#FECDCA] bg-[#FFFBFA]" : view.canDecide ? "border-[#D9D6FE]" : "border-[#E4E7EC]"
+      }`}
+    >
       <UniHead c={s} />
-      {s.tuitionFee !== null && (
-        <div className="mt-3 text-[12px] text-[#667085]">
-          Tuition {money(s.tuitionFee, s.currency)}
-          {s.durationMonths ? ` · ${s.durationMonths} months` : ""}
+      <div className="mt-3">
+        <ShortlistStatusBadge view={view} />
+      </div>
+      <ShortlistApprovalNotes s={s} viewer="partner" />
+      {facts.length > 0 && <div className="mt-2 text-[12px] text-[#667085]">{facts.join(" · ")}</div>}
+      {(view.canDecide || view.canRepropose || mine) && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {view.canDecide && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onApprove}
+                className={`${actionBtn} border-[#ABEFC6] bg-[#ECFDF3] text-[#067647] hover:bg-[#D1FADF]`}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onReject}
+                className={`${actionBtn} border-[#FECDCA] bg-white text-[#B42318] hover:bg-[#FEF3F2]`}
+              >
+                Reject
+              </button>
+            </>
+          )}
+          {view.canRepropose && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onRepropose}
+              className={`${actionBtn} border-[#B2DDFF] bg-white text-[#1570EF] hover:bg-[#F0F7FF]`}
+            >
+              Re-propose
+            </button>
+          )}
+          {mine && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onRemove}
+              className={`${actionBtn} border-[#E4E7EC] bg-white text-[#667085] hover:bg-[#F9FAFB]`}
+            >
+              Remove
+            </button>
+          )}
         </div>
       )}
     </li>

@@ -643,6 +643,8 @@ model user {
   commission_payee                                                        commission[]              @relation("commission_payee")
   invoice_payee                                                           invoice[]                 @relation("invoice_payee")
   bank_account_payee                                                      partner_bank_account[]    @relation("bank_account_payee")
+  shortlist_added                                                         shortlist[]               @relation("shortlist_added_by")
+  shortlist_decided                                                       shortlist[]               @relation("shortlist_decided_by")
   collegepond_user_user_approved_by_collegepond_user_idTocollegepond_user collegepond_user?         @relation("user_approved_by_collegepond_user_idTocollegepond_user", fields: [approved_by_collegepond_user_id], references: [id], map: "fk_user_approved_by_collegepond_user")
   collegepond_user_user_bdm_idTocollegepond_user                          collegepond_user?         @relation("user_bdm_idTocollegepond_user", fields: [bdm_id], references: [id], map: "fk_user_bdm")
   collegepond_user_user_counsellor_idTocollegepond_user                   collegepond_user?         @relation("user_counsellor_idTocollegepond_user", fields: [counsellor_id], references: [id], map: "fk_user_counsellor")
@@ -678,7 +680,8 @@ model collegepond_user {
   user_user_lead_counsellor_idTocollegepond_user              user[]                       @relation("user_lead_counsellor_idTocollegepond_user")
   uni_assist_template                                         uni_assist_template[]
   student                                                     student[]
-  shortlist                                                   shortlist[]
+  shortlist                                                   shortlist[]                  @relation("shortlist_cp_user")
+  shortlist_decided                                           shortlist[]                  @relation("shortlist_decided_by_cp")
   student_note                                                student_note[]
   bdm_prospect                                                bdm_prospect[]
   bdm_prospect_stage_history                                  bdm_prospect_stage_history[]
@@ -895,14 +898,34 @@ model shortlist {
   course_id           Int
   // Admin who shortlisted; kept for attribution, null if the account goes.
   collegepond_user_id Int?
+  // Who proposed it (ShortlistSource: 0 Collegepond, 1 partner) and, for a
+  // partner proposal, which partner user.
+  added_by              Int               @default(0) @db.UnsignedTinyInt
+  added_by_user_id      Int?
+  // The other side's decision (ShortlistApproval: 0 pending, 1 approved,
+  // 2 rejected). Apply is refused until approved.
+  approval_status       Int               @default(0) @db.UnsignedTinyInt
+  proposed_at           DateTime          @default(now()) @db.Timestamp(0)
+  proposal_note         String?           @db.VarChar(500)
+  decided_at            DateTime?         @db.Timestamp(0)
+  decided_by_user_id    Int?
+  decided_by_cp_user_id Int?
+  reject_reason         String?           @db.VarChar(500)
   created_at          DateTime          @default(now()) @db.Timestamp(0)
   student             student           @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_shortlist_student")
   course              course            @relation(fields: [course_id], references: [id], onDelete: Cascade, map: "fk_shortlist_course")
-  collegepond_user    collegepond_user? @relation(fields: [collegepond_user_id], references: [id], onDelete: SetNull, map: "fk_shortlist_cp_user")
+  collegepond_user    collegepond_user? @relation("shortlist_cp_user", fields: [collegepond_user_id], references: [id], onDelete: SetNull, map: "fk_shortlist_cp_user")
+  added_by_user       user?             @relation("shortlist_added_by", fields: [added_by_user_id], references: [id], onDelete: SetNull, map: "fk_shortlist_added_by_user")
+  decided_by_user     user?             @relation("shortlist_decided_by", fields: [decided_by_user_id], references: [id], onDelete: SetNull, map: "fk_shortlist_decided_by_user")
+  decided_by_cp_user  collegepond_user? @relation("shortlist_decided_by_cp", fields: [decided_by_cp_user_id], references: [id], onDelete: SetNull, map: "fk_shortlist_decided_by_cp_user")
 
   @@unique([student_id, course_id], map: "uq_shortlist_student_course")
   @@index([course_id], map: "fk_shortlist_course_idx")
   @@index([collegepond_user_id], map: "fk_shortlist_cp_user_idx")
+  @@index([approval_status], map: "idx_shortlist_approval")
+  @@index([added_by_user_id], map: "fk_shortlist_added_by_user_idx")
+  @@index([decided_by_user_id], map: "fk_shortlist_decided_by_user_idx")
+  @@index([decided_by_cp_user_id], map: "fk_shortlist_decided_by_cp_user_idx")
 }
 
 // Saved Uni Assist filter sets. Team-wide: every admin can see and load any

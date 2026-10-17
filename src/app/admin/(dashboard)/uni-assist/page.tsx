@@ -13,6 +13,7 @@ import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { UniLogo } from "~/components/ui/uni-logo";
+import { ShortlistApproval } from "~/server/db/enums";
 import { api } from "~/trpc/react";
 import {
   DownloadDialog,
@@ -34,6 +35,7 @@ import {
   emptyTri,
   flagEmoji,
   formatAmount,
+  formatAppFee,
   formatDuration,
   formatIntake,
   formatTuition,
@@ -133,15 +135,32 @@ export default function AdminUniAssistPage() {
     { studentIds },
     { enabled: studentIds.length > 0 },
   );
-  const shortlisted = useMemo(
-    () =>
-      new Set(
-        studentIds.length > 0
-          ? (shortlistsQuery.data ?? []).map((r) => r.courseId)
-          : [],
-      ),
-    [shortlistsQuery.data, studentIds],
-  );
+  // Where each program stands for the selected students: a partner pick
+  // waiting on us, ours rejected or awaiting the partner, or approved.
+  const shortlisted = useMemo(() => {
+    const m = new Map<number, ShortlistState>();
+    if (studentIds.length === 0) return m;
+    const rank: Record<ShortlistState, number> = {
+      none: 0,
+      done: 1,
+      pending: 2,
+      rejected: 3,
+      pick: 4,
+    };
+    for (const r of shortlistsQuery.data ?? []) {
+      const state: ShortlistState =
+        r.approvalStatus === ShortlistApproval.APPROVED
+          ? "done"
+          : r.byPartner
+            ? "pick"
+            : r.approvalStatus === ShortlistApproval.REJECTED
+              ? "rejected"
+              : "pending";
+      const prev = m.get(r.courseId) ?? "none";
+      m.set(r.courseId, rank[state] > rank[prev] ? state : prev);
+    }
+    return m;
+  }, [shortlistsQuery.data, studentIds]);
 
   const filtered = useMemo(
     () => sortPrograms(applyFilters(courses.data ?? [], applied), sortBy),
@@ -268,14 +287,48 @@ export default function AdminUniAssistPage() {
     onMutate: async (vars) => {
       await utils.students.shortlistsForStudents.cancel({ studentIds });
       const prev = utils.students.shortlistsForStudents.getData({ studentIds });
-      utils.students.shortlistsForStudents.setData({ studentIds }, (old) => [
-        ...(old ?? []),
-        ...vars.studentIds.map((studentId) => ({
-          studentId,
-          courseId: vars.courseId,
-        })),
-      ]);
+      utils.students.shortlistsForStudents.setData({ studentIds }, (old) => {
+        // Shortlisting a partner's pick approves it; the rest are new rows
+        // awaiting the partner.
+        const rows = (old ?? []).map((r) =>
+          r.courseId === vars.courseId &&
+          r.byPartner &&
+          vars.studentIds.includes(r.studentId)
+            ? { ...r, approvalStatus: ShortlistApproval.APPROVED as number }
+            : r,
+        );
+        const have = new Set(
+          rows.filter((r) => r.courseId === vars.courseId).map((r) => r.studentId),
+        );
+        return [
+          ...rows,
+          ...vars.studentIds
+            .filter((id) => !have.has(id))
+            .map((studentId) => ({
+              studentId,
+              courseId: vars.courseId,
+              byPartner: false,
+              approvalStatus: ShortlistApproval.PENDING as number,
+            })),
+        ];
+      });
       return { prev };
+    },
+    onSuccess: (res) => {
+      const parts: string[] = [];
+      if (res.added > 0) {
+        parts.push(
+          res.awaitingPartner > 0
+            ? `Shortlisted for ${selectedStudents.map(studentName).join(", ")}, awaiting partner approval`
+            : `Shortlisted for ${selectedStudents.map(studentName).join(", ")}`,
+        );
+      }
+      if (res.approvedPartnerPicks > 0) {
+        parts.push(
+          `Approved ${res.approvedPartnerPicks === 1 ? "the partner's pick" : `${res.approvedPartnerPicks} partner picks`}`,
+        );
+      }
+      showToast(parts.join(". ") || "Already shortlisted");
     },
     onError: (e, _vars, mutCtx) => {
       utils.students.shortlistsForStudents.setData({ studentIds }, mutCtx?.prev);
@@ -304,14 +357,13 @@ export default function AdminUniAssistPage() {
       showToast("Please select a student first");
       return;
     }
-    if (shortlisted.has(p.id)) {
+    const state = shortlisted.get(p.id) ?? "none";
+    if (state === "pick" || state === "none") {
+      // Adds it for the selected students and approves any partner picks.
+      addShortlistMut.mutate({ studentIds, courseId: p.id });
+    } else {
       removeShortlistMut.mutate({ studentIds, courseId: p.id });
       showToast("Removed from shortlist");
-    } else {
-      addShortlistMut.mutate({ studentIds, courseId: p.id });
-      showToast(
-        `Shortlisted for ${selectedStudents.map(studentName).join(", ")}`,
-      );
     }
   };
 
@@ -768,7 +820,7 @@ export default function AdminUniAssistPage() {
             <ProgramCard
               key={p.id}
               program={p}
-              shortlisted={shortlisted.has(p.id)}
+              shortlistState={shortlisted.get(p.id) ?? "none"}
               canShortlist={selectedStudents.length > 0}
               onToggleShortlist={() => toggleShortlist(p)}
             />
@@ -1396,20 +1448,52 @@ function AdvField({ label, children }: { label: string; children: ReactNode }) {
 
 // ----- Program card (mirrors the partner page card, plus admin shortlist) ----
 
+// Shortlist button state for the selected students (most actionable wins).
+type ShortlistState = "none" | "done" | "pending" | "rejected" | "pick";
+
+const SHORTLIST_BUTTON: Record<
+  Exclude<ShortlistState, "none">,
+  { label: string; title: string; className: string }
+> = {
+  done: {
+    label: "Shortlisted",
+    title: "Approved. Start the application from the student's Application tab. Click to remove.",
+    className: "border-[#A6F4C5] bg-[#ECFDF3] text-[#067647]",
+  },
+  pending: {
+    label: "Awaiting partner",
+    title: "Shortlisted. The partner approves it before an application can start. Click to remove.",
+    className: "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708]",
+  },
+  rejected: {
+    label: "Rejected by partner",
+    title: "The partner rejected this. Re-propose it from the student's Application tab, or click to remove.",
+    className: "border-[#FECDCA] bg-[#FEF3F2] text-[#B42318]",
+  },
+  pick: {
+    label: "Approve partner pick",
+    title: "The partner proposed this program. Click to approve it.",
+    className: "border-[#D9D6FE] bg-[#F4F3FF] text-[#5925DC]",
+  },
+};
+
 function ProgramCard({
   program,
-  shortlisted,
+  shortlistState,
   canShortlist,
   onToggleShortlist,
 }: {
   program: Program;
-  shortlisted: boolean;
+  shortlistState: ShortlistState;
   canShortlist: boolean;
   onToggleShortlist: () => void;
 }) {
   const uni = program.university;
   const tags = collectTags(program);
+  const shortlisted = shortlistState !== "none";
+  const button = shortlistState === "none" ? null : SHORTLIST_BUTTON[shortlistState];
   const tuition = formatTuition(program.tuitionFee, program.currency);
+  const appFee = formatAppFee(program.appFee, program.currency, program.hasAppFeeWaiver);
   const intake = formatIntake(program.intakeMonth, program.intakeYear);
   const duration = program.durationMonths
     ? formatDuration(program.durationMonths)
@@ -1469,6 +1553,12 @@ function ProgramCard({
               {tuition}
             </MetaItem>
           )}
+          {appFee && (
+            <MetaItem>
+              <MoneyIcon />
+              {appFee}
+            </MetaItem>
+          )}
         </div>
       </div>
 
@@ -1487,15 +1577,15 @@ function ProgramCard({
           onClick={onToggleShortlist}
           title={
             canShortlist
-              ? undefined
+              ? button?.title
               : "Select a student first to shortlist this program"
           }
           aria-disabled={!canShortlist}
           className={`flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-semibold transition-colors ${
             !canShortlist
               ? "cursor-not-allowed border-[#EAECF0] bg-[#F9FAFB] text-[#98A2B3]"
-              : shortlisted
-                ? "cursor-pointer border-[#A6F4C5] bg-[#ECFDF3] text-[#067647]"
+              : button
+                ? `cursor-pointer ${button.className}`
                 : "cursor-pointer border-[#D0D5DD] bg-white text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF]"
           }`}
         >
@@ -1508,7 +1598,7 @@ function ProgramCard({
           >
             <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
           </svg>
-          {shortlisted ? "Shortlisted" : "Shortlist"}
+          {canShortlist && button ? button.label : "Shortlist"}
         </button>
       </div>
     </div>
