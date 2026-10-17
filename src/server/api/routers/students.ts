@@ -296,6 +296,21 @@ function currentStage(
   );
 }
 
+// Shortlisting moves fresh leads to the Shortlisted stage (mock behaviour).
+// Deliberate flags (No Interest / No Response) stay put. Shared by the admin
+// and partner shortlist actions.
+async function markStudentsShortlisted(studentIds: number[]) {
+  await db.student.updateMany({
+    where: {
+      id: { in: studentIds },
+      status: {
+        in: [StudentStatus.NEW, StudentStatus.INTERESTED, StudentStatus.CONNECTED],
+      },
+    },
+    data: { status: StudentStatus.SHORTLISTED },
+  });
+}
+
 // Mirrors the student's pipeline status from their furthest active
 // application (the mock's syncAppStatusToStudentTable). No-op for students
 // with no applications.
@@ -1422,21 +1437,7 @@ export const studentsRouter = createTRPCRouter({
         })),
         skipDuplicates: true,
       });
-      // Shortlisting moves fresh leads to the Shortlisted stage (mock
-      // behaviour). Deliberate flags (No Interest / No Response) stay put.
-      await db.student.updateMany({
-        where: {
-          id: { in: input.studentIds },
-          status: {
-            in: [
-              StudentStatus.NEW,
-              StudentStatus.INTERESTED,
-              StudentStatus.CONNECTED,
-            ],
-          },
-        },
-        data: { status: StudentStatus.SHORTLISTED },
-      });
+      await markStudentsShortlisted(input.studentIds);
       await db.audit_log.createMany({
         data: input.studentIds.map((id) => ({
           action: "student.shortlisted",
@@ -2007,6 +2008,104 @@ export const studentsRouter = createTRPCRouter({
         isMostRecent: d.is_most_recent === 1,
         createdAt: d.created_at.toISOString(),
       }));
+    }),
+
+  // ---- Partner shortlists (/partner/uni-assist) ---------------------------
+  // Anyone who can see the student (owner, assigned counsellor, the
+  // independent who created them) may shortlist programs for them; another
+  // agency's student is "not found". Rows a partner adds carry no staff id
+  // (collegepond_user_id NULL) and show on the admin profile like any other
+  // shortlist. Partners can remove only their own picks: Collegepond's stay.
+
+  partnerShortlist: protectedPartnerProcedure
+    .input(z.object({ studentId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const rows = await db.shortlist.findMany({
+        where: { student_id: input.studentId },
+        select: { course_id: true, collegepond_user_id: true },
+      });
+      return rows.map((r) => ({
+        courseId: r.course_id,
+        byCollegepond: r.collegepond_user_id !== null,
+      }));
+    }),
+
+  partnerAddShortlist: protectedPartnerProcedure
+    .input(
+      z.object({
+        studentId: z.number().int().positive(),
+        courseId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const student = await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const course = await db.course.findUnique({
+        where: { id: input.courseId },
+        select: { id: true },
+      });
+      if (!course) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Course not found" });
+      }
+      const result = await db.shortlist.createMany({
+        data: [{ student_id: student.id, course_id: course.id }],
+        skipDuplicates: true,
+      });
+      if (result.count > 0) {
+        await markStudentsShortlisted([student.id]);
+        await db.audit_log.create({
+          data: {
+            user_id: ctx.cpPartner.id,
+            org_id: student.org_id,
+            action: "student.shortlisted",
+            entity_type: "student",
+            entity_id: student.id,
+            metadata: { courseId: course.id, byPartnerUserId: ctx.cpPartner.id },
+          },
+        });
+      }
+      return { added: result.count };
+    }),
+
+  partnerRemoveShortlist: protectedPartnerProcedure
+    .input(
+      z.object({
+        studentId: z.number().int().positive(),
+        courseId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const student = await requireVisibleStudent(ctx.cpPartner.id, input.studentId);
+      const result = await db.shortlist.deleteMany({
+        where: {
+          student_id: student.id,
+          course_id: input.courseId,
+          collegepond_user_id: null,
+        },
+      });
+      if (result.count === 0) {
+        const byCollegepond = await db.shortlist.count({
+          where: { student_id: student.id, course_id: input.courseId },
+        });
+        if (byCollegepond > 0) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Collegepond shortlisted this program, so only Collegepond can remove it.",
+          });
+        }
+        return { removed: 0 };
+      }
+      await db.audit_log.create({
+        data: {
+          user_id: ctx.cpPartner.id,
+          org_id: student.org_id,
+          action: "student.shortlist_removed",
+          entity_type: "student",
+          entity_id: student.id,
+          metadata: { courseId: input.courseId, byPartnerUserId: ctx.cpPartner.id },
+        },
+      });
+      return { removed: result.count };
     }),
 
   // ---- Partner student profile (/partner/students/[id]) -------------------

@@ -523,7 +523,10 @@ export const universitiesRouter = createTRPCRouter({
   // List of distinct ISO2 countries that currently have universities — used
   // to populate the partner-side Country filter without a separate endpoint.
   listSearchFilters: protectedPartnerProcedure.query(async ({ ctx }) => {
+    // Only countries that have a program to find; a university with no
+    // courses would offer a filter that always comes back empty.
     const unis = await ctx.db.university.findMany({
+      where: { course: { some: {} } },
       select: { country: true },
       distinct: ["country"],
       orderBy: { country: "asc" },

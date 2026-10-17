@@ -202,8 +202,10 @@ export const authRouter = createTRPCRouter({
 
     // An agency counsellor files no KYC of their own: Collegepond approves
     // them against their agency, which the owner has already documented.
+    // Only what sign-up collects: bank proof (the cancelled cheque) lives in
+    // My Account → Bank Details, so a legacy cheque isn't listed here.
     const kind = partnerKindOf(user.type);
-    const slots = kind === "counsellor" ? [] : PARTNER_DOC_SLOTS[kind];
+    const slots = kind === "counsellor" ? [] : PARTNER_DOC_SLOTS[kind].filter((s) => s.atSignup);
     const docs = await ctx.db.document.findMany({
       where: {
         OR: [{ user_id: user.id }, ...(user.org_id ? [{ org_id: user.org_id }] : [])],

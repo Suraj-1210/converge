@@ -25,17 +25,19 @@ function stageTone(status: number): string {
   return "bg-[#EFF8FF] text-[#175CD3]"; // begin / docs
 }
 
+// Opens on All so an application set to a closed outcome (rejected,
+// withdrawn…) stays in view instead of dropping out of an Active-only list.
 const SCOPES = [
+  { id: "all", label: "All" },
   { id: "active", label: "Active" },
   { id: "closed", label: "Closed" },
-  { id: "all", label: "All" },
 ] as const;
 
 export default function ApplicationsPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const [scope, setScope] = useState<"active" | "closed" | "all">("active");
+  const [scope, setScope] = useState<"active" | "closed" | "all">("all");
   const [status, setStatus] = useState("");
   const [orgId, setOrgId] = useState("");
   const [search, setSearch] = useState("");
@@ -57,7 +59,7 @@ export default function ApplicationsPage() {
   const data = listQ.data;
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
-  const stats = data?.stats ?? { active: 0, inProgress: 0, offers: 0, deposits: 0, enrolled: 0 };
+  const stats = data?.stats ?? { active: 0, closed: 0, inProgress: 0, offers: 0, deposits: 0, enrolled: 0 };
   const pageSize = data?.pageSize ?? 20;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const reset = () => { setStatus(""); setOrgId(""); setSearch(""); setPage(1); };
@@ -84,6 +86,9 @@ export default function ApplicationsPage() {
           return (
             <button key={s.id} onClick={() => { setScope(s.id); setStatus(""); setPage(1); }} className={`-mb-px border-b-2 px-4 py-2.5 text-sm font-semibold ${on ? "border-[#1570EF] text-[#1570EF]" : "border-transparent text-[#667085] hover:text-[#344054]"}`}>
               {s.label}
+              {s.id !== "all" && data && (
+                <span className="ml-1.5 text-xs font-medium text-[#98A2B3]">{s.id === "active" ? stats.active : stats.closed}</span>
+              )}
             </button>
           );
         })}
@@ -100,7 +105,7 @@ export default function ApplicationsPage() {
 
       <div className="overflow-hidden rounded-xl border border-[#E4E7EC] bg-white">
         <div className="flex items-center gap-2 border-b border-[#E4E7EC] px-5 py-3.5">
-          <h3 className="text-[15px] font-semibold text-[#101828]">All Applications</h3>
+          <h3 className="text-[15px] font-semibold text-[#101828]">{SCOPES.find((s) => s.id === scope)?.label} Applications</h3>
           <span className="rounded-full bg-[#EFF8FF] px-2 py-0.5 text-xs font-semibold text-[#1570EF]">{total}</span>
         </div>
         <div className="overflow-x-auto">

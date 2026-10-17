@@ -1,10 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import {
   UniApplicationStatus,
   UniApplicationStatusLabel,
 } from "~/server/db/enums";
 import { type AdminStudentFull } from "~/app/admin/(dashboard)/students/lib";
+import { applicationSummary, isClosedApplication, splitByClosed } from "~/lib/application-summary";
 
 type Card = AdminStudentFull["applicationCards"][number];
 type Shortlist = AdminStudentFull["shortlists"][number];
@@ -56,13 +58,20 @@ function intake(c: { intakeMonth: string | null; intakeYear: number | null }) {
 // vendor and status controls stay on the admin side.
 export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
   const apps = student.applicationCards;
+  // Every application stays listed: in progress first, closed below.
+  const { open, closed } = splitByClosed(apps);
   const shortlist = student.shortlists;
 
   return (
     <div className="space-y-6">
       <section className="rounded-[14px] border border-[#E4E7EC] bg-white p-6">
         <div className="mb-4 flex items-baseline justify-between gap-3">
-          <h3 className="text-[15px] font-semibold text-[#101828]">Applications ({apps.length})</h3>
+          <h3 className="text-[15px] font-semibold text-[#101828]">
+            Applications
+            {apps.length > 0 && (
+              <span className="ml-2 text-[13px] font-normal text-[#667085]">{applicationSummary(apps)}</span>
+            )}
+          </h3>
           <span className="text-[12px] text-[#98A2B3]">Updated by Collegepond as each application moves</span>
         </div>
         {apps.length === 0 ? (
@@ -71,7 +80,18 @@ export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
           </p>
         ) : (
           <ul className="space-y-4">
-            {apps.map((a) => (
+            {open.map((a) => (
+              <ApplicationCard key={a.id} a={a} />
+            ))}
+            {closed.length > 0 && (
+              <li className="flex items-center gap-3 pt-2" aria-hidden>
+                <span className="text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+                  Closed ({closed.length})
+                </span>
+                <span className="h-px flex-1 bg-[#E4E7EC]" />
+              </li>
+            )}
+            {closed.map((a) => (
               <ApplicationCard key={a.id} a={a} />
             ))}
           </ul>
@@ -79,10 +99,18 @@ export function ApplicationsTab({ student }: { student: AdminStudentFull }) {
       </section>
 
       <section className="rounded-[14px] border border-[#E4E7EC] bg-white p-6">
-        <h3 className="mb-4 text-[15px] font-semibold text-[#101828]">Shortlist ({shortlist.length})</h3>
+        <div className="mb-4 flex items-baseline justify-between gap-3">
+          <h3 className="text-[15px] font-semibold text-[#101828]">Shortlist ({shortlist.length})</h3>
+          <Link
+            href={`/partner/uni-assist?student=${student.id}`}
+            className="text-[13px] font-semibold text-[#1570EF] hover:underline"
+          >
+            Shortlist via Uni Assist
+          </Link>
+        </div>
         {shortlist.length === 0 ? (
           <p className="rounded-lg border border-dashed border-[#D0D5DD] px-4 py-6 text-center text-[13px] text-[#98A2B3]">
-            Nothing shortlisted yet.
+            Nothing shortlisted yet. Use Uni Assist to shortlist programs for this student.
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
@@ -125,7 +153,7 @@ function UniHead({ c }: { c: Card | Shortlist }) {
 }
 
 function ApplicationCard({ a }: { a: Card }) {
-  const closed = a.status >= 20;
+  const closed = isClosedApplication(a.status);
   const reachedAt = new Map(a.stageHistory.map((h) => [h.stage, h.date]));
   const facts: [string, string | null][] = [
     ["Submitted", fmtDate(a.submittedAt)],

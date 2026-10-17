@@ -13,6 +13,15 @@ import {
 } from "~/lib/constants/notification-prefs";
 import { isAgencyOwner } from "~/server/partner-access";
 import { partnerDocLabel } from "~/lib/constants/partner-labels";
+import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+
+// Document types kept only so older uploads keep their label (atSignup: false).
+const NOT_SIGNUP_DOC_TYPES = new Set(
+  Object.values(PARTNER_DOC_SLOTS)
+    .flat()
+    .filter((s) => !s.atSignup)
+    .map((s) => s.key),
+);
 
 type DocStatusLabel = "pending" | "approved" | "rejected";
 function docStatusLabel(code: number): DocStatusLabel {
@@ -82,9 +91,11 @@ export const accountRouter = createTRPCRouter({
       }));
     }
 
-    const documents = [...userDocs, ...orgDocs].sort((a, b) =>
-      a.label.localeCompare(b.label),
-    );
+    // Bank proof (the cancelled cheque) belongs to Bank Details only, so a
+    // cheque uploaded at sign-up before it moved there isn't listed here.
+    const documents = [...userDocs, ...orgDocs]
+      .filter((d) => !NOT_SIGNUP_DOC_TYPES.has(d.slot))
+      .sort((a, b) => a.label.localeCompare(b.label));
 
     // The MOU is the partner owner's business (signed by the agency owner or
     // the independent). Agency counsellors don't get its status at all.

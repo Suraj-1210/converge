@@ -16,6 +16,7 @@ import {
   UniApplicationStatusLabel,
 } from "~/server/db/enums";
 import { api } from "~/trpc/react";
+import { applicationSummary, splitByClosed } from "~/lib/application-summary";
 import {
   COUNTRY_NAME,
   formatDuration,
@@ -244,6 +245,10 @@ export function ApplicationTab({
   }, [student.applicationCards]);
 
   const shortlistBusy = applyMut.isPending || removeShortlistMut.isPending;
+  // Every application stays listed: in progress first, closed below.
+  const { open: openApps, closed: closedApps } = splitByClosed(
+    student.applicationCards,
+  );
 
   return (
     <>
@@ -366,11 +371,14 @@ export function ApplicationTab({
         )}
       </div>
 
-      {/* Active applications */}
+      {/* All applications (closed ones included, listed after the rest) */}
       <div className="mb-3 flex items-center gap-3">
-        <span className="text-sm font-bold text-[#101828]">
-          Active Applications
-        </span>
+        <span className="text-sm font-bold text-[#101828]">Applications</span>
+        {student.applicationCards.length > 0 && (
+          <span className="text-[13px] text-[#667085]">
+            {applicationSummary(student.applicationCards)}
+          </span>
+        )}
         <div className="h-px flex-1 bg-[#E4E7EC]" />
       </div>
 
@@ -406,7 +414,23 @@ export function ApplicationTab({
         </div>
       ) : (
         <div className="space-y-4">
-          {student.applicationCards.map((a) => (
+          {openApps.map((a) => (
+            <AppCard
+              key={a.id}
+              app={a}
+              onToast={onToast}
+              invalidate={invalidate}
+            />
+          ))}
+          {closedApps.length > 0 && (
+            <div className="flex items-center gap-3 pt-2">
+              <span className="text-xs font-semibold tracking-wider text-[#98A2B3] uppercase">
+                Closed ({closedApps.length})
+              </span>
+              <div className="h-px flex-1 bg-[#E4E7EC]" />
+            </div>
+          )}
+          {closedApps.map((a) => (
             <AppCard
               key={a.id}
               app={a}

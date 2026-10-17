@@ -65,6 +65,10 @@ function flagEmoji(iso2: string): string {
     .join("");
 }
 
+function studentName(s: { firstName: string; lastName: string }): string {
+  return `${s.firstName} ${s.lastName}`.trim();
+}
+
 type SortBy = "relevance" | "tuition-asc" | "tuition-desc" | "uni-az";
 
 interface SearchFormState {
@@ -103,7 +107,15 @@ export default function PartnerUniAssistPage() {
   // the box doesn't refetch on every keystroke — only on Search / filter pick.
   const [applied, setApplied] = useState<SearchFormState>(emptyForm());
   const [sortBy, setSortBy] = useState<SortBy>("relevance");
-  const [shortlist, setShortlist] = useState<Set<number>>(new Set());
+
+  // The student whose shortlist the Shortlist buttons edit. Preselected from
+  // ?student=<id> (the student profile links here); read once on mount
+  // rather than via useSearchParams so the page needs no Suspense boundary.
+  const [studentId, setStudentId] = useState<number | null>(null);
+  useEffect(() => {
+    const id = Number(new URLSearchParams(window.location.search).get("student"));
+    if (Number.isInteger(id) && id > 0) setStudentId(id);
+  }, []);
 
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
@@ -141,19 +153,54 @@ export default function PartnerUniAssistPage() {
     setApplied({ ...applied, [key]: value });
   };
 
-  const toggleShortlist = (id: number) => {
-    setShortlist((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        showToast("Removed from shortlist");
-      } else {
-        next.add(id);
-        showToast("Added to shortlist");
-      }
-      return next;
-    });
+  // Students this partner can see (owner: the agency's; counsellor: assigned
+  // or created; independent: their own). The server re-checks on every call.
+  const students = api.students.partnerList.useQuery();
+  const selectedStudent = students.data?.find((s) => s.id === studentId) ?? null;
+  const shortlistQ = api.students.partnerShortlist.useQuery(
+    { studentId: studentId ?? 0 },
+    { enabled: studentId !== null },
+  );
+  const shortlist = useMemo(
+    () => new Map((shortlistQ.data ?? []).map((r) => [r.courseId, r])),
+    [shortlistQ.data],
+  );
+  const utils = api.useUtils();
+  const onShortlistChanged = (msg: string) => {
+    void utils.students.partnerShortlist.invalidate();
+    if (studentId !== null) void utils.students.partnerGet.invalidate({ id: studentId });
+    showToast(msg);
   };
+  const addShortlist = api.students.partnerAddShortlist.useMutation({
+    onSuccess: () =>
+      onShortlistChanged(`Shortlisted for ${selectedStudent ? studentName(selectedStudent) : "the student"}`),
+    onError: (e) => showToast(e.message),
+  });
+  const removeShortlist = api.students.partnerRemoveShortlist.useMutation({
+    onSuccess: () => onShortlistChanged("Removed from shortlist"),
+    onError: (e) => showToast(e.message),
+  });
+  const shortlistBusy = addShortlist.isPending || removeShortlist.isPending;
+
+  const toggleShortlist = (courseId: number) => {
+    if (studentId === null) {
+      showToast("Select a student first, then shortlist programs for them");
+      return;
+    }
+    if (shortlistBusy) return;
+    const entry = shortlist.get(courseId);
+    if (!entry) addShortlist.mutate({ studentId, courseId });
+    else if (entry.byCollegepond) showToast("Collegepond shortlisted this program for the student");
+    else removeShortlist.mutate({ studentId, courseId });
+  };
+
+  const studentOptions = useMemo(
+    () =>
+      [...(students.data ?? [])]
+        .sort((a, b) => studentName(a).localeCompare(studentName(b)))
+        .map((s) => ({ value: String(s.id), label: studentName(s) })),
+    [students.data],
+  );
 
   // ---- Filter options ----
   const countryOptions = useMemo(() => {
@@ -204,20 +251,42 @@ export default function PartnerUniAssistPage() {
             Search universities and courses worldwide
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => showToast("Student selector coming soon")}
-          className="flex h-[42px] cursor-pointer items-center gap-2 rounded-lg border border-[#D0D5DD] bg-white px-3 text-sm font-medium text-[#344054] hover:border-[#1570EF]"
-        >
-          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-[#98A2B3] to-[#667085]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={2} className="h-3.5 w-3.5">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-          </span>
-          Select Student (optional)
-          <ChevronDown />
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <label className="relative flex h-[42px] items-center gap-2 rounded-lg border border-[#D0D5DD] bg-white pr-3 pl-1.5 text-sm font-medium text-[#344054] focus-within:border-[#1570EF] hover:border-[#1570EF]">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#98A2B3] to-[#667085]">
+              <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={2} className="h-3.5 w-3.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </span>
+            <span className="sr-only">Shortlist for student</span>
+            <select
+              value={studentId === null ? "" : String(studentId)}
+              onChange={(e) => setStudentId(e.target.value ? Number(e.target.value) : null)}
+              className="h-full max-w-[240px] min-w-[180px] cursor-pointer appearance-none bg-transparent pr-6 outline-none"
+            >
+              <option value="">
+                {students.isLoading ? "Loading students…" : "Select student to shortlist for"}
+              </option>
+              {studentOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute right-3">
+              <ChevronDown />
+            </span>
+          </label>
+          {selectedStudent && (
+            <a
+              href={`/partner/students/${selectedStudent.id}?tab=applications`}
+              className="text-xs font-medium text-[#1570EF] hover:underline"
+            >
+              {shortlist.size} shortlisted · view profile
+            </a>
+          )}
+        </div>
       </div>
 
       {/* Search card */}
@@ -282,6 +351,12 @@ export default function PartnerUniAssistPage() {
           </div>
         </div>
       </div>
+
+      {filtersMeta.error && (
+        <div className="mb-4 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-3 text-sm text-[#B42318]">
+          Couldn&apos;t load the search filters: {filtersMeta.error.message}
+        </div>
+      )}
 
       {/* Results bar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

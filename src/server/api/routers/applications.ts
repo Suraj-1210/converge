@@ -34,7 +34,7 @@ export const applicationsRouter = createTRPCRouter({
         status: z.number().int().optional(),
         orgId: z.number().int().optional(),
         search: z.string().optional(),
-        scope: z.enum(["active", "closed", "all"]).default("active"),
+        scope: z.enum(["active", "closed", "all"]).default("all"),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -93,6 +93,7 @@ export const applicationsRouter = createTRPCRouter({
       const countByStatus = new Map(byStatus.map((g) => [g.status, g._count.id]));
       const sumOf = (codes: number[]) => codes.reduce((s, c) => s + (countByStatus.get(c) ?? 0), 0);
       const active = Array.from(countByStatus.entries()).filter(([s]) => s < 20).reduce((s, [, n]) => s + n, 0);
+      const closed = Array.from(countByStatus.entries()).filter(([s]) => s >= 20).reduce((s, [, n]) => s + n, 0);
 
       return {
         page: input.page,
@@ -100,6 +101,7 @@ export const applicationsRouter = createTRPCRouter({
         total,
         stats: {
           active,
+          closed,
           inProgress: sumOf(IN_PROGRESS),
           offers: sumOf(OFFERS),
           deposits: sumOf(DEPOSITS),
