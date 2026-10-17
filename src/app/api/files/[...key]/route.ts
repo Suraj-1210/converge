@@ -11,6 +11,8 @@ import { findVisibleStudent } from "~/server/partner-access";
 import { presignGetUrl, spacesConfigured } from "~/server/storage/spaces";
 import { AdminRole } from "~/server/db/enums";
 import { canSeeStudent, isCounsellingRole } from "~/server/staff-access";
+import { isChatStaffRole, partnerChatScope } from "~/server/partner-chat-access";
+import { chatFileStudentId } from "~/server/partner-chat";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,28 @@ export async function GET(
   }
 
   const jar = await cookies();
+
+  // Files sent in partner chat: only that chat's participants
+  // (src/server/partner-chat-access.ts). So, unlike other student
+  // documents, not every admin role. Anyone else gets a 404, as for a
+  // missing file.
+  if (key.startsWith("chat/")) {
+    const notFound = NextResponse.json({ error: "Not found" }, { status: 404 });
+    const studentId = await chatFileStudentId(key);
+    if (studentId === null) return notFound;
+    const token = jar.get(SESSION_COOKIE_NAME)?.value;
+    const staff = token ? await verifySessionJwt(token) : null;
+    let ok = staff != null && isChatStaffRole(staff.role) && (await canSeeStudent(staff, studentId));
+    if (!ok) {
+      const partner = await resolvePartnerSession(jar.get(PARTNER_SESSION_COOKIE_NAME)?.value, token);
+      if (partner) {
+        const scope = await partnerChatScope(partner.id);
+        ok = (await db.student.count({ where: { AND: [{ id: studentId }, scope] } })) > 0;
+      }
+    }
+    if (!ok) return notFound;
+    return NextResponse.redirect(await presignGetUrl(key), { status: 302 });
+  }
 
   // Admins (collegepond staff) may read any document, except partners'
   // cancelled cheques / bank letters, which are for finance roles only, and

@@ -120,7 +120,14 @@ export function DashboardShell({
     <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]" style={bannerOffsetStyle(!!impersonating)}>
       <ImpersonationBanner side="admin" />
       <Sidebar
-        sections={NAV_SECTIONS}
+        sections={
+          me
+            ? NAV_SECTIONS.map((sec) => ({
+                ...sec,
+                items: sec.items.filter((i) => !i.codes || i.codes.includes(me.role)),
+              }))
+            : NAV_SECTIONS
+        }
         logoSubtitle="Admin Portal"
         badges={effectiveBadges}
         role={me && isAdminRole(me.role) ? navRoleFromCode(me.role) : null}

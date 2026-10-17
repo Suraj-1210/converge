@@ -3,6 +3,7 @@ import { db } from "~/server/db";
 import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
 import { flushPartnerUpdateEmails, partnerEditedStudentIds } from "~/server/student-changes";
 import { staffStudentScope } from "~/server/staff-access";
+import { staffChatSignals } from "~/server/partner-chat";
 import {
   AdminRole,
   PartnerInvoiceStatus,
@@ -64,6 +65,7 @@ export const notificationsRouter = createTRPCRouter({
       newStudents,
       bankPending,
       partnerEdited,
+      chat,
     ] = await Promise.all([
         db.user.count({
           where: {
@@ -104,6 +106,9 @@ export const notificationsRouter = createTRPCRouter({
         // Students a partner edited that nobody here has reviewed yet, within
         // the same visibility as the admin Students list.
         seesPartnerEdits ? partnerEditedStudentIds(studentScope) : Promise.resolve([] as number[]),
+        // Partner chat: unread threads and replies due or overdue (TAT), for
+        // the student's counsellor, their lead and Super Admins only.
+        staffChatSignals(ctx.cpUser, studentScope),
       ]);
 
     const notifications: AdminNotification[] = [];
@@ -171,6 +176,7 @@ export const notificationsRouter = createTRPCRouter({
             : "/admin/students?partnerEdits=1",
       });
     }
+    notifications.push(...chat.items);
     if (newStudents > 0) {
       notifications.push({
         id: "students",
@@ -188,6 +194,7 @@ export const notificationsRouter = createTRPCRouter({
         approvals: pendingApprovals,
         partners: pendingPartners,
         bankVerifications: bankPending,
+        partnerChat: chat.unreadThreads,
       },
     };
   }),

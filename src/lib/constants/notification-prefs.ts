@@ -42,6 +42,19 @@ export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRo
     ],
   },
   {
+    title: "Messages",
+    rows: [
+      {
+        key: "chat.message",
+        code: 12,
+        label: "New chat messages from Collegepond",
+        email: true,
+        inApp: true,
+        hint: "A bell notification for each new message, and an email if one stays unread for 15 minutes.",
+      },
+    ],
+  },
+  {
     title: "Events",
     rows: [{ key: "evt.reminder", code: 7, label: "Upcoming Event Reminder", email: false }],
   },
@@ -77,6 +90,7 @@ export type NotificationPrefKey =
   | "fin.commission" | "fin.invoice" | "fin.payment"
   | "evt.reminder"
   | "team.assign"
+  | "chat.message"
   | "sys.feature" | "sys.maintenance" | "sys.report";
 
 export function notificationPrefCode(key: NotificationPrefKey): number {

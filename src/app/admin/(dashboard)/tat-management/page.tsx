@@ -4,18 +4,28 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "~/trpc/react";
 import { Toast } from "~/components/ui/toast";
 import { StatCard } from "~/components/dashboard/widgets";
-import { PagePlaceholder } from "~/components/dashboard/page-placeholder";
+import { ChatResponseTat } from "./chat-response";
 import { AdminRole } from "~/server/db/enums";
 import { SHOW_DEMO_DATA } from "~/lib/demo";
 
-// TAT Management is a deferred feature — its data is entirely illustrative seed.
-// In production we render a placeholder so no synthetic records ever ship; the full
-// dashboard (below) is dev-only until a real TAT backend exists.
+// TAT Management. Chat Response (partner chat) is the first action measured
+// for real (./chat-response.tsx, src/server/tat.ts). The other actions below are
+// still illustrative seed data: shown only in local dev, labelled as samples,
+// and never in production, until each is wired to the same TAT master.
 export default function TATManagementPage() {
-  if (!SHOW_DEMO_DATA) {
-    return <PagePlaceholder title="TAT Management" description="Turnaround-time tracking is coming soon." />;
-  }
-  return <TatDashboard />;
+  return (
+    <div>
+      <ChatResponseTat />
+      {SHOW_DEMO_DATA && (
+        <div className="mt-12 border-t-2 border-dashed border-[#D0D5DD] pt-8">
+          <div className="mb-4 rounded-lg border border-[#FEC84B] bg-[#FFFAEB] px-4 py-2.5 text-[13px] font-medium text-[#B54708]">
+            Sample data (local dev only): the other TAT actions aren&apos;t wired yet. Nothing below is real.
+          </div>
+          <TatDashboard />
+        </div>
+      )}
+    </div>
+  );
 }
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -183,8 +193,8 @@ function TatDashboard() {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#101828]">TAT Management</h1>
-        <p className="mt-1 text-sm text-[#667085]">Track turnaround times, manage SLA compliance, and configure breach escalations.</p>
+        <h2 className="text-xl font-bold text-[#101828]">Other TAT actions (sample)</h2>
+        <p className="mt-1 text-sm text-[#667085]">Design preview for the actions not yet measured.</p>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">

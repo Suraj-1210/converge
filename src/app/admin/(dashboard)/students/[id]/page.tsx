@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { StudentStatusBadge } from "~/components/students/status";
 import { Toast } from "~/components/ui/toast";
 import { api } from "~/trpc/react";
+import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
+import { AdminRole } from "~/server/db/enums";
 import {
   avatarGradient,
   derivedProgram,
@@ -28,7 +30,10 @@ const TABS = [
   { id: "application", label: "Application" },
   { id: "tasks", label: "Tasks & Notes" },
   { id: "documents", label: "Documents" },
-  { id: "chat", label: "Chat" },
+  // Partner ↔ Collegepond chat (counselling team + Super Admin only), and
+  // the student's own WhatsApp (Periskope). Two separate conversations.
+  { id: "partner-chat", label: "Partner chat" },
+  { id: "chat", label: "WhatsApp" },
   { id: "summary", label: "Document Summary" },
 ] as const;
 
@@ -46,6 +51,14 @@ export default function StudentProfilePage() {
   const utils = api.useUtils();
 
   const [tab, setTab] = useState<TabId>("profile");
+  const role = api.authSession.me.useQuery().data?.role;
+  const chatRoles: number[] = [AdminRole.SUPER_ADMIN, AdminRole.COUNSELLOR_LEAD, AdminRole.COUNSELLOR];
+  const tabs = TABS.filter((t) => t.id !== "partner-chat" || (role !== undefined && chatRoles.includes(role)));
+  // Deep link, e.g. /admin/students/12?tab=partner-chat.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && TABS.some((x) => x.id === t)) setTab(t as TabId);
+  }, []);
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
   const showToast = (msg: string) => {
@@ -135,7 +148,7 @@ export default function StudentProfilePage() {
 
           {/* Main tabs */}
           <div className="mb-6 flex gap-1 overflow-x-auto border-b-2 border-[#E4E7EC]">
-            {TABS.map((t) => {
+            {tabs.map((t) => {
               const active = tab === t.id;
               return (
                 <button
@@ -173,6 +186,9 @@ export default function StudentProfilePage() {
               )}
               {tab === "documents" && (
                 <DocumentsTab student={student} onToast={showToast} />
+              )}
+              {tab === "partner-chat" && (
+                <PartnerChatPanel side="staff" studentId={Number(student.id)} onToast={showToast} />
               )}
               {tab === "chat" && (
                 <ChatTab studentId={Number(student.id)} onToast={showToast} />

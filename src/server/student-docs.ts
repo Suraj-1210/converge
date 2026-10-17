@@ -62,17 +62,50 @@ export async function parseStudentDocUpload(
   const docType = resolveDocType(docTypeKey);
   if (!docType) return bad("Unknown document type", 400);
   if (!Number.isInteger(studentId) || studentId <= 0) return bad("Invalid student id", 400);
-  if (!(file instanceof File) || file.size === 0) return bad("No file provided", 400);
-  if (file.size > MAX_BYTES) return bad("File too large (max 10 MB)", 413);
-  const ext = (file.name.split(".").pop() ?? "").toLowerCase();
-  if (!ALLOWED_EXTENSIONS.has(ext)) return bad("Allowed file types: PDF, DOC, DOCX, JPG, PNG", 415);
+  if (!(file instanceof File)) return bad("No file provided", 400);
+  const invalid = checkStudentDocFile(file);
+  if (invalid) return bad(invalid.error, invalid.status);
   return { studentId, docType, file };
+}
+
+// The size and type rules for any student file (profile documents and files
+// sent in partner chat). Null when the file is acceptable.
+export function checkStudentDocFile(file: File): { error: string; status: number } | null {
+  if (file.size === 0) return { error: "No file provided", status: 400 };
+  if (file.size > MAX_BYTES) return { error: "File too large (max 10 MB)", status: 413 };
+  const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+  if (!ALLOWED_EXTENSIONS.has(ext)) return { error: "Allowed file types: PDF, DOC, DOCX, JPG, PNG", status: 415 };
+  return null;
+}
+
+// A fixed checklist document type ("passport", "sop", …) by key.
+export function studentDocTypeByKey(key: string): { key: string; multiple: boolean } | null {
+  const fixed = STUDENT_DOC_TYPES.find((d) => d.key === key);
+  return fixed ? { key: fixed.key, multiple: fixed.multiple } : null;
 }
 
 // Stores the file privately and records it. Single-slot doc types supersede
 // the previous upload (is_most_recent = 0); multi-slot types accumulate.
 // `actor` goes into the audit log as-is (who uploaded, admin or partner).
 export async function storeStudentDocument(
+  studentId: number,
+  docType: { key: string; multiple: boolean },
+  file: File,
+  actor: Record<string, unknown>,
+) {
+  const doc = await saveStudentDocument(studentId, docType, file, actor);
+  return NextResponse.json({
+    id: doc.id,
+    docType: doc.doc_type,
+    fileName: doc.file_name,
+    fileUrl: resolveStorageUrl(doc.file_url),
+    sizeBytes: doc.size_bytes,
+  });
+}
+
+// storeStudentDocument without the HTTP response, for server code (e.g.
+// "Save to student documents" from partner chat). Returns the new row.
+export async function saveStudentDocument(
   studentId: number,
   docType: { key: string; multiple: boolean },
   file: File,
@@ -114,12 +147,5 @@ export async function storeStudentDocument(
       metadata: { docType: docType.key, fileName: file.name, ...actor },
     },
   });
-
-  return NextResponse.json({
-    id: doc.id,
-    docType: doc.doc_type,
-    fileName: doc.file_name,
-    fileUrl: resolveStorageUrl(doc.file_url),
-    sizeBytes: doc.size_bytes,
-  });
+  return doc;
 }

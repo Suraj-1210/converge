@@ -590,6 +590,63 @@ export function partnerProfileUpdatedEmail(
   );
 }
 
+// 22. Partner chat: a message has stayed unread for 15 minutes. One email per
+// unread batch, to the partner (assigned counsellor, else the owner) or to
+// the student's Collegepond counsellor.
+export function partnerChatUnreadEmail(
+  r: { name: string },
+  u: { studentName: string; from: string; count: number; preview: string; link: string; toPartner: boolean },
+  appUrl: string,
+): EmailMessage {
+  const what = u.count === 1 ? "a message" : `${u.count} messages`;
+  return build(
+    `${u.count === 1 ? "Unread message" : `${u.count} unread messages`} about ${u.studentName}`,
+    "You have unread chat messages",
+    hello(r.name),
+    [
+      { p: `${u.from} sent you ${what} about ${u.studentName} that you haven't read yet.` },
+      { quote: u.preview, label: u.count === 1 ? "Message" : "Latest message" },
+      {
+        button: {
+          label: u.toPartner ? "Open the chat on the Partner Portal" : "Open the chat in the Admin Portal",
+          url: portal(appUrl, u.link),
+        },
+      },
+    ],
+  );
+}
+
+// 23. Partner chat TAT: a partner message is near or past its reply target.
+// The warning goes to the student's counsellor; the breach escalation goes to
+// their Counselling Lead.
+export function partnerChatTatAlertEmail(
+  r: { name: string },
+  a: {
+    studentName: string;
+    partnerName: string;
+    waiting: string;
+    target: string;
+    counsellor: string | null;
+    overdue: boolean;
+    escalation: boolean;
+    link: string;
+  },
+  appUrl: string,
+): EmailMessage {
+  const subject = a.escalation
+    ? `Overdue partner chat reply: ${a.studentName}`
+    : a.overdue
+      ? `Reply overdue: partner chat about ${a.studentName}`
+      : `Reply due soon: partner chat about ${a.studentName}`;
+  const lead = a.escalation
+    ? `A partner message about ${a.studentName} from ${a.partnerName} has waited ${a.waiting} (business hours) for a reply, past the ${a.target} target.${a.counsellor ? ` The assigned counsellor is ${a.counsellor}.` : " The student has no Collegepond counsellor."}`
+    : `${a.partnerName} is waiting for a reply about ${a.studentName}: ${a.waiting} so far (business hours), against a ${a.target} target.`;
+  return build(subject, a.escalation ? "Partner chat reply overdue" : "Partner chat awaiting reply", hello(r.name), [
+    { p: lead },
+    { button: { label: "Open the chat", url: portal(appUrl, a.link) } },
+  ]);
+}
+
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 // 9. New partner signup → Collegepond admin inbox (ADMIN_EMAIL).

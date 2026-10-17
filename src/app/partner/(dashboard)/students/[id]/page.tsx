@@ -26,6 +26,7 @@ import { type Viewer } from "../assignee";
 import { AssigneeLabel } from "../assignee-label";
 import { DocumentsChecklist, expectedProgress } from "../upload-documents-modal";
 import { ApplicationsTab } from "./applications-tab";
+import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
 
 function usePartnerRefresh() {
   const utils = api.useUtils();
@@ -50,6 +51,7 @@ const TABS = [
   { id: "profile", label: "Profile" },
   { id: "documents", label: "Documents" },
   { id: "applications", label: "Applications" },
+  { id: "chat", label: "Chat" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -253,6 +255,7 @@ export default function PartnerStudentProfilePage() {
             </div>
           )}
           {tab === "applications" && <ApplicationsTab student={s} />}
+          {tab === "chat" && <PartnerChatPanel side="partner" studentId={Number(s.id)} onToast={showToast} />}
 
           {assignOpen && viewer && (
             <AssignModal

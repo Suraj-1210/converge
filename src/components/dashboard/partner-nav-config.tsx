@@ -1,5 +1,6 @@
 import {
   CalendarIcon,
+  ChatIcon,
   CommissionIcon,
   DashboardIcon,
   ResourcesIcon,
@@ -20,6 +21,8 @@ export const PARTNER_NAV_SECTIONS: NavSection[] = [
         icon: <StudentsIcon />,
         badgeKey: "students",
       },
+      // Chat with Collegepond, one thread per student. Badge: unread threads.
+      { label: "Chat", href: "/partner/chat", icon: <ChatIcon />, badgeKey: "chat" },
       { label: "Uni Assist", href: "/partner/uni-assist", icon: <SearchIcon /> },
       { label: "Counsellors", href: "/partner/counsellors", icon: <UsersIcon /> },
     ],

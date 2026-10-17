@@ -6,6 +6,7 @@ import {
   BarChartIcon,
   BillingIcon,
   CalendarIcon,
+  ChatIcon,
   ClockIcon,
   CommissionIcon,
   DashboardIcon,
@@ -38,6 +39,10 @@ export interface NavItem {
    *  re-enable later (the route/page still exists). Filtered out in Sidebar. */
   hidden?: boolean;
   roles?: AdminRole[];
+  /** Exact admin role codes (src/server/db/enums.ts) allowed to see the item,
+   *  for gates the string buckets above can't express (they merge counselling
+   *  and operations roles). Applied by DashboardShell. */
+  codes?: number[];
 }
 
 export interface NavSection {
@@ -122,14 +127,22 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: <ApprovalsIcon />,
         badgeKey: "approvals",
       },
-      // TAT Management — HIDDEN for now (gated off until the feature is ready).
-      // The route/page at /admin/tat-management still exists and stays admin-gated;
-      // set `hidden: false` (or delete the flag) to bring the tab back in the nav.
+      // Partner chat inbox: the counselling team and Super Admin (0, 3, 4).
+      {
+        label: "Partner Chat",
+        href: "/admin/partner-chat",
+        icon: <ChatIcon />,
+        badgeKey: "partnerChat",
+        codes: [0, 3, 4],
+      },
+      // TAT Management: real data for Chat Response (partner chat); the other
+      // actions are still dev-only samples. Super Admin, Operations Lead,
+      // Counsellor Lead, Counsellor (0, 5, 3, 4); the server enforces the same.
       {
         label: "TAT Management",
         href: "/admin/tat-management",
         icon: <ClockIcon />,
-        hidden: true,
+        codes: [0, 5, 3, 4],
       },
       // Deprecated in favour of TAT Management (itself deferred to phase 2).
       // Hidden from the nav; set `hidden: false` to restore.

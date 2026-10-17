@@ -13,6 +13,7 @@ import { AdminRole } from "~/server/db/enums";
 import { DepartmentsPanel } from "./departments-panel";
 import { CounsellingTeamsPanel } from "./counselling-teams-panel";
 import { PartnerTiersPanel } from "./partner-tiers-panel";
+import { TatSettingsPanel } from "./tat-settings-panel";
 
 const SECTIONS = [
   { id: "general", icon: "bolt", label: "General Settings" },
@@ -22,11 +23,12 @@ const SECTIONS = [
   { id: "departments", icon: "partners", label: "Departments" },
   { id: "teams", icon: "students", label: "Counselling Teams" },
   { id: "tiers", icon: "revenue", label: "Partner Tiers" },
+  { id: "tat", icon: "clock", label: "TAT Settings" },
   { id: "system", icon: "globe", label: "System Info" },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"];
 // Master data only a Super Admin may see or manage.
-const SUPER_ADMIN_SECTIONS: readonly SectionId[] = ["departments", "teams", "tiers"];
+const SUPER_ADMIN_SECTIONS: readonly SectionId[] = ["departments", "teams", "tiers", "tat"];
 
 const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -424,6 +426,16 @@ export default function SettingsPage() {
             ) : (
               <div className={`${CARD} p-5`}>
                 <AdminNotice show text={meQ.isLoading ? "Loading…" : "Only Super Admins can view or manage counselling teams"} />
+              </div>
+            )
+          )}
+
+          {section === "tat" && (
+            isSuperAdmin ? (
+              <TatSettingsPanel toast={toast} />
+            ) : (
+              <div className={`${CARD} p-5`}>
+                <AdminNotice show text={meQ.isLoading ? "Loading…" : "Only Super Admins can view or manage TAT settings"} />
               </div>
             )
           )}

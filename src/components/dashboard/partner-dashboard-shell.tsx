@@ -21,6 +21,11 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
     refetchOnWindowFocus: true,
   });
   const branding = api.settings.branding.useQuery().data;
+  // Chat threads with unread Collegepond messages (sidebar badge).
+  const chatUnread = api.partnerChat.partnerUnreadCount.useQuery(undefined, {
+    refetchInterval: 30_000,
+    retry: false,
+  }).data;
   const markAllRead = api.partnerNotifications.markAllRead.useMutation({
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
@@ -71,6 +76,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       <Sidebar
         sections={sections}
         logoSubtitle="Partner Portal"
+        badges={{ chat: chatUnread ?? 0 }}
         onLogout={handleLogout}
         logoUrl={branding?.partnerLogoUrl}
       />

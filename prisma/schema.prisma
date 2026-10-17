@@ -520,6 +520,7 @@ model student {
   document                  document[]
   whatsapp_message          whatsapp_message[]
   partner_update            student_partner_update[]
+  partner_chat_thread       partner_chat_thread?
   organization              organization?               @relation(fields: [org_id], references: [id], map: "fk_student_organization")
   user                      user?                       @relation("student_counsellor", fields: [counsellor_id], references: [id], onUpdate: NoAction, map: "fk_student_user")
   cp_counsellor             collegepond_user?           @relation(fields: [cp_counsellor_id], references: [id], onDelete: SetNull, map: "fk_student_cp_counsellor")
@@ -1347,4 +1348,129 @@ model geo_city {
 
   @@index([state_id, name], map: "idx_geo_city_state_name")
   @@index([country_iso2, name], map: "idx_geo_city_country_name")
+}
+
+// Partner chat: one thread per student between the partner side and
+// Collegepond (see migrations/20261017061915_partner_chat.sql). Participants
+// aren't stored; they follow the student's assignment
+// (src/server/partner-chat-access.ts). Sender/uploader ids are plain ids; the
+// FKs live in schema.sql.
+model partner_chat_thread {
+  id                  Int                       @id @default(autoincrement())
+  student_id          Int                       @unique(map: "uq_partner_chat_thread_student")
+  last_message_id     Int?
+  last_message_at     DateTime?                 @db.Timestamp(0)
+  last_sender_side    String?                   @db.VarChar(10)
+  last_preview        String?                   @db.VarChar(200)
+  // TAT clock: the first partner message still waiting for a Collegepond reply.
+  awaiting_since      DateTime?                 @db.Timestamp(0)
+  awaiting_message_id Int?
+  tat_warned_at       DateTime?                 @db.Timestamp(0)
+  tat_breached_at     DateTime?                 @db.Timestamp(0)
+  created_at          DateTime                  @default(now()) @db.Timestamp(0)
+  updated_at          DateTime                  @default(now()) @updatedAt @db.Timestamp(0)
+  student             student                   @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_thread_student")
+  message             partner_chat_message[]
+  attachment          partner_chat_attachment[]
+  read                partner_chat_read[]
+
+  @@index([last_message_at], map: "idx_partner_chat_thread_last")
+  @@index([awaiting_since], map: "idx_partner_chat_thread_awaiting")
+}
+
+// kind: "user" | "system"; sender_side: "partner" | "staff" | "system".
+// tat_* is set on the Collegepond reply that ended a wait.
+model partner_chat_message {
+  id                        Int                       @id @default(autoincrement())
+  thread_id                 Int
+  kind                      String                    @default("user") @db.VarChar(10)
+  sender_side               String                    @db.VarChar(10)
+  sender_user_id            Int?
+  sender_cp_user_id         Int?
+  impersonator_cp_user_id   Int?
+  body                      String?                   @db.Text
+  edited_at                 DateTime?                 @db.Timestamp(0)
+  tat_started_at            DateTime?                 @db.Timestamp(0)
+  tat_business_minutes      Int?
+  tat_counsellor_cp_user_id Int?
+  created_at                DateTime                  @default(now()) @db.Timestamp(0)
+  thread                    partner_chat_thread       @relation(fields: [thread_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_message_thread")
+  attachment                partner_chat_attachment[]
+
+  @@index([thread_id, id], map: "idx_partner_chat_message_thread")
+  @@index([tat_started_at], map: "idx_partner_chat_message_tat")
+  @@index([sender_user_id], map: "fk_partner_chat_message_user_idx")
+  @@index([sender_cp_user_id], map: "fk_partner_chat_message_cp_user_idx")
+}
+
+// A file sent in chat. Uploaded first (message_id null), then attached by the
+// send; saved_document_id once copied into the student's documents.
+model partner_chat_attachment {
+  id                     Int                   @id @default(autoincrement())
+  thread_id              Int
+  message_id             Int?
+  uploaded_side          String                @db.VarChar(10)
+  uploaded_by_user_id    Int?
+  uploaded_by_cp_user_id Int?
+  file_name              String                @db.VarChar(255)
+  file_url               String                @db.VarChar(500)
+  mime_type              String?               @db.VarChar(100)
+  size_bytes             Int?
+  saved_document_id      Int?
+  saved_at               DateTime?             @db.Timestamp(0)
+  created_at             DateTime              @default(now()) @db.Timestamp(0)
+  thread                 partner_chat_thread   @relation(fields: [thread_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_attachment_thread")
+  message                partner_chat_message? @relation(fields: [message_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_attachment_message")
+
+  @@index([message_id], map: "idx_partner_chat_attachment_message")
+  @@index([thread_id], map: "idx_partner_chat_attachment_thread")
+  @@index([file_url], map: "idx_partner_chat_attachment_file")
+  @@index([saved_document_id], map: "fk_partner_chat_attachment_document_idx")
+}
+
+// Read position per participant: side "partner" (reader_id = user.id) or
+// "staff" (reader_id = cp_user.id). emailed_through_message_id: how far the
+// unread-message email has covered.
+model partner_chat_read {
+  id                         Int                 @id @default(autoincrement())
+  thread_id                  Int
+  side                       String              @db.VarChar(10)
+  reader_id                  Int
+  last_read_message_id       Int                 @default(0)
+  emailed_through_message_id Int                 @default(0)
+  read_at                    DateTime?           @db.Timestamp(0)
+  thread                     partner_chat_thread @relation(fields: [thread_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_read_thread")
+
+  @@unique([thread_id, side, reader_id], map: "uq_partner_chat_read")
+}
+
+// TAT master (Settings -> TAT Settings, Super Admin). One row (id 1):
+// working days ("1,2,…" with ISO 1 = Monday) and hours in minutes from midnight.
+model tat_setting {
+  id                    Int      @id
+  timezone              String   @default("Asia/Kolkata") @db.VarChar(64)
+  work_days             String   @default("1,2,3,4,5,6") @db.VarChar(20)
+  day_start_minute      Int      @default(600) @db.SmallInt
+  day_end_minute        Int      @default(1140) @db.SmallInt
+  updated_by_cp_user_id Int?
+  updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
+}
+
+model tat_holiday {
+  id           Int      @id @default(autoincrement())
+  holiday_date DateTime @unique(map: "uq_tat_holiday_date") @db.Date
+  name         String   @db.VarChar(100)
+  created_at   DateTime @default(now()) @db.Timestamp(0)
+}
+
+// Per-action TAT target. "chat_response" = Collegepond replying in partner chat.
+model tat_action_target {
+  id                    Int      @id @default(autoincrement())
+  action_key            String   @unique(map: "uq_tat_action_target_key") @db.VarChar(50)
+  label                 String   @db.VarChar(100)
+  threshold_minutes     Int
+  warning_pct           Int      @default(80) @db.TinyInt
+  active                Int      @default(1) @db.TinyInt
+  updated_by_cp_user_id Int?
+  updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
 }
