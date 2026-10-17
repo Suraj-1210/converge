@@ -381,6 +381,11 @@ CREATE TABLE IF NOT EXISTS `student` (
   `medical_condition`         TINYINT NULL DEFAULT NULL,
   `medical_condition_details` VARCHAR(500) NULL DEFAULT NULL,
   `highest_education_level`   TINYINT UNSIGNED NULL DEFAULT NULL,  -- EducationLevel enum
+  -- Manual Inactive (overall student status); NULL inactive_at = not set.
+  `inactive_at`               TIMESTAMP    NULL DEFAULT NULL,
+  `inactive_reason`           VARCHAR(20)  NULL DEFAULT NULL,  -- InactiveReason enum
+  `inactive_note`             VARCHAR(255) NULL DEFAULT NULL,
+  `inactive_by_cp_user_id`    INT          NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `student_email_UNIQUE`  (`email` ASC) VISIBLE,
   INDEX `fk_student_organization1_idx` (`org_id` ASC) VISIBLE,
@@ -388,6 +393,7 @@ CREATE TABLE IF NOT EXISTS `student` (
   INDEX `idx_student_status`           (`status` ASC) VISIBLE,
   INDEX `idx_student_cp_counsellor`    (`cp_counsellor_id` ASC) VISIBLE,
   INDEX `idx_student_created_by`       (`created_by_user_id` ASC) VISIBLE,
+  INDEX `fk_student_inactive_by_idx`   (`inactive_by_cp_user_id` ASC) VISIBLE,
   CONSTRAINT `fk_student_organization`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
     ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -399,6 +405,9 @@ CREATE TABLE IF NOT EXISTS `student` (
     ON DELETE SET NULL,
   CONSTRAINT `fk_student_created_by`
     FOREIGN KEY (`created_by_user_id`) REFERENCES `user` (`id`)
+    ON DELETE SET NULL,
+  CONSTRAINT `fk_student_inactive_by`
+    FOREIGN KEY (`inactive_by_cp_user_id`) REFERENCES `cp_user` (`id`)
     ON DELETE SET NULL
 ) ENGINE = InnoDB AUTO_INCREMENT = 10001;
 
@@ -492,6 +501,7 @@ CREATE TABLE IF NOT EXISTS `application` (
   `university_app_id`  VARCHAR(100) NULL DEFAULT NULL,
   `counsellor_vendor`  VARCHAR(100) NULL DEFAULT NULL,
   `conditional_docs`   JSON NULL DEFAULT NULL,
+  `pending_docs`       JSON NULL DEFAULT NULL,  -- [{key,label,receivedAt}] named at Documents Pending
   `deposit_deadline`   DATE NULL DEFAULT NULL,
   `deposit_amount`     DECIMAL(12,2) NULL DEFAULT NULL,
   `deposit_currency`   CHAR(3) NULL DEFAULT NULL,
@@ -942,6 +952,44 @@ CREATE TABLE IF NOT EXISTS `application_stage_history` (
   CONSTRAINT `fk_stage_history_application`
     FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
     ON DELETE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- application_partner_report  (FK -> application, document, user, cp_user)
+-- A partner's report of Deposit Paid or a visa outcome, with the supporting
+-- student document; pending until a Collegepond counsellor confirms it.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `application_partner_report` (
+  `id`                    INT NOT NULL AUTO_INCREMENT,
+  `application_id`        INT NOT NULL,
+  `from_status`           TINYINT UNSIGNED NOT NULL,  -- application.status when reported
+  `target_status`         TINYINT UNSIGNED NOT NULL,  -- what the partner reports
+  `document_id`           INT NULL DEFAULT NULL,      -- supporting file (student document)
+  `note`                  VARCHAR(500) NULL DEFAULT NULL,
+  `reported_by_user_id`   INT NULL DEFAULT NULL,
+  `status`                TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 pending, 1 confirmed, 2 rejected
+  `decided_by_cp_user_id` INT NULL DEFAULT NULL,
+  `decided_at`            TIMESTAMP NULL DEFAULT NULL,
+  `decision_note`         VARCHAR(500) NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_apr_application_status` (`application_id` ASC, `status` ASC) VISIBLE,
+  INDEX `fk_apr_document_idx` (`document_id` ASC) VISIBLE,
+  INDEX `fk_apr_user_idx` (`reported_by_user_id` ASC) VISIBLE,
+  INDEX `fk_apr_cp_user_idx` (`decided_by_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_apr_application`
+    FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_apr_document`
+    FOREIGN KEY (`document_id`) REFERENCES `document` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_apr_user`
+    FOREIGN KEY (`reported_by_user_id`) REFERENCES `user` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_apr_cp_user`
+    FOREIGN KEY (`decided_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
 

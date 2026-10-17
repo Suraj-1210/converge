@@ -18,7 +18,7 @@ import {
   staffParticipants,
 } from "~/server/partner-chat-access";
 import { type StaffUser } from "~/server/staff-access";
-import { documentChange, recordPartnerChange } from "~/server/student-changes";
+import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server/student-changes";
 import { checkStudentDocFile, saveStudentDocument, studentDocTypeByKey } from "~/server/student-docs";
 import { readStoredFile, resolveStorageUrl, saveBuffer } from "~/server/storage";
 import {
@@ -626,6 +626,8 @@ async function fileAttachments(
       });
       await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_document_id: doc.id } });
       changes.push({ studentId: a.thread.student_id, change: documentChange(it.docType.key, a.file_name) });
+      // Documents Pending items this save ticked off (saveStudentDocument).
+      for (const change of pendingDocChanges(doc.ticks)) changes.push({ studentId: a.thread.student_id, change });
       results.push({ attachmentId: a.id, fileName: a.file_name, label, error: null });
     } catch (e) {
       await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_at: null } });

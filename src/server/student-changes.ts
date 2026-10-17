@@ -33,7 +33,7 @@ export interface FieldChange {
   from: string | null;
   to: string | null;
 }
-export type ChangeSection = "profile" | "academics" | "work" | "tests" | "documents";
+export type ChangeSection = "profile" | "academics" | "work" | "tests" | "documents" | "applications";
 
 export const SECTION_LABEL: Record<ChangeSection, string> = {
   profile: "Personal information",
@@ -41,6 +41,7 @@ export const SECTION_LABEL: Record<ChangeSection, string> = {
   work: "Work experience",
   tests: "Tests",
   documents: "Documents",
+  applications: "Applications",
 };
 
 const MAX_VALUE = 120;
@@ -356,8 +357,21 @@ async function emailCounsellingTeam(
   }
 }
 
+// Documents Pending items an upload ticked off, as change lines.
+export function pendingDocChanges(
+  ticks: { university: string; ticked: string[]; allReceived: boolean }[],
+): FieldChange[] {
+  return ticks.map((t) => ({
+    field: `Documents Pending (${t.university})`,
+    from: null,
+    to: `${t.ticked.join(", ")} received${t.allReceived ? " — all pending documents now received" : ""}`,
+  }));
+}
+
 export function formatChange(c: FieldChange, section?: string): string {
+  if (section === "documents" && c.field.startsWith("Documents Pending")) return `${c.field}: ${c.to ?? ""}`;
   if (section === "documents") return `${c.field} uploaded: ${c.to ?? ""}`;
+  if (section === "applications") return `${c.field}: ${c.to ?? ""}`;
   if (c.from === null) return `${c.field}: added "${c.to}"`;
   if (c.to === null) return `${c.field}: removed (was "${c.from}")`;
   return `${c.field}: "${c.from}" → "${c.to}"`;

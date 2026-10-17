@@ -3,14 +3,16 @@ import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { UniApplicationStatusLabel } from "~/server/db/enums";
+import { APPLICATION_STAGE_ORDER, CLOSED_STAGES } from "~/lib/application-stages";
 import { requireStaffApplication, staffApplicationScope } from "~/server/staff-access";
 
 const PAGE_SIZE = 20;
 const MS_DAY = 86_400_000;
-// application.status: 0–8 happy path (active), 20+ terminal (closed).
+// application.status: < 20 happy path (active), 20+ terminal (closed).
+// Deposits covers Deposit Paid, Visa Filed (9) and Visa Secured.
 const IN_PROGRESS = [0, 1, 2, 3];
 const OFFERS = [4, 5];
-const DEPOSITS = [6, 7];
+const DEPOSITS = [6, 9, 7];
 const ENROLLED = [8];
 
 export const applicationsRouter = createTRPCRouter({
@@ -23,7 +25,11 @@ export const applicationsRouter = createTRPCRouter({
     });
     return {
       partners: orgs.map((o) => ({ id: o.id, name: o.name })),
-      statuses: Object.entries(UniApplicationStatusLabel).map(([code, label]) => ({ code: Number(code), label })),
+      // Pipeline order (Visa Filed between Deposit Paid and Visa Secured).
+      statuses: [...APPLICATION_STAGE_ORDER, ...CLOSED_STAGES].map((code) => ({
+        code: code as number,
+        label: UniApplicationStatusLabel[code],
+      })),
     };
   }),
 

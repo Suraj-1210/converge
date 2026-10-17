@@ -299,7 +299,17 @@ const portal = (appUrl: string, path: string) => `${appUrl.replace(/\/+$/, "")}$
 // 11. A student's university application moved to a new status.
 export function applicationStatusEmail(
   p: PartnerRef,
-  a: { studentName: string; university: string; program: string; status: string; note?: string | null },
+  a: {
+    studentName: string;
+    university: string;
+    program: string;
+    status: string;
+    note?: string | null;
+    // A titled list under the summary, e.g. the documents still needed.
+    items?: { title: string; list: string[] } | null;
+    // Portal path the button opens (default: the Students list).
+    path?: string;
+  },
   appUrl: string,
 ): EmailMessage {
   return build(
@@ -316,8 +326,11 @@ export function applicationStatusEmail(
           `New status: ${a.status}`,
         ],
       },
+      ...(a.items && a.items.list.length > 0
+        ? ([{ p: a.items.title }, { list: a.items.list }] as Block[])
+        : []),
       ...(a.note?.trim() ? [{ p: a.note.trim() } as Block] : []),
-      { button: { label: "View in the Partner Portal", url: portal(appUrl, "/partner/students") } },
+      { button: { label: "View in the Partner Portal", url: portal(appUrl, a.path ?? "/partner/students") } },
     ],
   );
 }

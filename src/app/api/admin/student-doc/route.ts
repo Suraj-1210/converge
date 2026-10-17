@@ -29,9 +29,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
-  return storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, {
-    // Real admin while impersonating a staff user (see impersonation-context).
-    byCpUserId: claims.realId ?? claims.id,
-    ...(claims.realId ? { impersonation: { kind: "staff", id: claims.id } } : {}),
-  });
+  return storeStudentDocument(
+    parsed.studentId,
+    parsed.docType,
+    parsed.file,
+    {
+      // Real admin while impersonating a staff user (see impersonation-context).
+      byCpUserId: claims.realId ?? claims.id,
+      ...(claims.realId ? { impersonation: { kind: "staff", id: claims.id } } : {}),
+    },
+    parsed.pendingItem,
+  );
 }

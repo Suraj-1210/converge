@@ -6,15 +6,16 @@ import { currentTierFy, ladderFor, partnerTierStatuses, type PartnerRef } from "
 import { AdminRole, UserType } from "~/server/db/enums";
 
 // application.status (UniApplicationStatus): 0 begin · 1 docs · 2 submitted · 3 review ·
-// 4 conditional offer · 5 unconditional offer · 6 deposit · 7 visa · 8 enrolled · 20+ terminal.
+// 4 conditional offer · 5 unconditional offer · 6 deposit · 9 visa filed · 7 visa · 8 enrolled ·
+// 20+ terminal. (Visa Filed's code is out of order: ~/lib/application-stages.)
 const ACTIVE_APP = { lt: 20 };
-const DEPOSIT_STATUSES = [6, 7, 8];
+const DEPOSIT_STATUSES = [6, 9, 7, 8];
 function pipeSegment(status: number): "leads" | "preapp" | "submitted" | "offer" | "deposit" | null {
   if (status === 0) return "leads";
   if (status === 1) return "preapp";
   if (status === 2 || status === 3) return "submitted";
   if (status === 4 || status === 5) return "offer";
-  if (status >= 6 && status <= 8) return "deposit";
+  if (DEPOSIT_STATUSES.includes(status)) return "deposit";
   return null;
 }
 

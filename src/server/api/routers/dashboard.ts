@@ -9,6 +9,7 @@ import {
 import { partnerCommissionRouter } from "~/server/api/routers/partner-commission";
 import { type db as appDb } from "~/server/db";
 import { AdminRole, UniApplicationStatus, UserStatus, UserType } from "~/server/db/enums";
+import { stageIndex } from "~/lib/application-stages";
 import {
   isCounsellingRole,
   staffApplicationScope,
@@ -34,8 +35,10 @@ import {
 //                  counsellors with no org, the students they created).
 //
 // Milestone KPIs use the happy-path ordering of UniApplicationStatus
-// (offer 4/5 → deposit 6 → visa 7). "Offers"/"Deposits" count apps at that
-// stage OR beyond, so a deposit-paid app still counts as having an offer.
+// (offer 4/5 → deposit 6 → visa filed 9 → visa 7 → enrolled 8; codes are not
+// in order, see ~/lib/application-stages). "Offers"/"Deposits" count apps at
+// that stage OR beyond, so a deposit-paid app still counts as having an offer.
+// "Visas" means secured: a filed visa is not yet a visa.
 // Terminal outcomes (>=20: rejected/withdrawn/etc.) are intentionally excluded.
 // ---------------------------------------------------------------------------
 
@@ -43,11 +46,13 @@ const OFFER_OR_BEYOND = [
   UniApplicationStatus.CONDITIONAL_OFFER,
   UniApplicationStatus.UNCONDITIONAL_OFFER,
   UniApplicationStatus.DEPOSIT_PAID,
+  UniApplicationStatus.VISA_FILED,
   UniApplicationStatus.VISA_SECURED,
   UniApplicationStatus.ENROLLED,
 ];
 const DEPOSIT_OR_BEYOND = [
   UniApplicationStatus.DEPOSIT_PAID,
+  UniApplicationStatus.VISA_FILED,
   UniApplicationStatus.VISA_SECURED,
   UniApplicationStatus.ENROLLED,
 ];
@@ -237,10 +242,11 @@ export const dashboardRouter = createTRPCRouter({
     const revenueYtd = Number(revYtdAgg._sum.commision_amount ?? 0);
     const revenueLastYtd = Number(revLastYtdAgg._sum.commision_amount ?? 0);
 
-    // Application queue — count per stage, ascending.
+    // Application queue — count per stage, in pipeline order, closed last.
+    const queueOrder = (s: number) => (stageIndex(s) >= 0 ? stageIndex(s) : 100 + s);
     const applicationQueue = queueRaw
       .map((g) => ({ status: g.status, count: g._count }))
-      .sort((a, b) => a.status - b.status);
+      .sort((a, b) => queueOrder(a.status) - queueOrder(b.status));
 
     // Top partners — students from topOrgsRaw, enriched with apps/deposits/revenue.
     // Agencies only: an independent counsellor's applications and

@@ -38,13 +38,17 @@ import {
 import { decryptSecret, encryptSecret } from "~/server/crypto";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
-import { appUrl, applicationStatusEmail } from "~/server/email";
-import { emailPartners, studentPartnerRecipients } from "~/server/email/partners";
+import {
+  syncStudentStatusFromApplications,
+  transitionApplication,
+} from "~/server/application-transitions";
+import { parsePendingDocs } from "~/server/pending-docs";
+import { currentStage } from "~/lib/application-stages";
+import { leadPipelineStep, overallStudentStatus } from "~/lib/student-pipeline";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
 const LIST_CAP = 500;
 import {
-  APP_TO_STUDENT_STATUS,
   AdminRole,
   COURSE_LEVEL_CODES,
   EDUCATION_LEVEL_CODES,
@@ -54,10 +58,9 @@ import {
   NOTE_PRIORITY_CODES,
   STUDENT_STATUS_CODES,
   StudentStatus,
-  TERMINAL_FALLBACK_STAGE,
+  PartnerReportStatus,
   UNI_APP_STATUS_CODES,
   UniApplicationStatus,
-  UniApplicationStatusLabel,
   UserStatus,
   UserType,
   type CourseLevel,
@@ -71,45 +74,6 @@ import {
 // ---------------------------------------------------------------------------
 // Shared shapes
 // ---------------------------------------------------------------------------
-
-// Partner email for a student's application moving to `status`.
-async function notifyApplicationStatus(applicationId: number, status: number): Promise<void> {
-  try {
-    const a = await db.application.findUnique({
-      where: { id: applicationId },
-      select: {
-        student_id: true,
-        student: { select: { first_name: true, last_name: true } },
-        course: { select: { name: true, university: { select: { name: true } } } },
-      },
-    });
-    if (!a) return;
-    const recipients = await studentPartnerRecipients(a.student_id);
-    const label = UniApplicationStatusLabel[status as UniApplicationStatus] ?? "Updated";
-    await emailPartners(
-      recipients,
-      (r) =>
-        applicationStatusEmail(
-          r,
-          {
-            studentName: `${a.student.first_name} ${a.student.last_name}`.trim(),
-            university: a.course.university.name,
-            program: a.course.name,
-            status: label,
-          },
-          appUrl(),
-        ),
-      "application-status",
-      // Offers have their own toggle ("Offer Letter Received").
-      status === UniApplicationStatus.CONDITIONAL_OFFER ||
-        status === UniApplicationStatus.UNCONDITIONAL_OFFER
-        ? "app.offer"
-        : "app.status",
-    );
-  } catch (e) {
-    console.error("[email] application-status lookup failed:", e instanceof Error ? e.message : e);
-  }
-}
 
 const studentInclude = {
   organization: {
@@ -134,6 +98,7 @@ const studentInclude = {
     select: {
       id: true,
       status: true,
+      stage_history: { select: { stage: true } },
       course: {
         select: {
           id: true,
@@ -143,6 +108,9 @@ const studentInclude = {
       },
     },
   },
+  // Overall status (document checklist) and the partner lead pipeline.
+  document: { where: { is_most_recent: 1 }, select: { doc_type: true } },
+  _count: { select: { shortlist: true } },
 } as const;
 
 type DbStudent = NonNullable<
@@ -158,6 +126,10 @@ function fullName(p: { first_name: string; last_name: string }): string {
 function toApi(s: DbStudent) {
   const owner = s.organization?.user[0];
   const bdm = owner?.collegepond_user_user_bdm_idTocollegepond_user ?? null;
+  const pipelineApps = s.application.map((a) => ({
+    status: a.status,
+    stage: currentStage(a.status, a.stage_history),
+  }));
   return {
     id: s.id,
     firstName: s.first_name,
@@ -218,9 +190,25 @@ function toApi(s: DbStudent) {
     applications: s.application.map((a) => ({
       id: a.id,
       status: a.status,
+      stage: currentStage(a.status, a.stage_history),
       program: a.course.name,
       university: a.course.university.name,
     })),
+    // Overall student status (Students tab) and the partner lead pipeline
+    // step: src/lib/student-pipeline.ts.
+    overallStatus: overallStudentStatus({
+      inactiveAt: s.inactive_at,
+      apps: pipelineApps,
+      docTypes: s.document.map((d) => d.doc_type),
+    }),
+    inactive: s.inactive_at
+      ? { at: s.inactive_at.toISOString(), reason: s.inactive_reason, note: s.inactive_note }
+      : null,
+    leadStep: leadPipelineStep({
+      status: s.status,
+      hasShortlist: s._count.shortlist > 0,
+      apps: pipelineApps,
+    }),
   };
 }
 
@@ -282,20 +270,6 @@ function toCourseCard(c: {
   };
 }
 
-// Current happy-path stage (0–7) of an application: the status itself when
-// on the happy path, else the furthest stage reached per history, else a
-// sensible default for the terminal outcome.
-function currentStage(
-  status: number,
-  history: Array<{ stage: number }>,
-): number {
-  if (status <= UniApplicationStatus.ENROLLED) return status;
-  if (history.length > 0) return Math.max(...history.map((h) => h.stage));
-  return (
-    TERMINAL_FALLBACK_STAGE[status] ?? UniApplicationStatus.VISA_SECURED
-  );
-}
-
 // Shortlisting moves fresh leads to the Shortlisted stage (mock behaviour).
 // Deliberate flags (No Interest / No Response) stay put. Shared by the admin
 // and partner shortlist actions.
@@ -308,29 +282,6 @@ async function markStudentsShortlisted(studentIds: number[]) {
       },
     },
     data: { status: StudentStatus.SHORTLISTED },
-  });
-}
-
-// Mirrors the student's pipeline status from their furthest active
-// application (the mock's syncAppStatusToStudentTable). No-op for students
-// with no applications.
-async function syncStudentStatusFromApplications(studentId: number) {
-  const apps = await db.application.findMany({
-    where: { student_id: studentId },
-    select: { status: true },
-  });
-  if (apps.length === 0) return;
-  const active = apps.filter((a) => a.status < 20);
-  const primary =
-    active.length > 0
-      ? active.reduce((best, a) => (a.status > best.status ? a : best))
-      : apps[0]!;
-  const mapped =
-    APP_TO_STUDENT_STATUS[primary.status as UniApplicationStatus];
-  if (mapped === undefined) return;
-  await db.student.update({
-    where: { id: studentId },
-    data: { status: mapped },
   });
 }
 
@@ -475,7 +426,8 @@ function toPartnerApi(s: DbStudent) {
   void cpCounsellorName;
   void cpAutoAssigned;
   void bdmName;
-  return rest;
+  // The partner sees that (and why) a student is Inactive, not the note.
+  return { ...rest, inactive: rest.inactive ? { ...rest.inactive, note: null } : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -802,9 +754,25 @@ async function loadStudentFull(id: number) {
         university_app_id: true,
         counsellor_vendor: true,
         conditional_docs: true,
+        pending_docs: true,
         deposit_deadline: true,
         deposit_amount: true,
         deposit_currency: true,
+        // The newest partner report (pending, or how the last one ended).
+        partner_report: {
+          orderBy: { created_at: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            target_status: true,
+            status: true,
+            note: true,
+            decision_note: true,
+            created_at: true,
+            decided_at: true,
+            document: { select: { id: true, file_name: true, file_url: true } },
+          },
+        },
         stage_history: {
           orderBy: { stage: "asc" },
           select: { stage: true, occurred_at: true },
@@ -931,6 +899,9 @@ async function loadStudentFull(id: number) {
       conditionalDocs: Array.isArray(a.conditional_docs)
         ? (a.conditional_docs as string[])
         : [],
+      // Named at Documents Pending; ticked off as they're uploaded.
+      pendingDocs: parsePendingDocs(a.pending_docs),
+      partnerReport: toReportCard(a.partner_report[0]),
       depositDeadline: a.deposit_deadline
         ? a.deposit_deadline.toISOString().slice(0, 10)
         : null,
@@ -954,6 +925,41 @@ async function loadStudentFull(id: number) {
   };
 }
 
+// The newest partner report on an application, for its card.
+function toReportCard(
+  r:
+    | {
+        id: number;
+        target_status: number;
+        status: number;
+        note: string | null;
+        decision_note: string | null;
+        created_at: Date;
+        decided_at: Date | null;
+        document: { id: number; file_name: string; file_url: string } | null;
+      }
+    | undefined,
+) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    targetStatus: r.target_status,
+    status: r.status,
+    pending: r.status === PartnerReportStatus.PENDING,
+    note: r.note,
+    decisionNote: r.decision_note,
+    createdAt: r.created_at.toISOString(),
+    decidedAt: r.decided_at?.toISOString() ?? null,
+    document: r.document
+      ? {
+          id: r.document.id,
+          fileName: r.document.file_name,
+          fileUrl: resolveStorageUrl(r.document.file_url),
+        }
+      : null,
+  };
+}
+
 // The partner's view of the full profile: same shape as the admin one, with
 // Collegepond-internal details blanked (staff notes, CP counsellor and BDM,
 // application vendor, portal login).
@@ -965,6 +971,7 @@ function toPartnerFull(full: Awaited<ReturnType<typeof loadStudentFull>>) {
     cpAutoAssigned: false,
     bdmName: null,
     notes: [],
+    inactive: full.inactive ? { ...full.inactive, note: null } : null,
     partnerUpdates: [] as Awaited<ReturnType<typeof pendingPartnerUpdates>>,
     applicationCards: full.applicationCards.map((a) => ({
       ...a,
@@ -1558,100 +1565,29 @@ export const studentsRouter = createTRPCRouter({
             (v) => UNI_APP_STATUS_CODES.includes(v as UniApplicationStatus),
             { message: "Invalid application status" },
           ),
+        // Required when moving to Documents Pending: what is still needed.
+        pendingDocs: z
+          .array(
+            z.object({
+              key: z.string().trim().min(1).max(50),
+              label: z.string().trim().max(120).nullish(),
+            }),
+          )
+          .max(20)
+          .nullish(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       await requireStaffApplication(ctx.cpUser, input.applicationId);
-      const app = await db.application.findUnique({
-        where: { id: input.applicationId },
-        select: {
-          id: true,
-          status: true,
-          student_id: true,
-          submitted_at: true,
-          decided_at: true,
-          stage_history: { select: { stage: true } },
-        },
+      // Stage history, dates, pending documents, student status, partner
+      // notifications and audit all live in the shared transition.
+      const res = await transitionApplication({
+        actor: { cpUserId: ctx.cpUser.id },
+        applicationId: input.applicationId,
+        targetStatus: input.status,
+        pendingDocs: input.pendingDocs ?? null,
       });
-      if (!app) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Application not found",
-        });
-      }
-      const target = input.status;
-      const stageBefore = currentStage(app.status, app.stage_history);
-      const upsertStage = (stage: number, bumpDate: boolean) =>
-        db.application_stage_history.upsert({
-          where: {
-            application_id_stage: {
-              application_id: app.id,
-              stage,
-            },
-          },
-          create: { application_id: app.id, stage },
-          update: bumpDate ? { occurred_at: new Date() } : {},
-        });
-
-      if (target <= UniApplicationStatus.ENROLLED) {
-        if (target < stageBefore) {
-          // Revert: drop history above the target (undo an accidental
-          // advance), keep the target entry's original date.
-          await db.application_stage_history.deleteMany({
-            where: { application_id: app.id, stage: { gt: target } },
-          });
-          await upsertStage(target, false);
-        } else {
-          // Advance (or re-confirm the current stage / clear a terminal).
-          await upsertStage(target, target > stageBefore);
-        }
-      } else {
-        // Terminal outcome — make sure the stage position survives.
-        await upsertStage(stageBefore, false);
-      }
-
-      const offerOrRejection =
-        target === UniApplicationStatus.CONDITIONAL_OFFER ||
-        target === UniApplicationStatus.UNCONDITIONAL_OFFER ||
-        target === UniApplicationStatus.REJECTED_BY_UNIVERSITY;
-      await db.application.update({
-        where: { id: app.id },
-        data: {
-          status: target,
-          submitted_at:
-            target >= UniApplicationStatus.APPLICATION_SUBMITTED
-              ? (app.submitted_at ?? new Date())
-              : null,
-          decided_at: offerOrRejection
-            ? (app.decided_at ?? new Date())
-            : target < UniApplicationStatus.CONDITIONAL_OFFER
-              ? null
-              : app.decided_at,
-        },
-      });
-      await syncStudentStatusFromApplications(app.student_id);
-
-      // Tell the partner — but not for a revert (an admin undoing a mistake)
-      // or a no-op re-save. Fire-and-forget: the status change is saved.
-      const isRevert = target <= UniApplicationStatus.ENROLLED && target < stageBefore;
-      if (target !== app.status && !isRevert) {
-        void notifyApplicationStatus(app.id, target);
-      }
-
-      await db.audit_log.create({
-        data: {
-          action: "application.status_updated",
-          entity_type: "application",
-          entity_id: app.id,
-          metadata: {
-            from: app.status,
-            to: target,
-            studentId: app.student_id,
-            byCpUserId: ctx.cpUser.id,
-          },
-        },
-      });
-      return { status: target };
+      return { status: res.status };
     }),
 
   setApplicationUniId: protectedAdminProcedure

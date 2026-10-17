@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { db } from "~/server/db";
 import { STUDENT_DOC_TYPES } from "~/server/db/enums";
 import { resolveStorageUrl, saveBuffer } from "~/server/storage";
+import { tickPendingDocs, type TickResult } from "~/server/pending-docs";
 
 // Student profile document uploads, shared by the admin route
-// (/api/admin/student-doc) and the partner route (/api/partner/student-doc).
-// The routes decide WHO may upload for a student; this decides WHAT may be
-// uploaded and how it is stored.
+// (/api/admin/student-doc), the partner route (/api/partner/student-doc),
+// partner chat's "Save to student documents" and the partner's application
+// reports (/api/partner/application-report). The callers decide WHO may
+// upload for a student; this decides WHAT may be uploaded and how it is
+// stored.
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -39,11 +42,24 @@ function resolveDocType(
 
 type Fail = { error: NextResponse };
 
-// Validates the multipart fields (studentId, docType, file). The caller checks
-// it may act on `studentId` before calling storeStudentDocument.
+// An upload made against one named Documents Pending item (an "Other"
+// document, uploaded from the partner's application card).
+export type PendingItemRef = { applicationId: number; itemId: number };
+
+// Validates the multipart fields (studentId, docType, file, and optionally
+// applicationId + pendingItemId). The caller checks it may act on
+// `studentId` before storing.
 export async function parseStudentDocUpload(
   req: Request,
-): Promise<Fail | { studentId: number; docType: { key: string; multiple: boolean }; file: File }> {
+): Promise<
+  | Fail
+  | {
+      studentId: number;
+      docType: { key: string; multiple: boolean };
+      file: File;
+      pendingItem: PendingItemRef | null;
+    }
+> {
   const bad = (error: string, status: number) => ({
     error: NextResponse.json({ error }, { status }),
   });
@@ -58,6 +74,8 @@ export async function parseStudentDocUpload(
   const docTypeRaw = formData.get("docType");
   const docTypeKey = typeof docTypeRaw === "string" ? docTypeRaw : "";
   const file = formData.get("file");
+  const applicationId = Number(formData.get("applicationId"));
+  const itemId = Number(formData.get("pendingItemId"));
 
   const docType = resolveDocType(docTypeKey);
   if (!docType) return bad("Unknown document type", 400);
@@ -65,11 +83,15 @@ export async function parseStudentDocUpload(
   if (!(file instanceof File)) return bad("No file provided", 400);
   const invalid = checkStudentDocFile(file);
   if (invalid) return bad(invalid.error, invalid.status);
-  return { studentId, docType, file };
+  const pendingItem =
+    Number.isInteger(applicationId) && applicationId > 0 && Number.isInteger(itemId) && itemId > 0
+      ? { applicationId, itemId }
+      : null;
+  return { studentId, docType, file, pendingItem };
 }
 
-// The size and type rules for any student file (profile documents and files
-// sent in partner chat). Null when the file is acceptable.
+// The size and type rules for any student file (profile documents, files
+// sent in partner chat, application report proofs). Null when acceptable.
 export function checkStudentDocFile(file: File): { error: string; status: number } | null {
   if (file.size === 0) return { error: "No file provided", status: 400 };
   if (file.size > MAX_BYTES) return { error: "File too large (max 10 MB)", status: 413 };
@@ -84,16 +106,14 @@ export function studentDocTypeByKey(key: string): { key: string; multiple: boole
   return fixed ? { key: fixed.key, multiple: fixed.multiple } : null;
 }
 
-// Stores the file privately and records it. Single-slot doc types supersede
-// the previous upload (is_most_recent = 0); multi-slot types accumulate.
-// `actor` goes into the audit log as-is (who uploaded, admin or partner).
-export async function storeStudentDocument(
-  studentId: number,
-  docType: { key: string; multiple: boolean },
-  file: File,
-  actor: Record<string, unknown>,
-) {
-  const doc = await saveStudentDocument(studentId, docType, file, actor);
+// The upload routes' JSON response for a saved document.
+export function studentDocJson(doc: {
+  id: number;
+  doc_type: string;
+  file_name: string;
+  file_url: string;
+  size_bytes: number | null;
+}) {
   return NextResponse.json({
     id: doc.id,
     docType: doc.doc_type,
@@ -103,13 +123,30 @@ export async function storeStudentDocument(
   });
 }
 
-// storeStudentDocument without the HTTP response, for server code (e.g.
-// "Save to student documents" from partner chat). Returns the new row.
+// saveStudentDocument as an HTTP response (the admin upload route).
+export async function storeStudentDocument(
+  studentId: number,
+  docType: { key: string; multiple: boolean },
+  file: File,
+  actor: Record<string, unknown>,
+  pendingItem?: PendingItemRef | null,
+) {
+  return studentDocJson(await saveStudentDocument(studentId, docType, file, actor, { pendingItem }));
+}
+
+// Stores the file privately and records it, for server code and the upload
+// routes. Single-slot doc types supersede the previous upload
+// (is_most_recent = 0); multi-slot types accumulate. `actor` goes into the
+// audit log as-is (who uploaded, admin or partner). Ticks off matching
+// Documents Pending items on the student's applications, whatever the path
+// (profile upload, chat save, report); `ticks` on the result says which, so
+// a partner's save can tell Collegepond. Returns the new row.
 export async function saveStudentDocument(
   studentId: number,
   docType: { key: string; multiple: boolean },
   file: File,
   actor: Record<string, unknown>,
+  opts: { description?: string | null; pendingItem?: PendingItemRef | null } = {},
 ) {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
   const buffer = Buffer.from(await file.arrayBuffer());
@@ -137,6 +174,7 @@ export async function saveStudentDocument(
       file_url: stored.url,
       mime_type: file.type || null,
       size_bytes: file.size,
+      description: opts.description?.slice(0, 255) ?? null,
     },
   });
   await db.audit_log.create({
@@ -147,5 +185,13 @@ export async function saveStudentDocument(
       metadata: { docType: docType.key, fileName: file.name, ...actor },
     },
   });
-  return doc;
+
+  let ticks: TickResult[] = [];
+  try {
+    ticks = await tickPendingDocs(studentId, docType.key, opts.pendingItem);
+  } catch (e) {
+    // The document is saved; a failed tick-off only leaves the item open.
+    console.error("[pending-docs] tick-off failed:", e instanceof Error ? e.message : e);
+  }
+  return { ...doc, ticks };
 }

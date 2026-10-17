@@ -5,7 +5,7 @@
 // before / after / the furthest" must go through stageIndex(), never compare
 // the raw codes.
 
-import { UniApplicationStatus } from "~/server/db/enums";
+import { TERMINAL_FALLBACK_STAGE, UniApplicationStatus } from "~/server/db/enums";
 
 // The happy path, by position.
 export const APPLICATION_STAGE_ORDER: UniApplicationStatus[] = [
@@ -144,4 +144,16 @@ export function stageTrackColour(code: number): string {
   if (isClosedStage(code)) return isNegativeClosedStage(code) ? "#FDA29B" : "#D0D5DD";
   if (code === UniApplicationStatus.ENROLLED) return "#12B76A";
   return "#1570EF";
+}
+
+// The happy-path stage an application is at: its status while open; for a
+// closed outcome, the furthest stage its history reached (by position), else
+// the typical stage for that outcome.
+export function currentStage(status: number, history: { stage: number }[]): UniApplicationStatus {
+  if (stageIndex(status) >= 0) return status as UniApplicationStatus;
+  return (
+    furthestStage(history.map((h) => h.stage)) ??
+    TERMINAL_FALLBACK_STAGE[status] ??
+    UniApplicationStatus.VISA_FILED
+  );
 }

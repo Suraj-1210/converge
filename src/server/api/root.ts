@@ -33,6 +33,7 @@ import { chatRouter } from "~/server/api/routers/chat";
 import { partnerChatRouter } from "~/server/api/routers/partner-chat";
 import { tatRouter } from "~/server/api/routers/tat";
 import { applicationsRouter } from "~/server/api/routers/applications";
+import { applicationPipelineRouter } from "~/server/api/routers/application-pipeline";
 import { notesRouter } from "~/server/api/routers/notes";
 import { impersonationRouter } from "~/server/api/routers/impersonation";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
@@ -73,6 +74,7 @@ export const appRouter = createTRPCRouter({
   partnerChat: partnerChatRouter,
   tat: tatRouter,
   applications: applicationsRouter,
+  applicationPipeline: applicationPipelineRouter,
   notes: notesRouter,
   dashboard: dashboardRouter,
 });
