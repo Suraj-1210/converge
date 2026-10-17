@@ -15,22 +15,13 @@ import {
   ShortlistTextDialog,
   shortlistView,
 } from "~/components/students/shortlist-approval";
-import { applicationSummary, isClosedApplication, splitByClosed } from "~/lib/application-summary";
-import {
-  APPLICATION_STAGE_ORDER,
-  isNegativeClosedStage,
-  stageIndex,
-  stageShortLabel,
-  stageTrackColour,
-} from "~/lib/application-stages";
+import { applicationSummary, splitByClosed } from "~/lib/application-summary";
 import { PendingDocsChecklist, ReportAction, ReportStatus } from "./pipeline-actions";
+import { stageTone } from "~/lib/application-stages";
+import { StageTrack } from "~/components/dashboard/stage-track";
 
 type Card = AdminStudentFull["applicationCards"][number];
 type Shortlist = AdminStudentFull["shortlists"][number];
-
-// The happy path an application moves along, in pipeline order (Visa Filed
-// sits between Deposit and Visa; ~/lib/application-stages).
-const STAGES = APPLICATION_STAGE_ORDER;
 
 const statusLabel = (s: number) =>
   (UniApplicationStatusLabel as Record<number, string | undefined>)[s] ?? "In progress";
@@ -273,9 +264,8 @@ function ApplicationCard({
   onChanged: () => void;
   onToast: (msg: string) => void;
 }) {
-  const closed = isClosedApplication(a.status);
   const enrolled = a.status === UniApplicationStatus.ENROLLED;
-  const fill = stageTrackColour(a.status);
+  const tone = stageTone(a.status);
   const reachedAt = new Map(a.stageHistory.map((h) => [h.stage, h.date]));
   const facts: [string, string | null][] = [
     ["Application fee", appFeeAmount(a.appFee, a.currency, a.hasAppFeeWaiver)],
@@ -298,50 +288,25 @@ function ApplicationCard({
             }}
           />
           <span
-            className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ${
-              closed
-                ? isNegativeClosedStage(a.status)
-                  ? "bg-[#FEF3F2] text-[#B42318]"
-                  : "bg-[#F2F4F7] text-[#475467]"
-                : enrolled
-                  ? "bg-[#ECFDF3] text-[#067647]"
-                  : "bg-[#EFF8FF] text-[#175CD3]"
-            }`}
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold"
+            style={{ color: tone.color, background: tone.bg }}
           >
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: tone.color }} />
             {statusLabel(a.status)}
           </span>
         </div>
       </div>
 
-      {/* Stage track: filled up to the furthest stage reached. A closed
-          application shows its outcome at the stage it stopped. */}
-      <ol className="mt-4 grid grid-cols-10 gap-1" aria-label="Application progress">
-        {STAGES.map((st) => {
-          const reached = stageIndex(st) <= stageIndex(a.stage);
-          const current = closed ? st === a.stage : a.status === st;
-          return (
-            <li key={st} className="min-w-0" title={`${statusLabel(st)}${reachedAt.get(st) ? ` · ${fmtDate(reachedAt.get(st)!)}` : ""}`}>
-              <div
-                className={`h-1.5 rounded-full ${current && !closed ? "ring-2 ring-[#B2CCFF]" : ""}`}
-                style={{ background: reached ? fill : "#EAECF0" }}
-              />
-              <div
-                className={`mt-1 truncate text-[10px] ${
-                  current
-                    ? closed
-                      ? "font-semibold text-[#B42318]"
-                      : "font-semibold text-[#1570EF]"
-                    : reached
-                      ? "text-[#475467]"
-                      : "text-[#98A2B3]"
-                }`}
-              >
-                {current && closed ? stageShortLabel(a.status) : stageShortLabel(st)}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+      {/* Stage track: the same stages and colours as the counsellor portal. */}
+      <div className="mt-4 overflow-x-auto pb-1">
+        <StageTrack
+          app={a}
+          titleFor={(st) => {
+            const at = reachedAt.get(st);
+            return `${statusLabel(st)}${at ? ` · ${fmtDate(at)}` : ""}`;
+          }}
+        />
+      </div>
 
       {/* Enrolled is the commission-claim milestone (owners/independents). */}
       {enrolled && (
