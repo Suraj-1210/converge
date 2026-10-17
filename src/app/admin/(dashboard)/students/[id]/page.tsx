@@ -18,7 +18,6 @@ import {
   studentName,
 } from "../lib";
 import { ApplicationTab } from "./application-tab";
-import { ChatTab } from "./chat-tab";
 import { DocumentsTab } from "./documents-tab";
 import { PartnerEditsBanner } from "./partner-edits-banner";
 import { ProfileTab } from "./profile-tab";
@@ -30,10 +29,9 @@ const TABS = [
   { id: "application", label: "Application" },
   { id: "tasks", label: "Tasks & Notes" },
   { id: "documents", label: "Documents" },
-  // Partner ↔ Collegepond chat (counselling team + Super Admin only), and
-  // the student's own WhatsApp (Periskope). Two separate conversations.
-  { id: "partner-chat", label: "Partner chat" },
-  { id: "chat", label: "WhatsApp" },
+  // Partner ↔ Collegepond chat, the only chat (counselling team + Super
+  // Admin only). The WhatsApp tab was removed (Suraj, 17 Oct 2026).
+  { id: "partner-chat", label: "Chat" },
   { id: "summary", label: "Document Summary" },
 ] as const;
 
@@ -189,9 +187,6 @@ export default function StudentProfilePage() {
               )}
               {tab === "partner-chat" && (
                 <PartnerChatPanel side="staff" studentId={Number(student.id)} onToast={showToast} />
-              )}
-              {tab === "chat" && (
-                <ChatTab studentId={Number(student.id)} onToast={showToast} />
               )}
               {tab === "summary" && <SummaryTab student={student} />}
               </motion.div>
