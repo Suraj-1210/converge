@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "~/trpc/react";
 import { STUDENT_DOC_TYPES } from "~/server/db/enums";
 import { fmtMinutes, type TatStatus } from "~/lib/tat";
+import { guessStudentDocType } from "~/lib/student-doc-guess";
 
 // Partner ↔ Collegepond chat for one student (src/server/partner-chat.ts),
 // used on the partner student profile, the admin student page and both
@@ -13,7 +14,7 @@ import { fmtMinutes, type TatStatus } from "~/lib/tat";
 export type ChatSide = "partner" | "staff";
 
 const POLL_MS = 4000;
-const MAX_FILES = 5;
+const MAX_FILES = 10;
 
 // Colours by side, the same in both portals, so a Collegepond message always
 // looks like one. System lines are neutral.
@@ -40,7 +41,10 @@ function sizeLabel(n: number | null): string {
   return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-type Pending = { id: number; fileName: string; sizeBytes: number | null };
+// An uploaded file waiting to be sent. docType: the checklist type for
+// "Send and save to documents" ("" = chat only), pre-filled from the name.
+type Pending = { id: number; fileName: string; sizeBytes: number | null; docType: string };
+type Filed = { attachmentId: number; fileName: string; label: string | null; error: string | null };
 
 export function PartnerChatPanel({
   side,
@@ -99,6 +103,9 @@ export function PartnerChatPanel({
   const [uploading, setUploading] = useState(false);
   const [editing, setEditing] = useState<{ id: number; body: string } | null>(null);
   const [savingFor, setSavingFor] = useState<{ attachmentId: number; docType: string } | null>(null);
+  // Result of the last "Send and save to documents": where each file went.
+  const [filed, setFiled] = useState<Filed[] | null>(null);
+  const [dragging, setDragging] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -141,7 +148,8 @@ export function PartnerChatPanel({
           onToast(json.error ?? `Couldn't attach ${f.name}`);
           continue;
         }
-        setPending((p) => [...p, { id: json.id!, fileName: json.fileName ?? f.name, sizeBytes: json.sizeBytes ?? null }]);
+        const fileName = json.fileName ?? f.name;
+        setPending((p) => [...p, { id: json.id!, fileName, sizeBytes: json.sizeBytes ?? null, docType: guessStudentDocType(fileName) }]);
       }
     } finally {
       setUploading(false);
@@ -149,20 +157,43 @@ export function PartnerChatPanel({
     }
   };
 
-  const submit = () => {
+  // saveDocs: also file each typed attachment into the student's documents.
+  const submit = (saveDocs = false) => {
     const body = draft.trim();
     if ((!body && pending.length === 0) || send.isPending || uploading) return;
+    const sent = pending;
     send.mutate(
-      { studentId, body, attachmentIds: pending.map((p) => p.id) },
       {
-        onSuccess: () => {
+        studentId,
+        body,
+        attachmentIds: sent.map((p) => p.id),
+        ...(saveDocs ? { fileAs: sent.map((p) => ({ attachmentId: p.id, docType: p.docType })) } : {}),
+      },
+      {
+        onSuccess: (r) => {
           setDraft("");
           setPending([]);
+          if (saveDocs) {
+            // Every file, including the ones left untyped (chat only).
+            setFiled(
+              sent.map(
+                (p) =>
+                  r.filed.find((f) => f.attachmentId === p.id) ?? {
+                    attachmentId: p.id,
+                    fileName: p.fileName,
+                    label: null,
+                    error: null,
+                  },
+              ),
+            );
+            if (isPartner) void utils.students.partnerDocuments.invalidate({ studentId });
+          }
           void refresh();
         },
       },
     );
   };
+  const typedCount = pending.filter((p) => p.docType).length;
 
   const saveEdit = () => {
     if (!editing) return;
@@ -346,17 +377,75 @@ export function PartnerChatPanel({
 
       {/* Composer */}
       {!forbidden && (
-        <div className="border-t border-[#E4E7EC] px-4 py-3">
+        <div
+          className={`border-t px-4 py-3 ${dragging ? "border-[#1570EF] bg-[#F5F9FF]" : "border-[#E4E7EC]"}`}
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            void upload(e.dataTransfer.files);
+          }}
+        >
+          {filed && (
+            <div className="mb-2.5 rounded-lg border border-[#ABEFC6] bg-[#ECFDF3] px-3 py-2 text-xs text-[#344054]">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-semibold text-[#027A48]">
+                  Sent. {filed.filter((f) => f.label).length} of {filed.length} file{filed.length === 1 ? "" : "s"} saved to the student&apos;s documents
+                </span>
+                <button type="button" onClick={() => setFiled(null)} className="text-[#667085] hover:text-[#344054]" aria-label="Dismiss">
+                  ×
+                </button>
+              </div>
+              <ul className="space-y-0.5">
+                {filed.map((f) => (
+                  <li key={f.attachmentId}>
+                    <span className="font-medium">{f.fileName}</span>{" "}
+                    {f.label ? (
+                      <span className="text-[#027A48]">→ Documents · {f.label}</span>
+                    ) : f.error ? (
+                      <span className="text-[#B42318]">→ not saved: {f.error} (sent in chat)</span>
+                    ) : (
+                      <span className="text-[#B54708]">→ no type picked: sent as a chat attachment only</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {pending.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            <div className="mb-2 space-y-1.5">
               {pending.map((p) => (
-                <span key={p.id} className="inline-flex items-center gap-1.5 rounded-full border border-[#D0D5DD] bg-[#F9FAFB] px-2.5 py-1 text-xs text-[#344054]">
-                  {p.fileName} <span className="text-[#98A2B3]">{sizeLabel(p.sizeBytes)}</span>
-                  <button type="button" aria-label={`Remove ${p.fileName}`} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))} className="text-[#98A2B3] hover:text-[#B42318]">
+                <div key={p.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] px-2.5 py-1.5 text-xs text-[#344054]">
+                  <span className="min-w-0 flex-1 truncate font-medium">{p.fileName}</span>
+                  <span className="text-[#98A2B3]">{sizeLabel(p.sizeBytes)}</span>
+                  <select
+                    value={p.docType}
+                    aria-label={`Document type for ${p.fileName}`}
+                    onChange={(e) => setPending((x) => x.map((y) => (y.id === p.id ? { ...y, docType: e.target.value } : y)))}
+                    className={`h-7 max-w-[220px] rounded-md border px-1.5 text-xs outline-none focus:border-[#1570EF] ${p.docType ? "border-[#D0D5DD] bg-white" : "border-[#FEDF89] bg-[#FFFAEB]"}`}
+                  >
+                    <option value="">Other / not a student document</option>
+                    {STUDENT_DOC_TYPES.map((d) => (
+                      <option key={d.key} value={d.key}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" aria-label={`Remove ${p.fileName}`} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))} className="px-1 text-[#98A2B3] hover:text-[#B42318]">
                     ×
                   </button>
-                </span>
+                </div>
               ))}
+              <p className="text-[11px] text-[#667085]">
+                {typedCount > 0
+                  ? `"Send and save" files ${typedCount === pending.length ? "every file" : `the ${typedCount} typed file${typedCount === 1 ? "" : "s"}`} into the student's documents${typedCount < pending.length ? "; the rest go as chat attachments only" : ""}. Check the guessed types first.`
+                  : "Pick a document type to also file these into the student's documents, or just send them in chat."}
+              </p>
             </div>
           )}
           <div className="flex items-end gap-2">
@@ -365,7 +454,7 @@ export function PartnerChatPanel({
               type="button"
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
-              title="Attach files (PDF, DOC, DOCX, JPG, PNG; up to 10 MB each)"
+              title="Attach files: several at once, or drag them here (PDF, DOC, DOCX, JPG, PNG; up to 10 MB each)"
               className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg border border-[#D0D5DD] text-[#667085] hover:border-[#1570EF] hover:text-[#1570EF] disabled:opacity-50"
             >
               {uploading ? (
@@ -382,7 +471,7 @@ export function PartnerChatPanel({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  submit();
+                  submit(false);
                 }
               }}
               maxLength={4000}
@@ -390,9 +479,20 @@ export function PartnerChatPanel({
               rows={1}
               className="max-h-28 min-h-[38px] flex-1 resize-none rounded-lg border border-[#D0D5DD] px-3 py-2 text-sm outline-none focus:border-[#1570EF]"
             />
+            {typedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => submit(true)}
+                disabled={send.isPending || uploading}
+                title="Send, and file each typed attachment into the student's document checklist"
+                className="h-[38px] rounded-lg border border-[#1570EF] bg-white px-3 text-sm font-semibold text-[#1570EF] hover:bg-[#EFF8FF] disabled:opacity-50"
+              >
+                Send and save to documents
+              </button>
+            )}
             <button
               type="button"
-              onClick={submit}
+              onClick={() => submit(false)}
               disabled={(!draft.trim() && pending.length === 0) || send.isPending || uploading}
               className="h-[38px] rounded-lg bg-[#1570EF] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#1257c4] disabled:opacity-50"
             >

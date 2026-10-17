@@ -1,6 +1,6 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
-import { Prisma } from "../../generated/prisma";
+import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import { AdminRole, AdminRoleLabel, STUDENT_DOC_TYPES, UserType, isAdminRole } from "~/server/db/enums";
 import {
@@ -212,12 +212,22 @@ export async function getThread(actor: ChatActor, studentId: number) {
 export async function sendMessage(
   actor: ChatActor,
   studentId: number,
-  input: { body?: string; attachmentIds?: number[] },
+  input: { body?: string; attachmentIds?: number[]; fileAs?: { attachmentId: number; docType: string }[] },
 ) {
   const body = (input.body ?? "").trim();
   if (body.length > MAX_BODY) throw bad(`Messages can be up to ${MAX_BODY} characters.`);
   const attIds = [...new Set(input.attachmentIds ?? [])];
   if (!body && attIds.length === 0) throw bad("Type a message or attach a file.");
+  // "Send and save to documents": a type per attachment ("" = chat only),
+  // checked before anything is sent.
+  const fileAs: { attachmentId: number; docType: { key: string; multiple: boolean } }[] = [];
+  for (const f of input.fileAs ?? []) {
+    if (!f.docType) continue;
+    const docType = studentDocTypeByKey(f.docType);
+    if (!docType) throw bad("Unknown document type.");
+    if (!attIds.includes(f.attachmentId)) throw bad("A file to save isn't attached to this message.");
+    fileAs.push({ attachmentId: f.attachmentId, docType });
+  }
 
   const thread = await ensureThread(studentId);
   const atts = attIds.length
@@ -299,8 +309,9 @@ export async function sendMessage(
   // a Super Admin's look never shows up as the user's read receipt.
   if (!actor.impersonatorId) await advanceRead(thread.id, actor, msg.id);
   if (actor.side === "staff") await notifyPartnersInApp(studentId, thread.id);
+  const filed = fileAs.length ? await fileAttachments(actor, fileAs) : [];
   void runChatJobs();
-  return { id: msg.id };
+  return { id: msg.id, filed };
 }
 
 // A neutral line in the thread ("X saved file.pdf to Documents"). Not
@@ -408,17 +419,26 @@ export async function markRead(actor: ChatActor, studentId: number, upToId: numb
 // Unread messages (from the other side, user messages after this person's
 // read position) per thread.
 async function unreadByThread(actor: ChatActor, threadIds: number[]): Promise<Map<number, number>> {
-  if (threadIds.length === 0) return new Map();
-  const rows = await db.$queryRaw<{ thread_id: number; n: bigint }[]>`
-    SELECT m.thread_id, COUNT(*) AS n
-    FROM partner_chat_message m
-    LEFT JOIN partner_chat_read r
-      ON r.thread_id = m.thread_id AND r.side = ${actor.side} AND r.reader_id = ${actor.id}
-    WHERE m.thread_id IN (${Prisma.join(threadIds)})
-      AND m.kind = 'user'
-      AND m.sender_side = ${other(actor.side)}
-      AND m.id > COALESCE(r.last_read_message_id, 0)
-    GROUP BY m.thread_id`;
+  const ids = threadIds.filter((x) => Number.isInteger(x));
+  if (ids.length === 0) return new Map();
+  // Positional placeholders rather than Prisma.join: in the Next bundle the
+  // generated client didn't recognise Prisma.join's fragment, and IN (...)
+  // silently matched nothing. All values are bound, never interpolated.
+  const rows = await db.$queryRawUnsafe<{ thread_id: number; n: bigint }[]>(
+    `SELECT m.thread_id, COUNT(*) AS n
+     FROM partner_chat_message m
+     LEFT JOIN partner_chat_read r
+       ON r.thread_id = m.thread_id AND r.side = ? AND r.reader_id = ?
+     WHERE m.thread_id IN (${ids.map(() => "?").join(", ")})
+       AND m.kind = 'user'
+       AND m.sender_side = ?
+       AND m.id > COALESCE(r.last_read_message_id, 0)
+     GROUP BY m.thread_id`,
+    actor.side,
+    actor.id,
+    ...ids,
+    other(actor.side),
+  );
   return new Map(rows.map((r) => [Number(r.thread_id), Number(r.n)]));
 }
 
@@ -562,52 +582,86 @@ export async function chatFileStudentId(key: string): Promise<number | null> {
   return a?.thread.student_id ?? null;
 }
 
-// "Save to student documents": copies a chat file into the student's
-// document checklist under a fixed document type, through the same path as
-// a profile upload (audit log; a partner's save also reaches Collegepond's
-// counselling team like any partner upload). Each file is saved once.
+// "Save to student documents": copies sent chat files into the student's
+// document checklist under fixed document types, through the same path as a
+// profile upload (audit log; a partner's save also reaches Collegepond's
+// counselling team like any partner upload). Each file is saved once. One
+// system line in the thread lists everything filed. Per file, a failure is
+// reported rather than thrown, so one bad file doesn't undo the others.
+export type FiledResult = { attachmentId: number; fileName: string; label: string | null; error: string | null };
+
+async function fileAttachments(
+  actor: ChatActor,
+  items: { attachmentId: number; docType: { key: string; multiple: boolean } }[],
+): Promise<FiledResult[]> {
+  const results: FiledResult[] = [];
+  const changes: { studentId: number; change: ReturnType<typeof documentChange> }[] = [];
+  let threadId: number | null = null;
+  for (const it of items) {
+    const label = STUDENT_DOC_TYPES.find((d) => d.key === it.docType.key)?.label ?? it.docType.key;
+    const a = await db.partner_chat_attachment.findUnique({
+      where: { id: it.attachmentId },
+      include: { thread: { select: { id: true, student_id: true } } },
+    });
+    if (!a?.message_id) {
+      results.push({ attachmentId: it.attachmentId, fileName: a?.file_name ?? "File", label: null, error: "File not found" });
+      continue;
+    }
+    threadId = a.thread.id;
+    const claim = await db.partner_chat_attachment.updateMany({
+      where: { id: a.id, saved_at: null },
+      data: { saved_at: new Date() },
+    });
+    if (claim.count === 0) {
+      results.push({ attachmentId: a.id, fileName: a.file_name, label: null, error: "Already saved to the student's documents" });
+      continue;
+    }
+    try {
+      const bytes = new Uint8Array(await readStoredFile(a.file_url));
+      const file = new File([bytes], a.file_name, { type: a.mime_type ?? "" });
+      const doc = await saveStudentDocument(a.thread.student_id, it.docType, file, {
+        via: "partner_chat",
+        chatAttachmentId: a.id,
+        ...(actor.side === "partner" ? { byPartnerUserId: actor.id } : { byCpUserId: actor.id }),
+      });
+      await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_document_id: doc.id } });
+      changes.push({ studentId: a.thread.student_id, change: documentChange(it.docType.key, a.file_name) });
+      results.push({ attachmentId: a.id, fileName: a.file_name, label, error: null });
+    } catch (e) {
+      await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_at: null } });
+      console.error("[partner-chat] save to documents failed:", e instanceof Error ? e.message : e);
+      results.push({ attachmentId: a.id, fileName: a.file_name, label: null, error: "Couldn't save the file. Try again." });
+    }
+  }
+
+  const saved = results.filter((r) => r.label);
+  if (saved.length && threadId !== null) {
+    if (actor.side === "partner") {
+      const studentId = changes[0]!.studentId;
+      await recordPartnerChange(studentId, actor.id, "documents", changes.map((c) => c.change));
+    }
+    const who =
+      actor.side === "partner"
+        ? await db.user.findUnique({ where: { id: actor.id }, select: { first_name: true, last_name: true } })
+        : await db.collegepond_user.findUnique({ where: { id: actor.id }, select: { first_name: true, last_name: true } });
+    const name = who ? fullName(who) : "Someone";
+    await addSystemMessage(
+      threadId,
+      saved.length === 1
+        ? `${name} saved “${saved[0]!.fileName}” to Documents → ${saved[0]!.label}`
+        : `${name} saved ${saved.length} files to Documents: ${saved.map((r) => `“${r.fileName}” → ${r.label}`).join(", ")}`,
+    );
+  }
+  return results;
+}
+
+// The per-file "Save to student documents" button on a sent attachment.
 export async function saveAttachmentToDocuments(actor: ChatActor, attachmentId: number, docTypeKey: string) {
   const docType = studentDocTypeByKey(docTypeKey);
   if (!docType) throw bad("Pick a document type.");
-  const a = await db.partner_chat_attachment.findUnique({
-    where: { id: attachmentId },
-    include: { thread: { select: { id: true, student_id: true } } },
-  });
-  if (!a?.message_id) throw new TRPCError({ code: "NOT_FOUND", message: "File not found" });
-
-  const claim = await db.partner_chat_attachment.updateMany({
-    where: { id: a.id, saved_at: null },
-    data: { saved_at: new Date() },
-  });
-  if (claim.count === 0) throw bad("This file is already saved to the student's documents.");
-
-  let docId: number;
-  try {
-    const bytes = new Uint8Array(await readStoredFile(a.file_url));
-    const file = new File([bytes], a.file_name, { type: a.mime_type ?? "" });
-    const doc = await saveStudentDocument(a.thread.student_id, docType, file, {
-      via: "partner_chat",
-      chatAttachmentId: a.id,
-      ...(actor.side === "partner" ? { byPartnerUserId: actor.id } : { byCpUserId: actor.id }),
-    });
-    docId = doc.id;
-  } catch (e) {
-    await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_at: null } });
-    console.error("[partner-chat] save to documents failed:", e instanceof Error ? e.message : e);
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Couldn't save the file. Please try again." });
-  }
-  await db.partner_chat_attachment.update({ where: { id: a.id }, data: { saved_document_id: docId } });
-
-  if (actor.side === "partner") {
-    await recordPartnerChange(a.thread.student_id, actor.id, "documents", [documentChange(docType.key, a.file_name)]);
-  }
-  const who =
-    actor.side === "partner"
-      ? await db.user.findUnique({ where: { id: actor.id }, select: { first_name: true, last_name: true } })
-      : await db.collegepond_user.findUnique({ where: { id: actor.id }, select: { first_name: true, last_name: true } });
-  const label = STUDENT_DOC_TYPES.find((d) => d.key === docType.key)?.label ?? docType.key;
-  await addSystemMessage(a.thread.id, `${who ? fullName(who) : "Someone"} saved “${a.file_name}” to Documents → ${label}`);
-  return { documentId: docId, label };
+  const [r] = await fileAttachments(actor, [{ attachmentId, docType }]);
+  if (!r?.label) throw bad(r?.error ?? "Couldn't save the file.");
+  return { label: r.label };
 }
 
 // ---- Notifications ---------------------------------------------------------------

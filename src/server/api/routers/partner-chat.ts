@@ -28,6 +28,11 @@ const studentInput = z.object({ studentId: z.number().int().positive() });
 const sendInput = studentInput.extend({
   body: z.string().max(4000).optional(),
   attachmentIds: z.array(z.number().int().positive()).max(10).optional(),
+  // "Send and save to documents": the checklist type per attachment ("" = chat only).
+  fileAs: z
+    .array(z.object({ attachmentId: z.number().int().positive(), docType: z.string().max(50) }))
+    .max(10)
+    .optional(),
 });
 const editInput = z.object({ messageId: z.number().int().positive(), body: z.string().max(4000) });
 const readInput = studentInput.extend({ upToId: z.number().int().nonnegative() });
