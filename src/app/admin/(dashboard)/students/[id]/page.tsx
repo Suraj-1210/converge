@@ -18,6 +18,7 @@ import {
   studentName,
 } from "../lib";
 import { ApplicationTab } from "./application-tab";
+import { ChatTab } from "./chat-tab";
 import { DocumentsTab } from "./documents-tab";
 import { PartnerEditsBanner } from "./partner-edits-banner";
 import { ProfileTab } from "./profile-tab";
@@ -29,13 +30,19 @@ const TABS = [
   { id: "application", label: "Application" },
   { id: "tasks", label: "Tasks & Notes" },
   { id: "documents", label: "Documents" },
-  // Partner ↔ Collegepond chat, the only chat (counselling team + Super
-  // Admin only). The WhatsApp tab was removed (Suraj, 17 Oct 2026).
+  // Partner ↔ Collegepond chat (counselling team + Super Admin only).
   { id: "partner-chat", label: "Chat" },
+  // Student WhatsApp (Periskope): hidden, see SHOW_WHATSAPP_TAB.
+  { id: "chat", label: "WhatsApp" },
   { id: "summary", label: "Document Summary" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+// Suraj, 17 Oct 2026: partner chat is the only chat. The student WhatsApp tab
+// is kept but hidden, not removed (Periskope was never connected, so there
+// are no stored messages). Set to true to bring it back.
+const SHOW_WHATSAPP_TAB = false;
 
 export default function StudentProfilePage() {
   const params = useParams<{ id: string }>();
@@ -51,11 +58,15 @@ export default function StudentProfilePage() {
   const [tab, setTab] = useState<TabId>("profile");
   const role = api.authSession.me.useQuery().data?.role;
   const chatRoles: number[] = [AdminRole.SUPER_ADMIN, AdminRole.COUNSELLOR_LEAD, AdminRole.COUNSELLOR];
-  const tabs = TABS.filter((t) => t.id !== "partner-chat" || (role !== undefined && chatRoles.includes(role)));
+  const tabs = TABS.filter(
+    (t) =>
+      (t.id !== "partner-chat" || (role !== undefined && chatRoles.includes(role))) &&
+      (t.id !== "chat" || SHOW_WHATSAPP_TAB),
+  );
   // Deep link, e.g. /admin/students/12?tab=partner-chat.
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("tab");
-    if (t && TABS.some((x) => x.id === t)) setTab(t as TabId);
+    if (t && TABS.some((x) => x.id === t) && (t !== "chat" || SHOW_WHATSAPP_TAB)) setTab(t as TabId);
   }, []);
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
@@ -187,6 +198,9 @@ export default function StudentProfilePage() {
               )}
               {tab === "partner-chat" && (
                 <PartnerChatPanel side="staff" studentId={Number(student.id)} onToast={showToast} />
+              )}
+              {SHOW_WHATSAPP_TAB && tab === "chat" && (
+                <ChatTab studentId={Number(student.id)} onToast={showToast} />
               )}
               {tab === "summary" && <SummaryTab student={student} />}
               </motion.div>
