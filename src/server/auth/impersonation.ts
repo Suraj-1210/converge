@@ -1,11 +1,18 @@
 import { db } from "~/server/db";
 import type { AdminSessionClaims, PartnerSessionClaims } from "~/server/auth/jwt";
-import { signSessionJwt } from "~/server/auth/jwt";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
+  signSessionJwt,
+  verifyPartnerSessionJwt,
+} from "~/server/auth/jwt";
+import {
+  buildPartnerSessionCookie,
   buildSessionCookie,
+  clearPartnerOwnerSessionCookie,
   clearPartnerSessionCookie,
   clearSessionCookie,
   maxAgeUntil,
+  readCookie,
 } from "~/server/auth/cookies";
 import { AdminRole, AdminRoleLabel, UserType, isAdminRole } from "~/server/db/enums";
 
@@ -91,7 +98,71 @@ export async function writeImpersonationAudit(
 interface SessionCtx {
   cpUser: AdminSessionClaims | null;
   cpPartner: PartnerSessionClaims | null;
+  headers: Headers;
   resHeaders: Headers;
+}
+
+// ---- Agency owner → their own counsellor -----------------------------------
+// The owner's own cp_partner_session is parked in cp_partner_owner_session and
+// cp_partner_session becomes the counsellor's, carrying the owner's id (claim
+// "own"); it is honoured only alongside that parked session (see
+// resolvePartnerSession). Super Admin impersonation is the model: no OTP or
+// email to the counsellor, start/end audit rows, and everything in between
+// attributed to the owner (impersonation-context).
+
+export async function writeOwnerImpersonationAudit(
+  event: "started" | "ended",
+  ownerId: number,
+  counsellorId: number,
+): Promise<void> {
+  const [owner, target] = await Promise.all([
+    db.user.findUnique({
+      where: { id: ownerId },
+      select: { first_name: true, last_name: true, org_id: true },
+    }),
+    describeTarget("partner", counsellorId),
+  ]);
+  await db.audit_log.create({
+    data: {
+      action: `impersonation.${event}`,
+      entity_type: "user",
+      entity_id: counsellorId,
+      user_id: ownerId,
+      org_id: owner?.org_id ?? null,
+      metadata: {
+        byUserId: ownerId,
+        impersonatorKind: "agency_owner",
+        ownerName: owner ? fullName(owner) : null,
+        targetKind: "partner",
+        targetId: counsellorId,
+        targetName: target?.name ?? null,
+        targetRole: target?.roleLabel ?? null,
+      },
+    },
+  });
+}
+
+// Ends an owner's view-as: puts the owner's own session back (the parked
+// token, unchanged, so the original login's expiry stands). Returns false when
+// there was no valid parked session to restore, i.e. the owner is signed out.
+export async function endOwnerImpersonation(
+  ctx: SessionCtx,
+  opts: { restore: boolean } = { restore: true },
+): Promise<boolean> {
+  const ownerToken = readCookie(ctx.headers, PARTNER_OWNER_SESSION_COOKIE_NAME);
+  const owner = ownerToken ? await verifyPartnerSessionJwt(ownerToken) : null;
+  const ownerId = ctx.cpPartner?.ownerImpersonatorId ?? owner?.id;
+  if (ownerId && ctx.cpPartner?.ownerImpersonatorId) {
+    await writeOwnerImpersonationAudit("ended", ownerId, ctx.cpPartner.id);
+  }
+  ctx.resHeaders.append("Set-Cookie", clearPartnerOwnerSessionCookie());
+  const valid = !!owner && !owner.impersonatorId && !owner.ownerImpersonatorId && !!owner.exp;
+  if (opts.restore && valid && ownerToken && owner?.exp) {
+    ctx.resHeaders.append("Set-Cookie", buildPartnerSessionCookie(ownerToken, maxAgeUntil(owner.exp)));
+    return true;
+  }
+  ctx.resHeaders.append("Set-Cookie", clearPartnerSessionCookie());
+  return false;
 }
 
 // Ends a staff impersonation: restores the real admin's own session (same

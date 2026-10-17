@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
@@ -20,6 +21,7 @@ export async function POST(req: Request) {
   const partner = await resolvePartnerSession(
     jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
     jar.get(SESSION_COOKIE_NAME)?.value,
+    jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
   );
   if (!partner) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -55,6 +57,10 @@ export async function POST(req: Request) {
     {
       byPartnerUserId: partner.id,
       ...(partner.impersonatorId ? { impersonation: { kind: "partner", byCpUserId: partner.impersonatorId } } : {}),
+      // An agency owner viewing as this counsellor: the upload is the owner's.
+      ...(partner.ownerImpersonatorId
+        ? { byUserId: partner.ownerImpersonatorId, impersonation: { kind: "partner", id: partner.id } }
+        : {}),
     },
     { pendingItem: parsed.pendingItem },
   );

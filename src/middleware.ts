@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
+  PARTNER_OWNER_SESSION_COOKIE_NAME,
   PARTNER_SESSION_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   resolvePartnerSession,
@@ -40,6 +41,7 @@ export async function middleware(req: NextRequest) {
     const claims = await resolvePartnerSession(
       req.cookies.get(PARTNER_SESSION_COOKIE_NAME)?.value,
       req.cookies.get(SESSION_COOKIE_NAME)?.value,
+      req.cookies.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
     );
     if (!claims) return redirectTo(req, "/login");
     return NextResponse.next();

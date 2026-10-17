@@ -18,7 +18,7 @@ import {
 } from "~/server/applications/store";
 import { signPartnerSessionJwt } from "~/server/auth/jwt";
 import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/auth/cookies";
-import { endImpersonationFromLogout } from "~/server/auth/impersonation";
+import { endImpersonationFromLogout, endOwnerImpersonation } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType, partnerKindOf } from "~/server/db/enums";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { MOU_VERSION, MouSignatureKind, mouSectionsFor } from "~/lib/constants/mou";
@@ -348,10 +348,12 @@ export const authRouter = createTRPCRouter({
     }),
 
   // Touched by /partner/dashboard on every mount.
-  // Skipped while a Super Admin is impersonating, so it isn't counted as the
-  // partner's own login.
+  // Skipped while a Super Admin is impersonating, or an agency owner is
+  // viewing as this counsellor, so it isn't counted as the partner's own login.
   recordDashboardVisit: protectedPartnerProcedure.mutation(async ({ ctx }) => {
-    if (!ctx.cpPartner.impersonatorId) await recordPartnerLogin(ctx.cpPartner.id);
+    if (!ctx.cpPartner.impersonatorId && !ctx.cpPartner.ownerImpersonatorId) {
+      await recordPartnerLogin(ctx.cpPartner.id);
+    }
     return { success: true as const };
   }),
 
@@ -360,6 +362,9 @@ export const authRouter = createTRPCRouter({
   // actually reaches the browser.
   logout: publicProcedure.mutation(async ({ ctx }) => {
     if (ctx.cpPartner?.impersonatorId) await endImpersonationFromLogout(ctx);
+    // An owner logging out while viewing as a counsellor is signed out
+    // entirely (their parked session is dropped too).
+    if (ctx.cpPartner?.ownerImpersonatorId) await endOwnerImpersonation(ctx, { restore: false });
     ctx.resHeaders.append("Set-Cookie", clearPartnerSessionCookie());
     return { success: true as const };
   }),

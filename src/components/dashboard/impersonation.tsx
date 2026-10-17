@@ -21,9 +21,10 @@ export function bannerOffsetStyle(active: boolean): CSSProperties {
 
 /**
  * "Viewing as: <Name> (<role>)" with an Exit button, shown across the top of
- * every page while a Super Admin is impersonating someone. `fixed` pins it for
- * the dashboard shells; standalone pages (MOU signing, pending verification)
- * render it inline.
+ * every page while a Super Admin is impersonating someone, or an agency owner
+ * is viewing as one of their counsellors. `fixed` pins it for the dashboard
+ * shells; standalone pages (MOU signing, pending verification) render it
+ * inline.
  */
 export function ImpersonationBanner({
   side,
@@ -37,7 +38,7 @@ export function ImpersonationBanner({
   if (!current) return null;
 
   async function exit() {
-    let redirectUrl = "/admin/dashboard";
+    let redirectUrl = current?.by === "owner" ? "/partner/counsellors" : "/admin/dashboard";
     try {
       redirectUrl = (await stop.mutateAsync({ side })).redirectUrl;
     } catch {
@@ -57,6 +58,8 @@ export function ImpersonationBanner({
         <UsersIcon className="h-[18px] w-[18px] shrink-0 stroke-amber-900" />
         <span className="truncate">
           Viewing as: <strong className="font-semibold">{current.name}</strong> ({current.roleLabel})
+          {current.readOnly && " \u00b7 Deactivated, view only"}
+          {current.by === "owner" && !current.readOnly && " \u00b7 Actions are logged under your name"}
         </span>
       </div>
       <button
