@@ -172,6 +172,9 @@ export const StudentStatus = {
   DEFERRED_TO_NEXT_INTAKE: 43,
   COURSE_CLOSED: 44,
   ENROLLED: 45,
+  // Visa application lodged; between Deposit Paid and Visa Secured in the
+  // pipeline (17 Oct 2026). A new code, not a renumber: codes are stored.
+  VISA_FILED: 46,
 } as const;
 export type StudentStatus = (typeof StudentStatus)[keyof typeof StudentStatus];
 
@@ -196,13 +199,20 @@ export const StudentStatusLabel: Record<StudentStatus, string> = {
   [StudentStatus.VISA_SECURED]: "Visa Secured",
   [StudentStatus.VISA_REJECTED]: "Visa Rejected",
   [StudentStatus.DEFERRED_TO_NEXT_INTAKE]: "Deferred to Next Intake",
-  [StudentStatus.COURSE_CLOSED]: "Course Closed",
+  [StudentStatus.COURSE_CLOSED]: "Case Closed",
   [StudentStatus.ENROLLED]: "Enrolled",
+  [StudentStatus.VISA_FILED]: "Visa Filed",
 };
 
 export const STUDENT_STATUS_CODES = Object.values(
   StudentStatus,
 ) as StudentStatus[];
+
+// Every status in pipeline order (VISA_FILED's code is out of sequence), for
+// pills and filter lists that should read in order.
+export const STUDENT_STATUS_ORDER: StudentStatus[] = STUDENT_STATUS_CODES.filter(
+  (c) => c !== StudentStatus.VISA_FILED,
+).flatMap((c) => (c === StudentStatus.VISA_SECURED ? [StudentStatus.VISA_FILED, c] : [c]));
 
 // Status group = code decade. Group keys/labels match the mock's tab bar.
 export const StudentStatusGroup = {
@@ -275,6 +285,7 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
   { key: "additional", label: "Additional Documents", multiple: true, section: "academic", expected: false },
   { key: "offer_letter", label: "Offer Letter", multiple: true, section: "enrollment", expected: false },
   { key: "visa", label: "Visa Copy", multiple: false, section: "enrollment", expected: false },
+  { key: "visa_refusal", label: "Visa Refusal Letter", multiple: false, section: "enrollment", expected: false },
   { key: "deposit_receipt", label: "Deposit Receipt", multiple: false, section: "enrollment", expected: false },
   { key: "tuition_receipt", label: "Tuition Payment Receipts", multiple: true, section: "enrollment", expected: false },
 ];
@@ -401,8 +412,10 @@ export const CourseLevelLabel: Record<CourseLevel, string> = {
 
 export const COURSE_LEVEL_CODES = Object.values(CourseLevel) as CourseLevel[];
 
-// Application pipeline: 0–7 are the ordinal happy-path stages; >= 20 are
-// terminal/alternative outcomes (non-ordinal).
+// Application pipeline: codes < 20 are the happy-path stages, >= 20 are
+// terminal/alternative outcomes. The codes are stored, so they are NOT in
+// pipeline order (VISA_FILED = 9 sits between 6 and 7): compare positions
+// with stageIndex() from ~/lib/application-stages, never the raw codes.
 export const UniApplicationStatus = {
   BEGIN_APPLICATION: 0,
   DOCUMENTS_PENDING: 1,
@@ -415,6 +428,9 @@ export const UniApplicationStatus = {
   // Final happy-path stage: student confirmed enrolled at the university.
   // Set from the Student Placements page once visa is secured.
   ENROLLED: 8,
+  // Visa application lodged, awaiting the decision. Added 17 Oct 2026; in
+  // the pipeline it comes after DEPOSIT_PAID and before VISA_SECURED.
+  VISA_FILED: 9,
   REJECTED_BY_UNIVERSITY: 20,
   APPLICATION_WITHDRAWAL: 21,
   DECLINED_BY_STUDENT: 22,
@@ -442,6 +458,7 @@ export const APP_TO_STUDENT_STATUS: Record<UniApplicationStatus, StudentStatus> 
   [UniApplicationStatus.DEPOSIT_PAID]: StudentStatus.DEPOSIT_PAID,
   [UniApplicationStatus.VISA_SECURED]: StudentStatus.VISA_SECURED,
   [UniApplicationStatus.ENROLLED]: StudentStatus.ENROLLED,
+  [UniApplicationStatus.VISA_FILED]: StudentStatus.VISA_FILED,
   [UniApplicationStatus.REJECTED_BY_UNIVERSITY]: StudentStatus.REJECTED_BY_UNIVERSITY,
   [UniApplicationStatus.APPLICATION_WITHDRAWAL]: StudentStatus.APPLICATION_WITHDRAWAL,
   [UniApplicationStatus.DECLINED_BY_STUDENT]: StudentStatus.DECLINED_BY_STUDENT,
@@ -458,10 +475,10 @@ export const TERMINAL_FALLBACK_STAGE: Record<number, UniApplicationStatus> = {
   [UniApplicationStatus.APPLICATION_WITHDRAWAL]:
     UniApplicationStatus.DEPOSIT_PAID,
   [UniApplicationStatus.DECLINED_BY_STUDENT]: UniApplicationStatus.DEPOSIT_PAID,
-  [UniApplicationStatus.VISA_REJECTED]: UniApplicationStatus.VISA_SECURED,
+  [UniApplicationStatus.VISA_REJECTED]: UniApplicationStatus.VISA_FILED,
   [UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE]:
-    UniApplicationStatus.VISA_SECURED,
-  [UniApplicationStatus.COURSE_CLOSED]: UniApplicationStatus.VISA_SECURED,
+    UniApplicationStatus.VISA_FILED,
+  [UniApplicationStatus.COURSE_CLOSED]: UniApplicationStatus.VISA_FILED,
 };
 
 export const UniApplicationStatusLabel: Record<UniApplicationStatus, string> = {
@@ -474,13 +491,90 @@ export const UniApplicationStatusLabel: Record<UniApplicationStatus, string> = {
   [UniApplicationStatus.DEPOSIT_PAID]: "Deposit Paid",
   [UniApplicationStatus.VISA_SECURED]: "Visa Secured",
   [UniApplicationStatus.ENROLLED]: "Enrolled",
+  [UniApplicationStatus.VISA_FILED]: "Visa Filed",
   [UniApplicationStatus.REJECTED_BY_UNIVERSITY]: "Rejected by University",
   [UniApplicationStatus.APPLICATION_WITHDRAWAL]: "Application Withdrawal",
   [UniApplicationStatus.DECLINED_BY_STUDENT]: "Declined by Student",
   [UniApplicationStatus.VISA_REJECTED]: "Visa Rejected",
   [UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE]: "Deferred to Next Intake",
-  [UniApplicationStatus.COURSE_CLOSED]: "Course Closed",
+  [UniApplicationStatus.COURSE_CLOSED]: "Case Closed",
 };
+
+// ---------------------------------------------------------------------------
+// Partner-reported stage changes (17 Oct 2026, with Suraj)
+// ---------------------------------------------------------------------------
+// A partner can report Deposit Paid (from Unconditional Offer) or a visa
+// outcome (from Visa Filed), each with a supporting document filed into the
+// student's documents. A report changes nothing until a Collegepond
+// counsellor confirms it. application_partner_report.status:
+export const PartnerReportStatus = {
+  PENDING: 0,
+  CONFIRMED: 1,
+  REJECTED: 2,
+} as const;
+export type PartnerReportStatus =
+  (typeof PartnerReportStatus)[keyof typeof PartnerReportStatus];
+
+// What a partner may report, keyed by the stage the application is at, and
+// the student document type the supporting file is filed under.
+export interface PartnerReportOption {
+  to: UniApplicationStatus;
+  label: string;
+  docType: string;
+  docRequired: boolean;
+}
+export const PARTNER_REPORTABLE: Partial<Record<UniApplicationStatus, PartnerReportOption[]>> = {
+  [UniApplicationStatus.UNCONDITIONAL_OFFER]: [
+    { to: UniApplicationStatus.DEPOSIT_PAID, label: "Deposit Paid", docType: "deposit_receipt", docRequired: true },
+  ],
+  [UniApplicationStatus.VISA_FILED]: [
+    { to: UniApplicationStatus.VISA_SECURED, label: "Visa Approved", docType: "visa", docRequired: true },
+    { to: UniApplicationStatus.VISA_REJECTED, label: "Visa Rejected", docType: "visa_refusal", docRequired: true },
+    { to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE, label: "Deferred to Next Intake", docType: "additional", docRequired: false },
+    { to: UniApplicationStatus.COURSE_CLOSED, label: "Case Closed", docType: "additional", docRequired: false },
+  ],
+};
+
+export function partnerReportOption(stage: number, to: number): PartnerReportOption | null {
+  return PARTNER_REPORTABLE[stage as UniApplicationStatus]?.find((o) => o.to === to) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Overall student status (Students tab, 17 Oct 2026, with Suraj)
+// ---------------------------------------------------------------------------
+// Derived from the student's applications and document checklist
+// (src/server/student-overall-status.ts), except a manual Inactive, which
+// wins until someone reactivates. Computed on read, not stored.
+export const StudentOverallStatus = {
+  ACTIVE: "active",
+  INACTIVE: "inactive",
+  DOCS_PENDING: "docs_pending",
+} as const;
+export type StudentOverallStatus =
+  (typeof StudentOverallStatus)[keyof typeof StudentOverallStatus];
+
+export const StudentOverallStatusLabel: Record<StudentOverallStatus, string> = {
+  active: "Active",
+  inactive: "Inactive",
+  docs_pending: "Not Processed – Documents Pending",
+};
+
+// student.inactive_reason — why a counsellor marked the student Inactive.
+export const InactiveReason = {
+  NOT_RESPONDING: "not_responding",
+  DROPPED_PLANS: "dropped_plans",
+  OTHER_PROVIDER: "other_provider",
+  OTHER: "other",
+} as const;
+export type InactiveReason = (typeof InactiveReason)[keyof typeof InactiveReason];
+
+export const InactiveReasonLabel: Record<InactiveReason, string> = {
+  not_responding: "Not responding",
+  dropped_plans: "Dropped plans",
+  other_provider: "Chose another provider",
+  other: "Other",
+};
+export const INACTIVE_REASON_CODES = Object.values(InactiveReason) as InactiveReason[];
 
 // ---------------------------------------------------------------------------
 // Events

@@ -1,10 +1,11 @@
 // Per-student application totals, e.g. "3 applications · 1 rejected", for the
 // admin and partner student pages. Every application stays listed there;
-// closed ones (status >= 20) are counted by outcome rather than hidden.
+// closed ones (CLOSED_STAGES) are counted by outcome rather than hidden.
 
 import { UniApplicationStatus } from "~/server/db/enums";
+import { isClosedStage } from "~/lib/application-stages";
 
-export const isClosedApplication = (status: number) => status >= 20;
+export const isClosedApplication = (status: number) => isClosedStage(status);
 
 // Short outcome words for the totals line.
 const CLOSED_WORD: Record<number, string> = {
@@ -13,7 +14,7 @@ const CLOSED_WORD: Record<number, string> = {
   [UniApplicationStatus.DECLINED_BY_STUDENT]: "declined",
   [UniApplicationStatus.VISA_REJECTED]: "visa rejected",
   [UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE]: "deferred",
-  [UniApplicationStatus.COURSE_CLOSED]: "course closed",
+  [UniApplicationStatus.COURSE_CLOSED]: "closed",
 };
 
 export function applicationSummary(apps: { status: number }[]): string {

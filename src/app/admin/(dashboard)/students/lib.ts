@@ -9,6 +9,7 @@ import {
   GenderLabel,
   UniApplicationStatusLabel,
 } from "~/server/db/enums";
+import { furthestOpen, stageTone } from "~/lib/application-stages";
 
 // ---------------------------------------------------------------------------
 // Types (derived from the router so they can't drift)
@@ -201,17 +202,13 @@ export function splitPhone(stored: string | null): {
 // Derived university / program
 // ---------------------------------------------------------------------------
 
-// Applications with status < 20 are active (happy path); the furthest one is
-// the student's "primary" application. Terminal-only students fall back to
-// any application; lead students have none.
+// The furthest open application (by pipeline position, not code) is the
+// student's "primary" application. Terminal-only students fall back to any
+// application; lead students have none.
 export function primaryApplication(
   s: Pick<AdminStudent, "applications">,
 ): StudentApplication | null {
-  const active = s.applications.filter((a) => a.status < 20);
-  if (active.length > 0) {
-    return active.reduce((best, a) => (a.status > best.status ? a : best));
-  }
-  return s.applications[0] ?? null;
+  return furthestOpen(s.applications) ?? s.applications[0] ?? null;
 }
 
 export function derivedUniversity(s: Pick<AdminStudent, "applications">): string {
@@ -228,21 +225,7 @@ export function derivedProgram(
 // Per-application status badge tones (slide-over "Universities Applied")
 // ---------------------------------------------------------------------------
 
-// Happy-path stages 0–7 follow the mock's statusColors for the analogous
-// student statuses; terminal outcomes (≥ 20) collapse to red / gray.
-const UNI_APP_TONE: Record<number, { color: string; bg: string }> = {
-  0: { color: "#7F56D9", bg: "#F9F5FF" }, // Begin Application
-  1: { color: "#F79009", bg: "#FFF6ED" }, // Documents Pending
-  2: { color: "#1570EF", bg: "#EFF8FF" }, // Application Submitted
-  3: { color: "#0BA5EC", bg: "#F0F9FF" }, // Application Under Review
-  4: { color: "#7F56D9", bg: "#F9F5FF" }, // Conditional Offer
-  5: { color: "#9E77ED", bg: "#F9F5FF" }, // Unconditional Offer
-  6: { color: "#F79009", bg: "#FFF6ED" }, // Deposit Paid
-  7: { color: "#12B76A", bg: "#ECFDF3" }, // Visa Secured
-};
-
-const UNI_APP_GRAY_TERMINALS = new Set([24, 25]); // Deferred, Course Closed
-
+// Tones live in ~/lib/application-stages (shared with the partner portal).
 export function uniAppBadge(status: number): {
   label: string;
   color: string;
@@ -252,13 +235,7 @@ export function uniAppBadge(status: number): {
     (UniApplicationStatusLabel as Record<number, string | undefined>)[
       status
     ] ?? `Status ${status}`;
-  if (status < 20) {
-    const tone = UNI_APP_TONE[status] ?? { color: "#667085", bg: "#F2F4F7" };
-    return { label, ...tone };
-  }
-  return UNI_APP_GRAY_TERMINALS.has(status)
-    ? { label, color: "#667085", bg: "#F2F4F7" }
-    : { label, color: "#B42318", bg: "#FEF3F2" };
+  return { label, ...stageTone(status) };
 }
 
 // ---------------------------------------------------------------------------
