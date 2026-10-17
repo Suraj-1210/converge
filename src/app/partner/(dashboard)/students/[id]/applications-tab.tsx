@@ -1,40 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import {
-  UniApplicationStatus,
-  UniApplicationStatusLabel,
-} from "~/server/db/enums";
+import { UniApplicationStatusLabel } from "~/server/db/enums";
 import { type AdminStudentFull } from "~/app/admin/(dashboard)/students/lib";
-import { applicationSummary, isClosedApplication, splitByClosed } from "~/lib/application-summary";
+import { applicationSummary, splitByClosed } from "~/lib/application-summary";
+import { stageTone } from "~/lib/application-stages";
+import { StageTrack } from "~/components/dashboard/stage-track";
 
 type Card = AdminStudentFull["applicationCards"][number];
 type Shortlist = AdminStudentFull["shortlists"][number];
-
-// The happy path an application moves along, in order.
-const STAGES = [
-  UniApplicationStatus.BEGIN_APPLICATION,
-  UniApplicationStatus.DOCUMENTS_PENDING,
-  UniApplicationStatus.APPLICATION_SUBMITTED,
-  UniApplicationStatus.APPLICATION_UNDER_REVIEW,
-  UniApplicationStatus.CONDITIONAL_OFFER,
-  UniApplicationStatus.UNCONDITIONAL_OFFER,
-  UniApplicationStatus.DEPOSIT_PAID,
-  UniApplicationStatus.VISA_SECURED,
-  UniApplicationStatus.ENROLLED,
-] as const;
-
-const SHORT: Record<number, string> = {
-  [UniApplicationStatus.BEGIN_APPLICATION]: "Started",
-  [UniApplicationStatus.DOCUMENTS_PENDING]: "Documents",
-  [UniApplicationStatus.APPLICATION_SUBMITTED]: "Submitted",
-  [UniApplicationStatus.APPLICATION_UNDER_REVIEW]: "Review",
-  [UniApplicationStatus.CONDITIONAL_OFFER]: "Conditional",
-  [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Offer",
-  [UniApplicationStatus.DEPOSIT_PAID]: "Deposit",
-  [UniApplicationStatus.VISA_SECURED]: "Visa",
-  [UniApplicationStatus.ENROLLED]: "Enrolled",
-};
 
 const statusLabel = (s: number) =>
   (UniApplicationStatusLabel as Record<number, string | undefined>)[s] ?? "In progress";
@@ -153,7 +127,7 @@ function UniHead({ c }: { c: Card | Shortlist }) {
 }
 
 function ApplicationCard({ a }: { a: Card }) {
-  const closed = isClosedApplication(a.status);
+  const tone = stageTone(a.status);
   const reachedAt = new Map(a.stageHistory.map((h) => [h.stage, h.date]));
   const facts: [string, string | null][] = [
     ["Submitted", fmtDate(a.submittedAt)],
@@ -167,37 +141,24 @@ function ApplicationCard({ a }: { a: Card }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <UniHead c={a} />
         <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold ${
-            closed ? "bg-[#FEF3F2] text-[#B42318]" : "bg-[#EFF8FF] text-[#175CD3]"
-          }`}
+          className="flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold"
+          style={{ color: tone.color, background: tone.bg }}
         >
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: tone.color }} />
           {statusLabel(a.status)}
         </span>
       </div>
 
-      {/* Stage track: filled up to the furthest stage reached. */}
-      <ol className="mt-4 grid grid-cols-9 gap-1" aria-label="Application progress">
-        {STAGES.map((st) => {
-          const reached = a.stage >= st;
-          const current = !closed && a.status === st;
-          return (
-            <li key={st} className="min-w-0" title={`${statusLabel(st)}${reachedAt.get(st) ? ` · ${fmtDate(reachedAt.get(st)!)}` : ""}`}>
-              <div
-                className={`h-1.5 rounded-full ${
-                  reached ? (closed ? "bg-[#FDA29B]" : "bg-[#1570EF]") : "bg-[#EAECF0]"
-                } ${current ? "ring-2 ring-[#B2CCFF]" : ""}`}
-              />
-              <div
-                className={`mt-1 truncate text-[10px] ${
-                  current ? "font-semibold text-[#1570EF]" : reached ? "text-[#475467]" : "text-[#98A2B3]"
-                }`}
-              >
-                {SHORT[st]}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+      {/* Stage track: the same stages and colours as the counsellor portal. */}
+      <div className="mt-4 overflow-x-auto pb-1">
+        <StageTrack
+          app={a}
+          titleFor={(st) => {
+            const at = reachedAt.get(st);
+            return `${statusLabel(st)}${at ? ` · ${fmtDate(at)}` : ""}`;
+          }}
+        />
+      </div>
 
       {facts.some(([, v]) => v) && (
         <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-[13px] sm:grid-cols-3">

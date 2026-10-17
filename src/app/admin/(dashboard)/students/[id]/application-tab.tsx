@@ -30,13 +30,22 @@ import {
   type ShortlistCard,
 } from "../lib";
 import { LeadPipeline } from "./lead-pipeline";
+import { APPLICATION_STAGE_ORDER } from "~/lib/application-stages";
+import {
+  StageMark,
+  stageDotStyle,
+  stageLabelStyle,
+  stageLineColour,
+  stageStateOf,
+} from "~/components/dashboard/stage-track";
 
 // ---------------------------------------------------------------------------
 // Pipeline config (mirrors the mock's APP_STAGES / STAGE_ALTERNATIVES)
 // ---------------------------------------------------------------------------
 
-// Happy-path stages, in order (UniApplicationStatus 0–8, ending at Enrolled).
-const PIPELINE_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
+// Happy-path stages, in order (ending at Enrolled), from the definition the
+// partner portal's track shares.
+const PIPELINE_STAGES = APPLICATION_STAGE_ORDER;
 
 interface StageOption {
   label: string;
@@ -645,9 +654,9 @@ function Stepper({
   return (
     <div ref={ref} className="mt-6 flex items-start overflow-x-auto pb-1">
       {PIPELINE_STAGES.map((stage, i) => {
-        const done = stage < a.stage;
-        const active = stage === a.stage;
-        const reached = done || active;
+        const state = stageStateOf(stage, a);
+        const active = state === "current";
+        const reached = state !== "todo";
         const history = a.stageHistory.find((h) => h.stage === stage);
 
         // The active stage gets the transition dropdown.
@@ -655,32 +664,12 @@ function Stepper({
         const hasExplicitRevert = options.some((o) => o.kind === "revert");
         const interactive = active && options.length > 1;
 
-        const dotClass = active
-          ? negative
-            ? "border-[#F04438] bg-[#F04438] shadow-[0_0_0_4px_rgba(240,68,56,0.18)]"
-            : terminal
-              ? "border-[#667085] bg-[#667085] shadow-[0_0_0_4px_rgba(102,112,133,0.18)]"
-              : "border-[#1570EF] bg-[#1570EF] shadow-[0_0_0_4px_rgba(21,112,239,0.18)]"
-          : done
-            ? "border-[#12B76A] bg-[#12B76A]"
-            : "border-[#D0D5DD] bg-white";
-        const labelClass = active
-          ? negative
-            ? "font-semibold text-[#B42318]"
-            : terminal
-              ? "font-semibold text-[#475467]"
-              : "font-semibold text-[#1570EF]"
-          : done
-            ? "font-semibold text-[#027A48]"
-            : "font-medium text-[#98A2B3]";
-
         return (
           <Fragment key={stage}>
             {i > 0 && (
               <div
-                className={`mt-[13px] h-0.5 min-w-3 flex-1 ${
-                  reached ? "bg-[#12B76A]" : "bg-[#E4E7EC]"
-                }`}
+                className="mt-[13px] h-0.5 min-w-3 flex-1"
+                style={{ background: stageLineColour(state) }}
               />
             )}
             <div className="relative flex w-[88px] shrink-0 flex-col items-center gap-1.5">
@@ -693,41 +682,22 @@ function Stepper({
                     ? `Change status from ${stageLabel(stage)}`
                     : stageLabel(stage)
                 }
-                className={`flex h-7 w-7 items-center justify-center rounded-full border-2 ${dotClass} ${
+                className={`flex h-7 w-7 items-center justify-center rounded-full border-2 ${
                   interactive ? "cursor-pointer" : "cursor-default"
                 }`}
+                style={stageDotStyle(state, a.status)}
               >
-                {active && negative ? (
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="white"
-                    strokeWidth={2.5}
-                    className="h-3.5 w-3.5"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                ) : reached ? (
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="white"
-                    strokeWidth={3}
-                    className="h-3.5 w-3.5"
-                  >
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                ) : null}
+                <StageMark state={state} status={a.status} />
               </button>
 
               <button
                 type="button"
                 disabled={!interactive}
                 onClick={(e) => toggle(stage, e)}
-                className={`flex items-start justify-center gap-0.5 text-center text-[10px] leading-[1.3] ${labelClass} ${
+                className={`flex items-start justify-center gap-0.5 text-center text-[10px] leading-[1.3] ${
                   interactive ? "cursor-pointer" : "cursor-default"
                 }`}
+                style={stageLabelStyle(state, a.status)}
               >
                 {active && terminal ? badgeLabelFor(a.status) : stageLabel(stage)}
                 {interactive && (
