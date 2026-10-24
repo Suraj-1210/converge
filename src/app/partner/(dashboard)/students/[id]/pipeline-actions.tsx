@@ -7,9 +7,12 @@ import {
   PartnerReportStatus,
   UniApplicationStatus,
   UniApplicationStatusLabel,
+  canDeferFrom,
   partnerReportOption,
 } from "~/server/db/enums";
 import { type AdminStudentFull } from "~/app/admin/(dashboard)/students/lib";
+import { applicationUploadKinds } from "~/lib/application-uploads";
+import { IntakePicker, intakeProblem } from "~/components/students/intake-picker";
 
 type Card = AdminStudentFull["applicationCards"][number];
 
@@ -140,8 +143,10 @@ export function PendingDocsChecklist({
 export function ReportStatus({ app: a }: { app: Card }) {
   const r = a.partnerReport;
   if (!r) return null;
-  const what =
-    (UniApplicationStatusLabel as Record<number, string | undefined>)[r.targetStatus] ?? "Update";
+  const isDeferral = r.targetStatus === UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE;
+  const what = isDeferral
+    ? `Deferred to ${r.deferredIntake ?? "a later intake"}`
+    : ((UniApplicationStatusLabel as Record<number, string | undefined>)[r.targetStatus] ?? "Update");
   if (r.pending) {
     return (
       <div className="mt-4 rounded-lg border border-[#B2DDFF] bg-[#F5FAFF] px-4 py-2.5 text-[13px] text-[#175CD3]">
@@ -161,7 +166,10 @@ export function ReportStatus({ app: a }: { app: Card }) {
   // Show a rejection while the application is still at the stage it was
   // reported from (so the partner can try again); once it moves on, the
   // stage speaks for itself.
-  if (r.status === PartnerReportStatus.REJECTED && partnerReportOption(a.status, r.targetStatus)) {
+  if (
+    r.status === PartnerReportStatus.REJECTED &&
+    (isDeferral ? canDeferFrom(a.status) : partnerReportOption(a.status, r.targetStatus))
+  ) {
     return (
       <div className="mt-4 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-4 py-2.5 text-[13px] text-[#B42318]">
         <span className="font-semibold">“{what}” was not confirmed</span>
@@ -304,5 +312,236 @@ export function ReportAction({
         {error && <p className="text-[13px] text-[#B42318]">{error}</p>}
       </Modal>
     </>
+  );
+}
+
+// ---- Deferral -------------------------------------------------------------------
+
+// The application was deferred: it stays open for the new intake.
+export function DeferralBanner({ app: a }: { app: Card }) {
+  const d = a.deferral;
+  if (!d) return null;
+  return (
+    <div className="mt-4 rounded-lg border border-[#D9D6FE] bg-[#F5F3FF] px-4 py-2.5 text-[13px] text-[#5925DC]">
+      <span className="font-semibold">Deferred to {d.intake}</span>
+      {d.from ? <span className="text-[#475467]"> (was {d.from})</span> : null}
+      <span className="text-[#475467]"> · the application stays open for the new intake</span>
+    </div>
+  );
+}
+
+// "Report deferral": the partner names the new intake; Collegepond confirms.
+export function DeferralReportAction({
+  app: a,
+  onDone,
+}: {
+  app: Card;
+  onDone: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [month, setMonth] = useState<number | null>(null);
+  const [year, setYear] = useState<number | null>(null);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!canDeferFrom(a.status) || a.partnerReport?.pending) return null;
+  const problem = intakeProblem(month, year);
+  const close = () => {
+    setOpen(false);
+    setMonth(null);
+    setYear(null);
+    setNote("");
+    setError(null);
+  };
+  const submit = async () => {
+    if (problem) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("applicationId", String(a.id));
+      fd.append("targetStatus", String(UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE));
+      fd.append("intakeMonth", String(month));
+      fd.append("intakeYear", String(year));
+      if (note.trim()) fd.append("note", note.trim());
+      await postForm("/api/partner/application-report", fd);
+      close();
+      onDone("Deferral sent to Collegepond for confirmation");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't send the deferral");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="h-8 cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-[12px] font-semibold text-[#475467] hover:bg-[#F9FAFB]"
+      >
+        Report deferral
+      </button>
+      <Modal
+        open={open}
+        title="Report a deferral to a later intake"
+        onClose={close}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={close}
+              className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-4 py-2 text-[13px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={busy || !!problem}
+              onClick={() => void submit()}
+              className="cursor-pointer rounded-lg bg-[#1570EF] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#175CD3] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? "Sending…" : "Send to Collegepond"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-[13px] text-[#475467]">
+          {a.university} — {a.program}. The application stays open for the new intake once Collegepond
+          confirms; a paid deposit stays recorded.
+        </p>
+        <IntakePicker
+          month={month}
+          year={year}
+          onChange={(m, y) => {
+            setMonth(m);
+            setYear(y);
+          }}
+        />
+        {month && year && problem && <p className="text-[12px] text-[#B42318]">{problem}</p>}
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={500}
+          rows={2}
+          placeholder="Note for Collegepond (optional), e.g. the university approved the deferral on…"
+          className="w-full rounded-lg border border-[#D0D5DD] px-3 py-2 text-[13px] outline-none focus:border-[#1570EF]"
+        />
+        {error && <p className="text-[13px] text-[#B42318]">{error}</p>}
+      </Modal>
+    </>
+  );
+}
+
+// ---- Uploads after Deposit Paid -------------------------------------------------
+
+const REVIEW_TEXT = {
+  pending: { text: "Awaiting Collegepond verification", cls: "text-[#B54708]" },
+  verified: { text: "Verified by Collegepond", cls: "text-[#067647]" },
+  rejected: { text: "Not accepted — please upload again", cls: "text-[#B42318]" },
+} as const;
+
+// From Deposit Paid on, the partner uploads the deposit slip, then the visa
+// application documents, then the visa approved copy (Day 5 testing). Each is
+// saved to the student's documents, tied to this application, and verified
+// by Collegepond.
+export function ApplicationUploads({
+  app: a,
+  studentId,
+  onChanged,
+  onToast,
+}: {
+  app: Card;
+  studentId: number;
+  onChanged: () => void;
+  onToast: (msg: string) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const kinds = applicationUploadKinds(a.status);
+  if (kinds.length === 0) return null;
+
+  const upload = async (file: File) => {
+    const kind = kinds.find((k) => k.docType === target);
+    if (!kind) return;
+    setBusy(kind.docType);
+    try {
+      const fd = new FormData();
+      fd.append("studentId", String(studentId));
+      fd.append("docType", kind.docType);
+      fd.append("applicationId", String(a.id));
+      fd.append("file", file);
+      await postForm("/api/partner/student-doc", fd);
+      onToast(`${kind.label} uploaded — Collegepond will verify it`);
+      onChanged();
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setBusy(null);
+      setTarget(null);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] px-4 py-3">
+      <div className="text-[13px] font-semibold text-[#101828]">Documents for this application</div>
+      <ul className="mt-2 space-y-2.5">
+        {kinds.map((k) => {
+          const files = a.applicationDocs.filter((d) => d.docType === k.docType);
+          const ok = files.some((d) => d.review !== "rejected");
+          return (
+            <li key={k.docType} className="text-[13px]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[#344054]">
+                  <span className="font-medium">{k.label}</span>
+                  {k.required && !ok && <span className="ml-1.5 text-[11px] font-semibold text-[#B42318]">Required</span>}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setTarget(k.docType);
+                    input.current?.click();
+                  }}
+                  className="h-7 cursor-pointer rounded-md bg-[#1570EF] px-2.5 text-[12px] font-semibold text-white hover:bg-[#1260d4] disabled:opacity-50"
+                >
+                  {busy === k.docType ? "Uploading…" : files.length ? "Upload another" : "Upload"}
+                </button>
+              </div>
+              {files.length === 0 ? (
+                <div className="text-[12px] text-[#98A2B3]">{k.hint}</div>
+              ) : (
+                <ul className="mt-1 space-y-0.5">
+                  {files.map((d) => (
+                    <li key={d.id} className="text-[12px]">
+                      <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
+                        {d.fileName}
+                      </a>
+                      <span className={`ml-2 font-medium ${REVIEW_TEXT[d.review].cls}`}>{REVIEW_TEXT[d.review].text}</span>
+                      {d.review === "rejected" && d.reviewNote && (
+                        <span className="text-[#B42318]">: {d.reviewNote}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <input
+        ref={input}
+        type="file"
+        accept={ALLOWED}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void upload(file);
+          else setTarget(null);
+        }}
+      />
+    </div>
   );
 }

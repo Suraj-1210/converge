@@ -42,6 +42,14 @@ model application {
   // Counsellor's structured vendor pick — the (university × vendor) deal whose
   // rate drives the commission. Supersedes the free-text counsellor_vendor.
   commission_contract_id Int?
+  // Deferred to a later intake (month 1-12 + year); the application stays
+  // open at its stage. deferred_from_intake is the intake shown before.
+  deferred_intake_month  Int?                           @db.UnsignedTinyInt
+  deferred_intake_year   Int?                           @db.UnsignedSmallInt
+  deferred_from_intake   String?                        @db.VarChar(40)
+  deferred_at            DateTime?                      @db.Timestamp(0)
+  deferred_by_cp_user_id Int?
+  deferred_note          String?                        @db.VarChar(255)
   course                 course                         @relation(fields: [course_id], references: [id], map: "fk_application_course")
   organization           organization?                  @relation(fields: [org_id], references: [id], map: "fk_application_organization")
   student                student                        @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_application_student")
@@ -55,6 +63,8 @@ model application {
   @@index([org_id], map: "fk_application_organization1_idx")
   @@index([student_id], map: "fk_application_student1_idx")
   @@index([commission_contract_id], map: "fk_application_commission_contract_idx")
+  @@index([deferred_at], map: "idx_application_deferred")
+  @@index([deferred_by_cp_user_id], map: "fk_application_deferred_by_idx")
 }
 
 // The student's login for the university's own application portal, kept so
@@ -86,6 +96,9 @@ model application_partner_report {
   decided_at            DateTime?   @db.Timestamp(0)
   decision_note         String?     @db.VarChar(500)
   created_at            DateTime    @default(now()) @db.Timestamp(0)
+  // A reported deferral: the new intake.
+  deferred_intake_month Int?        @db.UnsignedTinyInt
+  deferred_intake_year  Int?        @db.UnsignedSmallInt
   application           application @relation(fields: [application_id], references: [id], onDelete: Cascade, map: "fk_apr_application")
   document              document?   @relation(fields: [document_id], references: [id], onDelete: SetNull, map: "fk_apr_document")
 
@@ -234,6 +247,13 @@ model document {
   student_id      Int?
   size_bytes      Int?
   description     String?       @db.VarChar(255)
+  // A partner's upload for one application after Deposit Paid (deposit slip,
+  // visa documents, visa approved copy); Collegepond verifies it (status
+  // 0 pending / 1 approved / 2 rejected, review_note on rejection).
+  application_id         Int?
+  review_note            String?   @db.VarChar(255)
+  reviewed_at            DateTime? @db.Timestamp(0)
+  reviewed_by_cp_user_id Int?
   organization    organization? @relation(fields: [org_id], references: [id], onDelete: Restrict, map: "fk_document_organization")
   user            user?         @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "fk_document_user")
   student         student?      @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_document_student")
@@ -242,6 +262,8 @@ model document {
   @@index([org_id], map: "fk_document_organization1_idx")
   @@index([user_id], map: "fk_document_user1_idx")
   @@index([student_id], map: "fk_document_student_idx")
+  @@index([application_id], map: "fk_document_application_idx")
+  @@index([reviewed_by_cp_user_id], map: "fk_document_reviewed_by_idx")
 }
 
 model event {

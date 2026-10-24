@@ -292,10 +292,19 @@ CREATE TABLE IF NOT EXISTS `document` (
   `student_id`      INT NULL DEFAULT NULL,           -- student-profile documents
   `size_bytes`      INT NULL DEFAULT NULL,
   `description`     VARCHAR(255) NULL DEFAULT NULL,
+  -- A partner's upload for one application after Deposit Paid (deposit slip,
+  -- visa documents, visa approved copy), verified by Collegepond: status
+  -- 0 pending / 1 approved / 2 rejected, review_note on rejection.
+  `application_id`         INT          NULL DEFAULT NULL,
+  `review_note`            VARCHAR(255) NULL DEFAULT NULL,
+  `reviewed_at`            TIMESTAMP    NULL DEFAULT NULL,
+  `reviewed_by_cp_user_id` INT          NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_document_organization1_idx` (`org_id` ASC) VISIBLE,
   INDEX `fk_document_user1_idx`         (`user_id` ASC) VISIBLE,
   INDEX `fk_document_student_idx`       (`student_id` ASC) VISIBLE,
+  INDEX `fk_document_application_idx`   (`application_id` ASC) VISIBLE,
+  INDEX `fk_document_reviewed_by_idx`   (`reviewed_by_cp_user_id` ASC) VISIBLE,
   CONSTRAINT `fk_document_organization`
     FOREIGN KEY (`org_id`) REFERENCES `organization` (`id`)
     ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -304,7 +313,13 @@ CREATE TABLE IF NOT EXISTS `document` (
     ON DELETE SET NULL ON UPDATE NO ACTION,
   CONSTRAINT `fk_document_student`
     FOREIGN KEY (`student_id`) REFERENCES `student` (`id`)
-    ON DELETE CASCADE
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_document_application`
+    FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_document_reviewed_by`
+    FOREIGN KEY (`reviewed_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL
 ) ENGINE = InnoDB;
 
 
@@ -508,8 +523,17 @@ CREATE TABLE IF NOT EXISTS `application` (
   `deposit_currency`   CHAR(3) NULL DEFAULT NULL,
   -- Counsellor's structured vendor pick (the university × vendor deal).
   `commission_contract_id` INT NULL DEFAULT NULL,
+  -- Deferred to a later intake: the application stays open at its stage.
+  `deferred_intake_month`  TINYINT UNSIGNED  NULL DEFAULT NULL,
+  `deferred_intake_year`   SMALLINT UNSIGNED NULL DEFAULT NULL,
+  `deferred_from_intake`   VARCHAR(40)       NULL DEFAULT NULL,
+  `deferred_at`            TIMESTAMP         NULL DEFAULT NULL,
+  `deferred_by_cp_user_id` INT               NULL DEFAULT NULL,
+  `deferred_note`          VARCHAR(255)      NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_application_student1_idx`      (`student_id` ASC) VISIBLE,
+  INDEX `idx_application_deferred`         (`deferred_at` ASC) VISIBLE,
+  INDEX `fk_application_deferred_by_idx`   (`deferred_by_cp_user_id` ASC) VISIBLE,
   INDEX `fk_application_course1_idx`       (`course_id` ASC) VISIBLE,
   INDEX `fk_application_organization1_idx` (`org_id` ASC) VISIBLE,
   INDEX `fk_application_commission_contract_idx` (`commission_contract_id` ASC) VISIBLE,
@@ -524,7 +548,10 @@ CREATE TABLE IF NOT EXISTS `application` (
     ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_application_commission_contract`
     FOREIGN KEY (`commission_contract_id`) REFERENCES `commission_contract` (`id`)
-    ON DELETE SET NULL ON UPDATE CASCADE
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_application_deferred_by`
+    FOREIGN KEY (`deferred_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL
 ) ENGINE = InnoDB;
 
 
@@ -974,6 +1001,9 @@ CREATE TABLE IF NOT EXISTS `application_partner_report` (
   `decided_at`            TIMESTAMP NULL DEFAULT NULL,
   `decision_note`         VARCHAR(500) NULL DEFAULT NULL,
   `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- A reported deferral: the new intake.
+  `deferred_intake_month` TINYINT UNSIGNED  NULL DEFAULT NULL,
+  `deferred_intake_year`  SMALLINT UNSIGNED NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `idx_apr_application_status` (`application_id` ASC, `status` ASC) VISIBLE,
   INDEX `fk_apr_document_idx` (`document_id` ASC) VISIBLE,

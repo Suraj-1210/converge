@@ -46,6 +46,9 @@ import {
   stageIndex,
 } from "~/lib/application-stages";
 import {
+  ApplicationDocsPanel,
+  DeferModal,
+  DeferralNotice,
   PartnerReportPanel,
   PendingDocsModal,
   PendingDocsPanel,
@@ -69,16 +72,22 @@ const PIPELINE_STAGES = APPLICATION_STAGE_ORDER;
 
 interface StageOption {
   label: string;
-  kind: "current" | "advance" | "revert" | "terminal";
+  // defer: opens the new-intake picker; the application stays open.
+  kind: "current" | "advance" | "revert" | "terminal" | "defer";
   // advance/revert: target stage code; terminal: status code (>= 20).
   to?: number;
   negative?: boolean;
 }
 
+// Deferring keeps the application open at the new intake (Day 5 testing).
+const DEFER: StageOption = { label: "Defer to a later intake…", kind: "defer" };
+
 const STAGE_OPTIONS: Record<number, StageOption[]> = {
   0: [
     { label: "Begin Application", kind: "current" },
-    { label: "Advance to Documents Pending", kind: "advance", to: 1 },
+    // Every document is in: straight to Application Submitted (Day 5 testing).
+    { label: "All documents received → Application Submitted", kind: "advance", to: 2 },
+    { label: "Documents pending → name them", kind: "advance", to: 1 },
   ],
   1: [
     { label: "Documents Pending", kind: "current" },
@@ -104,6 +113,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   4: [
     { label: "Conditional Offer", kind: "current" },
     { label: "Advance to Unconditional Offer", kind: "advance", to: 5 },
+    DEFER,
     {
       label: "Rejected by University",
       kind: "terminal",
@@ -114,6 +124,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   5: [
     { label: "Unconditional Offer", kind: "current" },
     { label: "Advance to Deposit Paid", kind: "advance", to: 6 },
+    DEFER,
     {
       label: "Rejected by University",
       kind: "terminal",
@@ -124,6 +135,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   6: [
     { label: "Deposit Paid", kind: "current" },
     { label: "Advance to Visa Filed", kind: "advance", to: UniApplicationStatus.VISA_FILED },
+    DEFER,
     {
       label: "Application Withdrawn",
       kind: "terminal",
@@ -140,18 +152,14 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   // Visa Filed: the next step is the visa outcome (17 Oct 2026).
   [UniApplicationStatus.VISA_FILED]: [
     { label: "Visa Filed", kind: "current" },
-    { label: "Visa Approved → Visa Secured", kind: "advance", to: UniApplicationStatus.VISA_SECURED },
+    { label: "Advance to Visa Approved", kind: "advance", to: UniApplicationStatus.VISA_SECURED },
     {
       label: "Visa Rejected",
       kind: "terminal",
       to: UniApplicationStatus.VISA_REJECTED,
       negative: true,
     },
-    {
-      label: "Deferred to Next Intake",
-      kind: "terminal",
-      to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE,
-    },
+    DEFER,
     {
       label: "Case Closed",
       kind: "terminal",
@@ -159,13 +167,9 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
     },
   ],
   7: [
-    { label: "Visa Secured", kind: "current" },
+    { label: "Visa Approved", kind: "current" },
     { label: "Advance to Enrolled", kind: "advance", to: 8 },
-    {
-      label: "Deferred to Next Intake",
-      kind: "terminal",
-      to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE,
-    },
+    DEFER,
     {
       label: "Case Closed",
       kind: "terminal",
@@ -175,7 +179,7 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
   ],
   8: [
     { label: "Enrolled", kind: "current" },
-    { label: "Revert to Visa Secured", kind: "revert", to: 7 },
+    { label: "Revert to Visa Approved", kind: "revert", to: 7 },
   ],
 };
 
@@ -630,6 +634,7 @@ function AppCard({
   const [confirmRemove, setConfirmRemove] = useState(false);
   // Moving to (or editing) Documents Pending asks which documents first.
   const [pickDocs, setPickDocs] = useState(false);
+  const [deferring, setDeferring] = useState(false);
 
   const statusMut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
@@ -761,7 +766,27 @@ function AppCard({
       )}
 
       {/* Pipeline stepper */}
-      <Stepper app={a} onSelect={setStatus} busy={statusMut.isPending} />
+      <Stepper
+        app={a}
+        onSelect={setStatus}
+        onDefer={() => setDeferring(true)}
+        busy={statusMut.isPending}
+      />
+      {deferring && (
+        <DeferModal
+          app={a}
+          onClose={() => setDeferring(false)}
+          onDone={(msg) => {
+            setDeferring(false);
+            invalidate();
+            onToast(msg);
+          }}
+          onToast={onToast}
+        />
+      )}
+
+      {/* Deferred to a later intake: still open */}
+      {a.deferral && !terminal && <DeferralNotice app={a} />}
 
       {/* A partner's Deposit Paid / visa outcome awaiting confirmation */}
       <PartnerReportPanel app={a} onToast={onToast} invalidate={invalidate} />
@@ -794,6 +819,9 @@ function AppCard({
       {stageAtLeast(a.stage, UniApplicationStatus.UNCONDITIONAL_OFFER) && !negative && (
         <DepositDetails app={a} onToast={onToast} invalidate={invalidate} />
       )}
+
+      {/* Deposit slip / visa documents the partner uploaded, to verify */}
+      <ApplicationDocsPanel app={a} onToast={onToast} invalidate={invalidate} />
     </div>
   );
 }
@@ -805,10 +833,12 @@ function AppCard({
 function Stepper({
   app: a,
   onSelect,
+  onDefer,
   busy,
 }: {
   app: ApplicationCard;
   onSelect: (status: number) => void;
+  onDefer: () => void;
   busy: boolean;
 }) {
   // The stepper scrolls horizontally, which would clip an absolutely
@@ -846,6 +876,7 @@ function Stepper({
     setOpen(null);
     if (busy) return;
     if (option.kind === "current") onSelect(a.stage);
+    else if (option.kind === "defer") onDefer();
     else if (option.kind === "terminal") onSelect(option.to!);
     else onSelect(option.to!);
   };
@@ -1502,7 +1533,10 @@ function DepositDetails({
     });
   };
 
+  // Once the deposit is paid the deadline is history, not a warning.
+  const paid = stageAtLeast(a.stage, UniApplicationStatus.DEPOSIT_PAID);
   const warning = useMemo(() => {
+    if (paid) return { tone: "paid" as const, text: "Deposit paid" };
     if (!deadline) return null;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1523,7 +1557,7 @@ function DepositDetails({
       };
     }
     return null;
-  }, [deadline]);
+  }, [deadline, paid]);
 
   return (
     <div className="mt-4 rounded-[10px] border border-[#E4E7EC] bg-[#F9FAFB] px-5 py-4">
@@ -1572,12 +1606,14 @@ function DepositDetails({
         {warning && (
           <span
             className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${
-              warning.tone === "overdue"
-                ? "bg-[#FEF3F2] text-[#B42318]"
-                : "bg-[#FFF6ED] text-[#B54708]"
+              warning.tone === "paid"
+                ? "bg-[#ECFDF3] text-[#067647]"
+                : warning.tone === "overdue"
+                  ? "bg-[#FEF3F2] text-[#B42318]"
+                  : "bg-[#FFF6ED] text-[#B54708]"
             }`}
           >
-            ⚠️ {warning.text}
+            {warning.tone === "paid" ? "✓" : "⚠️"} {warning.text}
           </span>
         )}
       </div>

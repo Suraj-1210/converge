@@ -54,19 +54,24 @@ import {
   transitionApplication,
 } from "~/server/application-transitions";
 import { parsePendingDocs } from "~/server/pending-docs";
+import { intakeLabel as deferralIntakeLabel } from "~/server/application-deferral";
 import { currentStage } from "~/lib/application-stages";
 import { leadPipelineStep, overallStudentStatus } from "~/lib/student-pipeline";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
 const LIST_CAP = 500;
+
+const isMultiDocType = (key: string) => STUDENT_DOC_TYPES.find((d) => d.key === key)?.multiple ?? true;
 import {
   AdminRole,
   COURSE_LEVEL_CODES,
+  DocumentStatus,
   EDUCATION_LEVEL_CODES,
   EMERGENCY_RELATIONSHIP_CODES,
   GENDER_CODES,
   MARITAL_STATUS_CODES,
   NOTE_PRIORITY_CODES,
+  STUDENT_DOC_TYPES,
   STUDENT_STATUS_CODES,
   ShortlistApproval,
   ShortlistSource,
@@ -892,6 +897,11 @@ async function loadStudentFull(id: number) {
         deposit_deadline: true,
         deposit_amount: true,
         deposit_currency: true,
+        deferred_intake_month: true,
+        deferred_intake_year: true,
+        deferred_from_intake: true,
+        deferred_at: true,
+        deferred_note: true,
         // The newest partner report (pending, or how the last one ended).
         partner_report: {
           orderBy: { created_at: "desc" },
@@ -904,6 +914,8 @@ async function loadStudentFull(id: number) {
             decision_note: true,
             created_at: true,
             decided_at: true,
+            deferred_intake_month: true,
+            deferred_intake_year: true,
             document: { select: { id: true, file_name: true, file_url: true } },
           },
         },
@@ -974,6 +986,7 @@ async function loadStudentFull(id: number) {
       sizeBytes: d.size_bytes,
       isMostRecent: d.is_most_recent === 1,
       createdAt: d.created_at.toISOString(),
+      applicationId: d.application_id,
     })),
     emergencyContacts: contacts.map((c) => ({
       id: c.id,
@@ -1042,6 +1055,35 @@ async function loadStudentFull(id: number) {
       depositAmount:
         a.deposit_amount === null ? null : a.deposit_amount.toNumber(),
       depositCurrency: a.deposit_currency,
+      // Deferred to a later intake; the application stays open.
+      deferral:
+        a.deferred_at && a.deferred_intake_month && a.deferred_intake_year
+          ? {
+              intake: deferralIntakeLabel(a.deferred_intake_month, a.deferred_intake_year),
+              from: a.deferred_from_intake,
+              at: a.deferred_at.toISOString(),
+              note: a.deferred_note,
+            }
+          : null,
+      // What the partner uploaded for this application after Deposit Paid
+      // (deposit slip, visa documents, visa approved copy), with Collegepond's
+      // verification.
+      applicationDocs: documents
+        .filter((d) => d.application_id === a.id && (d.is_most_recent === 1 || isMultiDocType(d.doc_type)))
+        .map((d) => ({
+          id: d.id,
+          docType: d.doc_type,
+          fileName: d.file_name,
+          fileUrl: resolveStorageUrl(d.file_url),
+          createdAt: d.created_at.toISOString(),
+          review:
+            d.status === DocumentStatus.APPROVED
+              ? ("verified" as const)
+              : d.status === DocumentStatus.REJECTED
+                ? ("rejected" as const)
+                : ("pending" as const),
+          reviewNote: d.review_note,
+        })),
       stageHistory: a.stage_history.map((h) => ({
         stage: h.stage,
         date: h.occurred_at.toISOString(),
@@ -1066,6 +1108,8 @@ function toReportCard(
         decision_note: string | null;
         created_at: Date;
         decided_at: Date | null;
+        deferred_intake_month: number | null;
+        deferred_intake_year: number | null;
         document: { id: number; file_name: string; file_url: string } | null;
       }
     | undefined,
@@ -1074,6 +1118,11 @@ function toReportCard(
   return {
     id: r.id,
     targetStatus: r.target_status,
+    // A reported deferral's new intake.
+    deferredIntake:
+      r.deferred_intake_month && r.deferred_intake_year
+        ? deferralIntakeLabel(r.deferred_intake_month, r.deferred_intake_year)
+        : null,
     status: r.status,
     pending: r.status === PartnerReportStatus.PENDING,
     note: r.note,

@@ -8,11 +8,14 @@ import {
 import { db } from "~/server/db";
 import {
   PartnerReportStatus,
+  UniApplicationStatus,
   UniApplicationStatusLabel,
   UserStatus,
+  canDeferFrom,
   partnerReportOption,
-  type UniApplicationStatus,
+  type PartnerReportOption,
 } from "~/server/db/enums";
+import { checkNewIntake, intakeLabel } from "~/server/application-deferral";
 import { findVisibleStudent } from "~/server/partner-access";
 import { checkStudentDocFile, saveStudentDocument, studentDocTypeByKey } from "~/server/student-docs";
 import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server/student-changes";
@@ -26,7 +29,12 @@ import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server
 // independent counsellor). Collegepond hears through the partner-change
 // alerts (student-changes.ts).
 //
-// multipart fields: applicationId, targetStatus, note (optional), file.
+// A deferral (targetStatus = Deferred to Next Intake, from an offer onwards)
+// names the new intake; confirming it keeps the application open
+// (src/server/application-deferral.ts).
+//
+// multipart fields: applicationId, targetStatus, note (optional), file,
+// and for a deferral intakeMonth (1-12) + intakeYear.
 export async function POST(req: Request) {
   const jar = await cookies();
   const partner = await resolvePartnerSession(
@@ -72,7 +80,24 @@ export async function POST(req: Request) {
     return bad("Application not found", 404);
   }
 
-  const option = partnerReportOption(app.status, targetStatus);
+  let option: PartnerReportOption | null;
+  let deferral: { month: number; year: number } | null = null;
+  if (targetStatus === UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE) {
+    if (!canDeferFrom(app.status)) return bad("A deferral can be reported from an offer onwards", 409);
+    const month = Number(form.get("intakeMonth"));
+    const year = Number(form.get("intakeYear"));
+    const problem = checkNewIntake(month, year);
+    if (problem) return bad(problem);
+    deferral = { month, year };
+    option = {
+      to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE,
+      label: `Deferred to ${intakeLabel(month, year)}`,
+      docType: "additional",
+      docRequired: false,
+    };
+  } else {
+    option = partnerReportOption(app.status, targetStatus);
+  }
   if (!option) return bad("That update can't be reported at this stage", 409);
   const open = await db.application_partner_report.count({
     where: { application_id: app.id, status: PartnerReportStatus.PENDING },
@@ -93,6 +118,7 @@ export async function POST(req: Request) {
   const saved = file
     ? await saveStudentDocument(app.student_id, docType, file, actor, {
         description: `${option.label} – ${app.course.university.name}`,
+        applicationId: app.id,
       })
     : null;
 
@@ -104,6 +130,8 @@ export async function POST(req: Request) {
       document_id: saved?.id ?? null,
       note,
       reported_by_user_id: partner.id,
+      deferred_intake_month: deferral?.month ?? null,
+      deferred_intake_year: deferral?.year ?? null,
     },
   });
   await db.audit_log.create({

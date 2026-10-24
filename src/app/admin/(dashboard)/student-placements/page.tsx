@@ -212,7 +212,7 @@ export default function StudentPlacementsPage() {
 
       {/* Section header */}
       <div className="mb-4 flex items-center gap-2 text-base font-bold text-[#101828]">
-        Student Placements — Visa Secured
+        Student Placements — Visa Approved
         <span className="rounded-[10px] bg-[#EFF8FF] px-2 py-0.5 text-[11px] font-bold text-[#175CD3]">
           {filtered.length} student{filtered.length === 1 ? "" : "s"}
         </span>
@@ -294,7 +294,7 @@ export default function StudentPlacementsPage() {
                               <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Student ID</th>
                               <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Program</th>
                               <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Intake</th>
-                              <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Visa Secured</th>
+                              <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Visa Approved</th>
                               <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">Status</th>
                               <th className="border-b border-[#E4E7EC] px-2.5 py-1.5">
                                 University Student ID

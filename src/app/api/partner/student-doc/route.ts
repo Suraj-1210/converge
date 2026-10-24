@@ -9,6 +9,8 @@ import {
 import { db } from "~/server/db";
 import { UserStatus } from "~/server/db/enums";
 import { findVisibleStudent } from "~/server/partner-access";
+import { applicationUploadKind } from "~/lib/application-uploads";
+import { notifyApplicationUpload } from "~/server/application-docs";
 import { parseStudentDocUpload, saveStudentDocument, studentDocJson } from "~/server/student-docs";
 import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server/student-changes";
 
@@ -50,6 +52,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
+  // An upload for one application after Deposit Paid (deposit slip, visa
+  // documents, visa approved copy): the application must be this student's
+  // and the document one its stage asks for. A Documents Pending item upload
+  // also names the application, but files like any profile document.
+  let forApplication: { id: number; label: string } | null = null;
+  if (parsed.applicationId && !parsed.pendingItem) {
+    const app = await db.application.findFirst({
+      where: { id: parsed.applicationId, student_id: parsed.studentId },
+      select: { id: true, status: true },
+    });
+    if (!app) return NextResponse.json({ error: "Application not found" }, { status: 404 });
+    const kind = applicationUploadKind(app.status, parsed.docType.key);
+    if (!kind) {
+      return NextResponse.json(
+        { error: "That document can't be uploaded for this application at its current stage" },
+        { status: 409 },
+      );
+    }
+    forApplication = { id: app.id, label: kind.label };
+  }
+
   const doc = await saveStudentDocument(
     parsed.studentId,
     parsed.docType,
@@ -62,8 +85,9 @@ export async function POST(req: Request) {
         ? { byUserId: partner.ownerImpersonatorId, impersonation: { kind: "partner", id: partner.id } }
         : {}),
     },
-    { pendingItem: parsed.pendingItem },
+    { pendingItem: parsed.pendingItem, applicationId: forApplication?.id ?? null },
   );
+  if (forApplication) void notifyApplicationUpload(forApplication.id, forApplication.label, parsed.file.name);
   // Collegepond's counselling team hears about partner uploads with the rest
   // of the partner's profile edits, including any Documents Pending items the
   // upload ticked off.

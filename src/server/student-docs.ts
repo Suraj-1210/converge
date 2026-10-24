@@ -58,6 +58,9 @@ export async function parseStudentDocUpload(
       docType: { key: string; multiple: boolean };
       file: File;
       pendingItem: PendingItemRef | null;
+      // An upload for one application (after Deposit Paid); the caller
+      // checks the application belongs to the student.
+      applicationId: number | null;
     }
 > {
   const bad = (error: string, status: number) => ({
@@ -87,7 +90,13 @@ export async function parseStudentDocUpload(
     Number.isInteger(applicationId) && applicationId > 0 && Number.isInteger(itemId) && itemId > 0
       ? { applicationId, itemId }
       : null;
-  return { studentId, docType, file, pendingItem };
+  return {
+    studentId,
+    docType,
+    file,
+    pendingItem,
+    applicationId: Number.isInteger(applicationId) && applicationId > 0 ? applicationId : null,
+  };
 }
 
 // The size and type rules for any student file (profile documents, files
@@ -146,7 +155,13 @@ export async function saveStudentDocument(
   docType: { key: string; multiple: boolean },
   file: File,
   actor: Record<string, unknown>,
-  opts: { description?: string | null; pendingItem?: PendingItemRef | null } = {},
+  opts: {
+    description?: string | null;
+    pendingItem?: PendingItemRef | null;
+    // Ties the file to one application; a single-slot type then replaces
+    // only that application's earlier upload.
+    applicationId?: number | null;
+  } = {},
 ) {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
   const buffer = Buffer.from(await file.arrayBuffer());
@@ -161,7 +176,11 @@ export async function saveStudentDocument(
   // table as history but stop being "the" file.
   if (!docType.multiple) {
     await db.document.updateMany({
-      where: { student_id: studentId, doc_type: docType.key },
+      where: {
+        student_id: studentId,
+        doc_type: docType.key,
+        ...(opts.applicationId ? { application_id: opts.applicationId } : {}),
+      },
       data: { is_most_recent: 0 },
     });
   }
@@ -175,6 +194,7 @@ export async function saveStudentDocument(
       mime_type: file.type || null,
       size_bytes: file.size,
       description: opts.description?.slice(0, 255) ?? null,
+      application_id: opts.applicationId ?? null,
     },
   });
   await db.audit_log.create({
@@ -182,7 +202,12 @@ export async function saveStudentDocument(
       action: "student.document_uploaded",
       entity_type: "student",
       entity_id: studentId,
-      metadata: { docType: docType.key, fileName: file.name, ...actor },
+      metadata: {
+        docType: docType.key,
+        fileName: file.name,
+        ...(opts.applicationId ? { applicationId: opts.applicationId } : {}),
+        ...actor,
+      },
     },
   });
 

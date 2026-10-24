@@ -391,7 +391,7 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
     const withVendor = vendorName === null;
     const header = [
       ...(withVendor ? ["Vendor"] : []),
-      "Student Name", "University Student ID", "CP Student ID", "University", "Program", "Intake", "Visa Secured Date", "Status",
+      "Student Name", "University Student ID", "CP Student ID", "University", "Program", "Intake", "Visa Approved Date", "Status",
     ];
     const body = scoped.map((r) => [
       ...(withVendor ? [r.vendorName] : []),

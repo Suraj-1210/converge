@@ -7,10 +7,13 @@ import {
   InactiveReason,
   InactiveReasonLabel,
   STUDENT_DOC_TYPES,
+  UniApplicationStatus,
   UniApplicationStatusLabel,
   partnerReportOption,
 } from "~/server/db/enums";
 import { api } from "~/trpc/react";
+import { APPLICATION_UPLOAD_KINDS } from "~/lib/application-uploads";
+import { IntakePicker, intakeProblem } from "~/components/students/intake-picker";
 import { type ApplicationCard } from "../lib";
 
 // Phase 3A panels on an application card (17 Oct 2026): the Documents
@@ -263,9 +266,11 @@ export function PartnerReportPanel({
   const r = a.partnerReport;
   if (!r?.pending) return null;
   const what =
-    partnerReportOption(a.status, r.targetStatus)?.label ??
-    (UniApplicationStatusLabel as Record<number, string | undefined>)[r.targetStatus] ??
-    "Update";
+    r.targetStatus === UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE
+      ? `Deferred to ${r.deferredIntake ?? "a later intake"}`
+      : (partnerReportOption(a.status, r.targetStatus)?.label ??
+        (UniApplicationStatusLabel as Record<number, string | undefined>)[r.targetStatus] ??
+        "Update");
   const busy = confirmMut.isPending || rejectMut.isPending;
 
   return (
@@ -449,5 +454,219 @@ export function InactiveControl({
         />
       </Modal>
     </>
+  );
+}
+
+// ---- Deferral -----------------------------------------------------------------
+
+// Defer to a later intake (Day 5 testing): the application stays open. From
+// a visa stage it goes back to Deposit Paid, as the visa is filed again.
+export function DeferModal({
+  app: a,
+  onClose,
+  onDone,
+  onToast,
+}: {
+  app: ApplicationCard;
+  onClose: () => void;
+  onDone: (msg: string) => void;
+  onToast: (msg: string) => void;
+}) {
+  const [month, setMonth] = useState<number | null>(null);
+  const [year, setYear] = useState<number | null>(null);
+  const [note, setNote] = useState("");
+  const deferMut = api.applicationPipeline.deferApplication.useMutation({
+    onSuccess: (res) => onDone(`Deferred to ${res.intake} — the partner has been told`),
+    onError: (err) => onToast(err.message),
+  });
+  const problem = intakeProblem(month, year);
+  const visaStage =
+    a.status === UniApplicationStatus.VISA_FILED || a.status === UniApplicationStatus.VISA_SECURED;
+  return (
+    <Modal
+      open
+      title={a.deferral ? "Change the deferred intake" : "Defer to a later intake"}
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-4 py-2 text-[13px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deferMut.isPending || !!problem}
+            onClick={() =>
+              deferMut.mutate({ applicationId: a.id, month: month!, year: year!, note: note.trim() || null })
+            }
+            className="cursor-pointer rounded-lg bg-[#1570EF] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#175CD3] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deferMut.isPending ? "Saving…" : "Defer"}
+          </button>
+        </>
+      }
+    >
+      <p className="text-[13px] text-[#475467]">
+        {a.university} — {a.program}. The application stays open for the new intake and is listed under
+        Deferred on the Students page.{" "}
+        {visaStage
+          ? "It goes back to Deposit Paid: the visa is filed again for the new intake."
+          : `It stays at ${UniApplicationStatusLabel[a.status as UniApplicationStatus] ?? "its stage"}.`}
+      </p>
+      <IntakePicker
+        month={month}
+        year={year}
+        onChange={(m, y) => {
+          setMonth(m);
+          setYear(y);
+        }}
+      />
+      {month && year && problem && <p className="text-[12px] text-[#B42318]">{problem}</p>}
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        maxLength={255}
+        rows={2}
+        placeholder="Note (optional), e.g. deposit carried forward, refund requested"
+        className="w-full rounded-lg border border-[#D0D5DD] px-3 py-2 text-[13px] outline-none focus:border-[#1570EF]"
+      />
+    </Modal>
+  );
+}
+
+export function DeferralNotice({ app: a }: { app: ApplicationCard }) {
+  const d = a.deferral;
+  if (!d) return null;
+  return (
+    <div className="mt-4 rounded-lg border border-[#D9D6FE] bg-[#F5F3FF] px-4 py-2.5 text-[13px] text-[#5925DC]">
+      <span className="font-semibold">Deferred to {d.intake}</span>
+      {d.from ? <span className="text-[#475467]"> (was {d.from})</span> : null}
+      <span className="text-[#475467]"> · {fmtDate(d.at)}</span>
+      {d.note && <div className="mt-0.5 text-[#344054]">“{d.note}”</div>}
+    </div>
+  );
+}
+
+// ---- Partner uploads after Deposit Paid -------------------------------------------
+
+const REVIEW_CHIP = {
+  pending: { text: "Awaiting verification", cls: "bg-[#FFFAEB] text-[#B54708]" },
+  verified: { text: "Verified", cls: "bg-[#ECFDF3] text-[#067647]" },
+  rejected: { text: "Not accepted", cls: "bg-[#FEF3F2] text-[#B42318]" },
+} as const;
+
+// The deposit slip, visa documents and visa approved copy the partner
+// uploaded for this application; a counsellor verifies or rejects each.
+export function ApplicationDocsPanel({
+  app: a,
+  onToast,
+  invalidate,
+}: {
+  app: ApplicationCard;
+  onToast: (msg: string) => void;
+  invalidate: () => void;
+}) {
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [reason, setReason] = useState("");
+  const reviewMut = api.applicationPipeline.reviewApplicationDocument.useMutation({
+    onSuccess: (_r, vars) => {
+      invalidate();
+      setRejectingId(null);
+      setReason("");
+      onToast(vars.approve ? "Document verified" : "Document rejected — the partner has been asked to re-upload");
+    },
+    onError: (err) => onToast(err.message),
+  });
+  const docs = a.applicationDocs;
+  const depositMissing =
+    a.stage === UniApplicationStatus.DEPOSIT_PAID ||
+    a.stage === UniApplicationStatus.VISA_FILED ||
+    a.stage === UniApplicationStatus.VISA_SECURED ||
+    a.stage === UniApplicationStatus.ENROLLED
+      ? !docs.some((d) => d.docType === "deposit_receipt" && d.review !== "rejected")
+      : false;
+  if (docs.length === 0 && !depositMissing) return null;
+  const labelOf = (t: string) => APPLICATION_UPLOAD_KINDS.find((k) => k.docType === t)?.label ?? t;
+
+  return (
+    <div className="mt-4 rounded-[10px] border border-[#E4E7EC] bg-white px-5 py-4">
+      <div className="mb-2 text-[13px] font-bold text-[#101828]">Partner uploads for this application</div>
+      {depositMissing && (
+        <div className="mb-2 rounded-md bg-[#FFFAEB] px-3 py-2 text-[12px] font-medium text-[#B54708]">
+          No deposit slip yet: the partner has been asked to upload it. Commission needs it.
+        </div>
+      )}
+      <ul className="space-y-2">
+        {docs.map((d) => {
+          const chip = REVIEW_CHIP[d.review];
+          return (
+            <li key={d.id} className="text-[13px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-[#344054]">{labelOf(d.docType)}</span>
+                <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
+                  {d.fileName}
+                </a>
+                <span className="text-[12px] text-[#98A2B3]">{fmtDate(d.createdAt)}</span>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>{chip.text}</span>
+                {d.review !== "verified" && rejectingId !== d.id && (
+                  <span className="ml-auto flex gap-2">
+                    {d.review === "pending" && (
+                      <button
+                        type="button"
+                        disabled={reviewMut.isPending}
+                        onClick={() => setRejectingId(d.id)}
+                        className="cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#B42318] hover:bg-[#FEF3F2] disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={reviewMut.isPending}
+                      onClick={() => reviewMut.mutate({ documentId: d.id, approve: true })}
+                      className="cursor-pointer rounded-md bg-[#1570EF] px-2.5 py-1 text-[12px] font-semibold text-white hover:bg-[#175CD3] disabled:opacity-50"
+                    >
+                      Verify
+                    </button>
+                  </span>
+                )}
+              </div>
+              {d.review === "rejected" && d.reviewNote && (
+                <div className="mt-0.5 text-[12px] text-[#B42318]">{d.reviewNote}</div>
+              )}
+              {rejectingId === d.id && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <input
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    maxLength={255}
+                    placeholder="Why isn't it acceptable? (sent to the partner)"
+                    className="h-8 min-w-[240px] flex-1 rounded-lg border border-[#D0D5DD] px-3 text-[13px] outline-none focus:border-[#1570EF]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setRejectingId(null)}
+                    className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reviewMut.isPending || !reason.trim()}
+                    onClick={() => reviewMut.mutate({ documentId: d.id, approve: false, note: reason.trim() })}
+                    className="cursor-pointer rounded-lg bg-[#D92D20] px-3 text-[12px] font-semibold text-white hover:bg-[#B42318] disabled:opacity-50"
+                  >
+                    Reject document
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }

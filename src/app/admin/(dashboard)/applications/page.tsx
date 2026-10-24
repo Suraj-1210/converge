@@ -216,7 +216,7 @@ function StageSelect({
   const visaOutcomes =
     current === UniApplicationStatus.VISA_FILED
       ? [
-          { code: UniApplicationStatus.VISA_SECURED as number, label: "Visa Approved → Visa Secured" },
+          { code: UniApplicationStatus.VISA_SECURED as number, label: "Visa Approved" },
           { code: UniApplicationStatus.VISA_REJECTED as number, label: "Visa Rejected" },
           { code: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE as number, label: "Deferred to Next Intake" },
           { code: UniApplicationStatus.COURSE_CLOSED as number, label: "Case Closed" },

@@ -16,7 +16,14 @@ import {
   shortlistView,
 } from "~/components/students/shortlist-approval";
 import { applicationSummary, splitByClosed } from "~/lib/application-summary";
-import { PendingDocsChecklist, ReportAction, ReportStatus } from "./pipeline-actions";
+import {
+  ApplicationUploads,
+  DeferralBanner,
+  DeferralReportAction,
+  PendingDocsChecklist,
+  ReportAction,
+  ReportStatus,
+} from "./pipeline-actions";
 import { stageTone } from "~/lib/application-stages";
 import { StageTrack } from "~/components/dashboard/stage-track";
 
@@ -287,6 +294,13 @@ function ApplicationCard({
               onChanged();
             }}
           />
+          <DeferralReportAction
+            app={a}
+            onDone={(msg) => {
+              onToast(msg);
+              onChanged();
+            }}
+          />
           <span
             className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold"
             style={{ color: tone.color, background: tone.bg }}
@@ -319,7 +333,9 @@ function ApplicationCard({
       )}
 
       <ReportStatus app={a} />
+      <DeferralBanner app={a} />
       <PendingDocsChecklist app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
+      <ApplicationUploads app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
 
       {facts.some(([, v]) => v) && (
         <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-[13px] sm:grid-cols-3">

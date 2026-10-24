@@ -196,7 +196,7 @@ export const StudentStatusLabel: Record<StudentStatus, string> = {
   [StudentStatus.DECLINED_BY_STUDENT]: "Declined by Student",
   [StudentStatus.NOT_QUALIFIED]: "Not Qualified",
   [StudentStatus.DEPOSIT_PAID]: "Deposit Paid",
-  [StudentStatus.VISA_SECURED]: "Visa Secured",
+  [StudentStatus.VISA_SECURED]: "Visa Approved",
   [StudentStatus.VISA_REJECTED]: "Visa Rejected",
   [StudentStatus.DEFERRED_TO_NEXT_INTAKE]: "Deferred to Next Intake",
   [StudentStatus.COURSE_CLOSED]: "Case Closed",
@@ -287,7 +287,8 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
   { key: "backlog", label: "Backlog Certificate", multiple: false, section: "academic", expected: false },
   { key: "additional", label: "Additional Documents", multiple: true, section: "academic", expected: false },
   { key: "offer_letter", label: "Offer Letter", multiple: true, section: "enrollment", expected: false },
-  { key: "visa", label: "Visa Copy", multiple: false, section: "enrollment", expected: false },
+  { key: "visa_documents", label: "Visa Application Documents", multiple: true, section: "enrollment", expected: false },
+  { key: "visa", label: "Visa Approved Copy", multiple: false, section: "enrollment", expected: false },
   { key: "visa_refusal", label: "Visa Refusal Letter", multiple: false, section: "enrollment", expected: false },
   { key: "deposit_receipt", label: "Deposit Receipt", multiple: false, section: "enrollment", expected: false },
   { key: "tuition_receipt", label: "Tuition Payment Receipts", multiple: true, section: "enrollment", expected: false },
@@ -497,7 +498,8 @@ export const UniApplicationStatusLabel: Record<UniApplicationStatus, string> = {
   [UniApplicationStatus.CONDITIONAL_OFFER]: "Conditional Offer",
   [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Unconditional Offer",
   [UniApplicationStatus.DEPOSIT_PAID]: "Deposit Paid",
-  [UniApplicationStatus.VISA_SECURED]: "Visa Secured",
+  // "Visa Approved" on both portals (Day 5 testing); the code is still VISA_SECURED.
+  [UniApplicationStatus.VISA_SECURED]: "Visa Approved",
   [UniApplicationStatus.ENROLLED]: "Enrolled",
   [UniApplicationStatus.VISA_FILED]: "Visa Filed",
   [UniApplicationStatus.REJECTED_BY_UNIVERSITY]: "Rejected by University",
@@ -538,7 +540,6 @@ export const PARTNER_REPORTABLE: Partial<Record<UniApplicationStatus, PartnerRep
   [UniApplicationStatus.VISA_FILED]: [
     { to: UniApplicationStatus.VISA_SECURED, label: "Visa Approved", docType: "visa", docRequired: true },
     { to: UniApplicationStatus.VISA_REJECTED, label: "Visa Rejected", docType: "visa_refusal", docRequired: true },
-    { to: UniApplicationStatus.DEFERRED_TO_NEXT_INTAKE, label: "Deferred to Next Intake", docType: "additional", docRequired: false },
     { to: UniApplicationStatus.COURSE_CLOSED, label: "Case Closed", docType: "additional", docRequired: false },
   ],
 };
@@ -546,6 +547,26 @@ export const PARTNER_REPORTABLE: Partial<Record<UniApplicationStatus, PartnerRep
 export function partnerReportOption(stage: number, to: number): PartnerReportOption | null {
   return PARTNER_REPORTABLE[stage as UniApplicationStatus]?.find((o) => o.to === to) ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Deferral to a later intake (Day 5 testing, 24 Oct 2026, with Suraj)
+// ---------------------------------------------------------------------------
+// Deferring no longer closes the application: the counsellor (or a partner's
+// confirmed report) records the new intake and the application stays open.
+// It keeps its stage, except a visa stage, which goes back to Deposit Paid
+// because the visa is filed for the new intake (src/server/application-
+// deferral.ts). A partner's report uses target_status DEFERRED_TO_NEXT_INTAKE
+// with the new intake on the report. Older rows closed with status 24 stay
+// closed. The stages a deferral can be recorded from:
+export const DEFERRAL_STAGES: UniApplicationStatus[] = [
+  UniApplicationStatus.CONDITIONAL_OFFER,
+  UniApplicationStatus.UNCONDITIONAL_OFFER,
+  UniApplicationStatus.DEPOSIT_PAID,
+  UniApplicationStatus.VISA_FILED,
+  UniApplicationStatus.VISA_SECURED,
+];
+export const canDeferFrom = (status: number) =>
+  DEFERRAL_STAGES.includes(status as UniApplicationStatus);
 
 // ---------------------------------------------------------------------------
 // Overall student status (Students tab, 17 Oct 2026, with Suraj)

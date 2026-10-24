@@ -123,7 +123,7 @@ const SHORT: Record<number, string> = {
   [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Offer",
   [UniApplicationStatus.DEPOSIT_PAID]: "Deposit",
   [UniApplicationStatus.VISA_FILED]: "Visa Filed",
-  [UniApplicationStatus.VISA_SECURED]: "Visa",
+  [UniApplicationStatus.VISA_SECURED]: "Visa Approved",
   [UniApplicationStatus.ENROLLED]: "Enrolled",
   [UniApplicationStatus.REJECTED_BY_UNIVERSITY]: "Rejected",
   [UniApplicationStatus.APPLICATION_WITHDRAWAL]: "Withdrawn",

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { DeferredPanel } from "~/components/students/deferred-panel";
 import { Link as VTLink } from "next-view-transitions";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
@@ -452,6 +453,8 @@ export default function StudentsPage() {
     showToast(`CSV downloaded — ${sorted.length} students exported`);
   };
 
+  const deferred = api.applicationPipeline.deferredList.useQuery();
+
   // ---- Render ----------------------------------------------------------------
 
   return (
@@ -487,6 +490,12 @@ export default function StudentsPage() {
           </Button>
         </div>
       </div>
+
+      {/* Deferred to a later intake: still open, listed so they aren't lost */}
+      <DeferredPanel
+        rows={deferred.data}
+        hrefFor={(id) => `/admin/students/${id}?tab=application`}
+      />
 
       {/* Pipeline tabs */}
       <div className="mb-5 flex gap-2 overflow-x-auto border-b border-[#E4E7EC]">

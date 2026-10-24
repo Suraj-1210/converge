@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { DeferredPanel } from "~/components/students/deferred-panel";
 import { flushSync } from "react-dom";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -356,6 +357,8 @@ function StudentsPage() {
     );
   };
 
+  const deferred = api.applicationPipeline.partnerDeferredList.useQuery();
+
   return (
     <>
       {/* Page header */}
@@ -381,6 +384,12 @@ function StudentsPage() {
           Add New Student
         </Button>
       </div>
+
+      {/* Deferred to a later intake: still open, listed so they aren't lost */}
+      <DeferredPanel
+        rows={deferred.data}
+        hrefFor={(id) => `/partner/students/${id}?tab=applications`}
+      />
 
       {students.error ? (
         <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-4 text-sm text-[#B42318]">
