@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
@@ -182,7 +183,23 @@ type ModalState =
   | null;
 
 // =============================================================================
+// useSearchParams (the ledger's ?recordPayment deep link) needs a Suspense
+// boundary under the App Router.
 export default function UniversityBillingPage() {
+  return (
+    <Suspense
+      fallback={
+        <DashboardCard title="University Billing" bodyClassName="p-0">
+          <SkeletonTable rows={6} cols={6} />
+        </DashboardCard>
+      }
+    >
+      <UniversityBilling />
+    </Suspense>
+  );
+}
+
+function UniversityBilling() {
   const meQ = api.authSession.me.useQuery();
   const role = meQ.data?.role;
   const canView =
@@ -216,6 +233,43 @@ export default function UniversityBillingPage() {
 
   const attendedBadge = confirmedQ.data?.students.length ?? 0;
   const billedBadge = billingQ.data?.length ?? 0;
+
+  // Commission Ledger → "Record collection" links here with
+  // ?recordPayment=<vendorInvoiceId>: show that invoice on the Vendor Billing
+  // tab and open its Record Payment modal. Handled once, then the param is
+  // dropped so closing the modal doesn't reopen it.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const deepLinkId = Number(searchParams.get("recordPayment")) || null;
+  const invoicesQ = api.universityBilling.listVendorInvoices.useQuery(undefined, {
+    enabled: canView && deepLinkId != null,
+  });
+  const [focusInvoiceId, setFocusInvoiceId] = useState<number | null>(null);
+  const handledDeepLink = useRef<number | null>(null);
+  useEffect(() => {
+    if (!mounted || deepLinkId == null || !invoicesQ.data) return;
+    if (handledDeepLink.current === deepLinkId) return;
+    handledDeepLink.current = deepLinkId;
+    router.replace("/admin/university-billing", { scroll: false });
+    const toast = (m: string) => {
+      setToastMsg(m);
+      setToastOpen(true);
+    };
+    const inv = invoicesQ.data.find((i) => i.id === deepLinkId);
+    if (!inv) {
+      toast("That vendor invoice no longer exists.");
+      return;
+    }
+    setTab("billing");
+    setFocusInvoiceId(inv.id);
+    if (inv.status === VendorInvoiceStatus.FULLY_PAID) {
+      toast(`Invoice ${inv.invoiceNumber} is already fully paid.`);
+    } else if (!canEdit) {
+      toast("Only Finance Managers and Super Admins can record a payment.");
+    } else {
+      setModal({ kind: "recordPayment", invoice: inv });
+    }
+  }, [mounted, deepLinkId, invoicesQ.data, canEdit, router]);
 
   if (!mounted || meQ.isLoading) {
     return (
@@ -290,6 +344,7 @@ export default function UniversityBillingPage() {
       {tab === "billing" && (
         <VendorBillingTab
           canEdit={canEdit}
+          focusInvoiceId={focusInvoiceId}
           onOpenCreateInvoice={(vendorId, vendorName, students) => setModal({ kind: "createInvoice", vendorId, vendorName, students })}
           onOpenRecordPayment={(invoice) => setModal({ kind: "recordPayment", invoice })}
         />
@@ -475,10 +530,12 @@ type VbFilter = "total" | "not-invoiced" | "outstanding" | "paid" | null;
 
 function VendorBillingTab({
   canEdit,
+  focusInvoiceId,
   onOpenCreateInvoice,
   onOpenRecordPayment,
 }: {
   canEdit: boolean;
+  focusInvoiceId: number | null;
   onOpenCreateInvoice: (vendorId: number | null, vendorName: string, students: BillingStudent[]) => void;
   onOpenRecordPayment: (invoice: Invoice) => void;
 }) {
@@ -523,6 +580,13 @@ function VendorBillingTab({
     setView("invoices");
     setJumpTo(id);
   };
+  // Deep link from the Commission Ledger: show that invoice.
+  useEffect(() => {
+    if (focusInvoiceId == null) return;
+    setFilter(null);
+    setView("invoices");
+    setJumpTo(focusInvoiceId);
+  }, [focusInvoiceId]);
 
   return (
     <div className="space-y-5">
@@ -1297,6 +1361,8 @@ function RecordPaymentModal({
   const record = api.universityBilling.recordVendorPayment.useMutation({
     onSuccess: () => {
       void utils.universityBilling.invalidate();
+      // The ledger's stage + next step change with collection.
+      void utils.commissions.invalidate();
       onToast(isFinal ? "Payment recorded — students now claimable" : "Partial payment recorded");
       onClose();
     },

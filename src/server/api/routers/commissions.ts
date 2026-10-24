@@ -26,13 +26,25 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // read-only and routes money-moving steps into the screens that capture the
 // real numbers (FX rate on collection, payment reference on release); steps
 // that are the partner's move (claiming collected money) carry no link.
+// Collection deep-links to the vendor invoice so University Billing opens its
+// Record Payment modal straight away.
 type NextStep = { label: string; href: string | null } | null;
-function nextStep(status: number, hasPendingPartnerInvoice: boolean): NextStep {
+function nextStep(
+  status: number,
+  hasPendingPartnerInvoice: boolean,
+  vendorInvoiceId: number | null,
+): NextStep {
   switch (status) {
     case CommissionStatus.NOT_INVOICED:
       return { label: "Bill the vendor", href: "/admin/university-billing" };
     case CommissionStatus.INVOICED:
-      return { label: "Record collection", href: "/admin/university-billing" };
+      return {
+        label: "Record collection",
+        href:
+          vendorInvoiceId != null
+            ? `/admin/university-billing?recordPayment=${vendorInvoiceId}`
+            : "/admin/university-billing",
+      };
     case CommissionStatus.RECEIVED:
       return hasPendingPartnerInvoice
         ? { label: "Approve payout", href: "/admin/invoices" }
@@ -71,7 +83,7 @@ export const commissionsRouter = createTRPCRouter({
         vendor: { select: { name: true, type: true } },
         partner_tier: { select: { name: true } },
         vendor_invoice_item: {
-          select: { vendor_invoice: { select: { invoice_number: true, status: true } } },
+          select: { vendor_invoice: { select: { id: true, invoice_number: true, status: true } } },
         },
         // Per-tranche claim + payout chain (pay-as-collected).
         commission_tranche: {
@@ -233,6 +245,7 @@ export const commissionsRouter = createTRPCRouter({
         paidAt: c.partner_paid_at,
         vendorInvoice: c.vendor_invoice_item?.vendor_invoice
           ? {
+              id: c.vendor_invoice_item.vendor_invoice.id,
               number: c.vendor_invoice_item.vendor_invoice.invoice_number,
               status: c.vendor_invoice_item.vendor_invoice.status,
             }
@@ -242,7 +255,7 @@ export const commissionsRouter = createTRPCRouter({
           : null,
         payoutStatus: latestInvoice?.payoutStatus ?? null,
         fy: financialYearOf(c.created_at),
-        next: nextStep(status, hasPendingPartnerInvoice),
+        next: nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null),
       };
     });
   }),
