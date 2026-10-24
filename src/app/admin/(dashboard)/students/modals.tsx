@@ -254,8 +254,7 @@ interface AddForm {
   program: string;
   orgId: string;
   cpCounsellorId: string;
-  educationLoan: boolean;
-  applyThroughCp: boolean;
+  educationLoan: boolean | null;
 }
 
 const emptyAddForm: AddForm = {
@@ -271,8 +270,7 @@ const emptyAddForm: AddForm = {
   program: "",
   orgId: "",
   cpCounsellorId: "",
-  educationLoan: true,
-  applyThroughCp: true,
+  educationLoan: null,
 };
 
 type DuplicateInfo = {
@@ -339,7 +337,7 @@ export function AddStudentModal({
       form.program,
       form.orgId,
     ];
-    if (required.some((v) => !v.trim())) {
+    if (required.some((v) => !v.trim()) || form.educationLoan === null) {
       onToast("Please fill in all required fields");
       return;
     }
@@ -365,7 +363,6 @@ export function AddStudentModal({
       courseLevel: Number(form.courseLevel),
       interestedProgram: form.program,
       educationLoan: form.educationLoan,
-      applyThroughCp: form.applyThroughCp,
       orgId: Number(form.orgId),
       cpCounsellorId: form.cpCounsellorId ? Number(form.cpCounsellorId) : null,
     });
@@ -525,14 +522,10 @@ export function AddStudentModal({
 
         <Section title="Additional Information">
           <YesNoRow
-            label="Is your student interested in an education loan?"
+            label="Is your student interested in applying for an education loan through Collegepond?"
+            required
             value={form.educationLoan}
             onChange={(educationLoan) => set({ educationLoan })}
-          />
-          <YesNoRow
-            label="Do you want to apply through Collegepond?"
-            value={form.applyThroughCp}
-            onChange={(applyThroughCp) => set({ applyThroughCp })}
           />
         </Section>
       </Modal>
@@ -618,16 +611,20 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function YesNoRow({
   label,
+  required,
   value,
   onChange,
 }: {
   label: string;
-  value: boolean;
+  required?: boolean;
+  value: boolean | null;
   onChange: (v: boolean) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <span className="text-sm text-[#344054]">{label}</span>
+      <span className="text-sm text-[#344054]">
+        {label} {required && <span className="text-[#F04438]">*</span>}
+      </span>
       <div className="flex gap-5">
         {[true, false].map((option) => (
           <label
@@ -688,7 +685,6 @@ const IMPORT_COLUMNS = [
   "courseLevel",
   "interestedProgram",
   "educationLoan",
-  "applyThroughCp",
 ] as const;
 
 const TEMPLATE_EXAMPLE = [
@@ -702,7 +698,6 @@ const TEMPLATE_EXAMPLE = [
   "2002-05-14",
   "Masters",
   "Computer Science",
-  "yes",
   "yes",
 ];
 
@@ -769,8 +764,12 @@ function parseCsvLine(line: string): string[] {
   return out.map((c) => c.trim());
 }
 
-function parseBool(v: string): boolean {
-  return ["yes", "y", "true", "1", "t"].includes(v.trim().toLowerCase());
+// Yes/No answers; anything else (including blank) is null so the row errors.
+function parseYesNo(v: string): boolean | null {
+  const k = v.trim().toLowerCase();
+  if (["yes", "y", "true", "1", "t"].includes(k)) return true;
+  if (["no", "n", "false", "0", "f"].includes(k)) return false;
+  return null;
 }
 
 type ImportPayload = {
@@ -785,7 +784,6 @@ type ImportPayload = {
   courseLevel: number;
   interestedProgram: string;
   educationLoan: boolean;
-  applyThroughCp: boolean;
 };
 
 type ParsedRow =
@@ -835,6 +833,9 @@ function validateRow(rec: Record<string, string>, line: number): ParsedRow {
 
   const interestedProgram = req("interestedProgram", 100);
 
+  const educationLoan = parseYesNo(rec.educationLoan ?? "");
+  if (educationLoan === null) errors.push("educationLoan must be Yes or No");
+
   const name = `${firstName} ${lastName}`.trim() || email || `Row ${line}`;
   if (errors.length > 0) return { line, ok: false, errors, name };
 
@@ -852,8 +853,7 @@ function validateRow(rec: Record<string, string>, line: number): ParsedRow {
       dateOfBirth,
       courseLevel: courseLevel!,
       interestedProgram,
-      educationLoan: parseBool(rec.educationLoan ?? ""),
-      applyThroughCp: parseBool(rec.applyThroughCp ?? ""),
+      educationLoan: educationLoan!,
     },
   };
 }

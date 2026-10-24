@@ -280,7 +280,10 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
   { key: "sop", label: "Statement of Purpose (SOP)", multiple: false, section: "academic", expected: true },
   { key: "lor", label: "Letter of Recommendation (LOR)", multiple: true, section: "academic", expected: true },
   { key: "transcript_bachelors", label: "Bachelor's Transcripts", multiple: true, section: "academic", expected: false },
+  { key: "transcript_masters", label: "Master's / PhD Transcripts", multiple: true, section: "academic", expected: false },
+  { key: "degree_certificate", label: "Degree / Provisional Certificates", multiple: true, section: "academic", expected: false },
   { key: "english_test", label: "English Test Score Report", multiple: true, section: "academic", expected: false },
+  { key: "aptitude_test", label: "GRE / GMAT / SAT / ACT Score Report", multiple: true, section: "academic", expected: false },
   { key: "backlog", label: "Backlog Certificate", multiple: false, section: "academic", expected: false },
   { key: "additional", label: "Additional Documents", multiple: true, section: "academic", expected: false },
   { key: "offer_letter", label: "Offer Letter", multiple: true, section: "enrollment", expected: false },
@@ -292,14 +295,19 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
 
 export const EXPECTED_STUDENT_DOC_TYPES = STUDENT_DOC_TYPES.filter((d) => d.expected);
 
-// The checklist slot an uploaded document fills. Collegepond's own profile
-// uploads (per-level transcripts, per-attempt English test reports) count
-// toward the matching standard item so it isn't shown as missing.
+// The checklist slot an uploaded document fills. Older profile uploads
+// (per-level education documents, per-attempt test reports, from before
+// uploads moved to the Documents tab only) count toward the matching item.
 export function studentDocSlot(docType: string): string {
   if (docType === "edu_10th_transcript") return "marksheet_10th";
   if (docType === "edu_12th_transcript") return "marksheet_12th";
   if (docType === "edu_ug_transcript") return "transcript_bachelors";
+  if (/^edu_(masters|phd)_transcript$/.test(docType)) return "transcript_masters";
+  if (/^edu_[a-z0-9]+_(degree|provisional)$/.test(docType)) return "degree_certificate";
+  if (/^edu_[a-z0-9]+_backlog$/.test(docType)) return "backlog";
+  if (/^edu_[a-z0-9]+_(predicted|other)$/.test(docType)) return "additional";
   if (/^test_(IELTS|TOEFL|TOEFL2026|PTE|Duolingo)_\d+$/.test(docType)) return "english_test";
+  if (/^test_(GRE|GMAT|GMAT_Focus|SAT|ACT)_\d+$/.test(docType)) return "aptitude_test";
   return docType;
 }
 

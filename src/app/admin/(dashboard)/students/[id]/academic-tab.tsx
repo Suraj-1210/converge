@@ -19,14 +19,12 @@ import {
   SCALE_BY_BOARD,
   SCALE_OPTIONS,
   autoQualification,
-  eduDocCategories,
-  eduDocType,
   isHigherLevel,
   strOrNull,
   yearOptions,
 } from "./profile-lib";
-import { InlineDocUpload } from "./doc-upload";
 import { CapIcon, SectionHeader } from "./profile-tab";
+import { DocumentsTabNote } from "./doc-upload";
 
 interface EduDraft {
   country: string;
@@ -405,32 +403,8 @@ export function AcademicTab({
                       />
                     )}
                   </div>
-                  {/* Per-level document uploads (mock's edu-docs-section) */}
-                  <div className="mt-5 rounded-[10px] border border-[#E4E7EC] bg-[#F9FAFB] px-4 py-3">
-                    <div className="mb-1 flex items-center gap-2 text-[13px] font-bold text-[#101828]">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="#1570EF"
-                        strokeWidth={2}
-                        className="h-4 w-4"
-                      >
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                      </svg>
-                      Document Uploads
-                    </div>
-                    {eduDocCategories(level).map((cat) => (
-                      <InlineDocUpload
-                        key={cat.key}
-                        student={student}
-                        docType={eduDocType(level, cat.key)}
-                        name={cat.name}
-                        hint={cat.hint}
-                        onToast={onToast}
-                      />
-                    ))}
-                  </div>
+                  {/* Uploads live only in the Documents tab (Day 5 testing). */}
+                  <DocumentsTabNote what="Transcripts and certificates" />
                 </div>
               )}
             </div>

@@ -392,7 +392,9 @@ const createFields = z.object({
     }),
   interestedProgram: z.string().trim().min(1).max(100),
   educationLoan: z.boolean(),
-  applyThroughCp: z.boolean(),
+  // No longer asked on any form (Day 5 testing); new students default to 1
+  // and a profile save leaves the stored answer alone.
+  applyThroughCp: z.boolean().optional(),
 });
 
 function normalizePhone(countryCode: string, phone: string): string {
@@ -666,7 +668,9 @@ async function applyProfileUpdate(input: z.infer<typeof profileUpdateInput>) {
       course_level: input.courseLevel,
       interested_program: input.interestedProgram,
       education_loan: input.educationLoan ? 1 : 0,
-      apply_through_cp: input.applyThroughCp ? 1 : 0,
+      ...(input.applyThroughCp !== undefined && {
+        apply_through_cp: input.applyThroughCp ? 1 : 0,
+      }),
       middle_name: input.middleName,
       marital_status: input.maritalStatus,
       mailing_address1: input.mailingAddress1,
@@ -1217,7 +1221,7 @@ export const studentsRouter = createTRPCRouter({
           course_level: input.courseLevel,
           interested_program: input.interestedProgram,
           education_loan: input.educationLoan ? 1 : 0,
-          apply_through_cp: input.applyThroughCp ? 1 : 0,
+          apply_through_cp: input.applyThroughCp === false ? 0 : 1,
           org_id: input.orgId,
           cp_counsellor_id: cpCounsellorId,
         },
@@ -1304,7 +1308,7 @@ export const studentsRouter = createTRPCRouter({
           course_level: r.courseLevel,
           interested_program: r.interestedProgram,
           education_loan: r.educationLoan ? 1 : 0,
-          apply_through_cp: r.applyThroughCp ? 1 : 0,
+          apply_through_cp: r.applyThroughCp === false ? 0 : 1,
           org_id: input.orgId,
           cp_counsellor_id: cpCounsellorId,
         });
@@ -2243,7 +2247,7 @@ export const studentsRouter = createTRPCRouter({
             course_level: input.courseLevel,
             interested_program: input.interestedProgram,
             education_loan: input.educationLoan ? 1 : 0,
-            apply_through_cp: input.applyThroughCp ? 1 : 0,
+            apply_through_cp: input.applyThroughCp === false ? 0 : 1,
             org_id: user.org_id,
             created_by_user_id: user.id,
             counsellor_id:

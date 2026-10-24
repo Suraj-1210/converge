@@ -97,8 +97,7 @@ interface FormState {
   intake: string;
   courseLevel: string;
   interestedProgram: string;
-  educationLoan: boolean;
-  applyThroughCp: boolean;
+  educationLoan: boolean | null;
 }
 
 type FormErrors = Partial<Record<keyof FormState, string>>;
@@ -114,8 +113,7 @@ const emptyForm = (): FormState => ({
   intake: "",
   courseLevel: "",
   interestedProgram: "",
-  educationLoan: true,
-  applyThroughCp: true,
+  educationLoan: null,
 });
 
 function validate(form: FormState): FormErrors {
@@ -140,6 +138,8 @@ function validate(form: FormState): FormErrors {
   if (form.courseLevel === "") errors.courseLevel = "Level is required";
   if (!form.interestedProgram)
     errors.interestedProgram = "Interested program is required";
+  if (form.educationLoan === null)
+    errors.educationLoan = "Please choose Yes or No";
   return errors;
 }
 
@@ -197,8 +197,7 @@ export function AddStudentModal({
         intake: form.intake,
         courseLevel: Number(form.courseLevel),
         interestedProgram: form.interestedProgram,
-        educationLoan: form.educationLoan,
-        applyThroughCp: form.applyThroughCp,
+        educationLoan: form.educationLoan === true,
       });
       if (!res.ok) {
         setDuplicate(res.duplicate);
@@ -380,16 +379,12 @@ export function AddStudentModal({
 
           <Section title="Additional Information">
             <YesNoRadio
-              label="Is your student interested in an education loan?"
+              label="Is your student interested in applying for an education loan through Collegepond?"
               name="education-loan"
+              required
               value={form.educationLoan}
               onChange={(v) => set("educationLoan", v)}
-            />
-            <YesNoRadio
-              label="Do you want to apply through Collegepond?"
-              name="apply-through-cp"
-              value={form.applyThroughCp}
-              onChange={(v) => set("applyThroughCp", v)}
+              errorMessage={errors.educationLoan}
             />
           </Section>
 
@@ -482,18 +477,22 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function YesNoRadio({
   label,
   name,
+  required,
   value,
   onChange,
+  errorMessage,
 }: {
   label: string;
   name: string;
-  value: boolean;
+  required?: boolean;
+  value: boolean | null;
   onChange: (v: boolean) => void;
+  errorMessage?: string;
 }) {
   return (
     <div>
       <div className="mb-1.5 text-[13px] font-medium text-[#344054]">
-        {label}
+        {label} {required && <span className="text-[#F04438]">*</span>}
       </div>
       <div className="flex gap-5">
         {[true, false].map((opt) => (
@@ -512,6 +511,9 @@ function YesNoRadio({
           </label>
         ))}
       </div>
+      {errorMessage && (
+        <div className="mt-1 text-xs text-[#F04438]">{errorMessage}</div>
+      )}
     </div>
   );
 }

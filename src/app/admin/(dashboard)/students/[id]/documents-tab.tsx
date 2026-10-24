@@ -1,7 +1,12 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { STUDENT_DOC_TYPES, type StudentDocSection, type StudentDocType } from "~/server/db/enums";
+import {
+  STUDENT_DOC_TYPES,
+  studentDocSlot,
+  type StudentDocSection,
+  type StudentDocType,
+} from "~/server/db/enums";
 import { api } from "~/trpc/react";
 import { type AdminStudentFull } from "../lib";
 
@@ -108,8 +113,11 @@ function DocRow({
   const [uploading, setUploading] = useState(false);
 
   // Single-slot types show only the current file; history rows stay hidden.
+  // Older per-level/per-attempt profile uploads count toward their slot.
   const files = student.documents.filter(
-    (d) => d.docType === docType.key && (docType.multiple || d.isMostRecent),
+    (d) =>
+      studentDocSlot(d.docType) === docType.key &&
+      (docType.multiple || d.isMostRecent),
   );
   const hasFiles = files.length > 0;
   const latest = files[0] ?? null;

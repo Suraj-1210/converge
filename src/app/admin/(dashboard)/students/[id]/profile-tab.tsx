@@ -131,8 +131,7 @@ interface ProfileForm {
   intake: string;
   courseLevel: string;
   program: string;
-  educationLoan: boolean;
-  applyThroughCp: boolean;
+  educationLoan: boolean | null;
   contacts: ContactDraft[];
 }
 
@@ -180,8 +179,7 @@ function buildForm(s: AdminStudentFull): ProfileForm {
     intake: s.intake ?? "",
     courseLevel: s.courseLevel === null ? "" : String(s.courseLevel),
     program: s.interestedProgram ?? "",
-    educationLoan: s.educationLoan ?? true,
-    applyThroughCp: s.applyThroughCp ?? true,
+    educationLoan: s.educationLoan,
     contacts: s.emergencyContacts.map((c) => {
       const p = splitPhone(c.phone);
       return {
@@ -290,6 +288,10 @@ function PersonalInfoForm({
       onToast("Date of birth is required");
       return;
     }
+    if (form.educationLoan === null) {
+      onToast("Please answer the education loan question");
+      return;
+    }
     updateMut.mutate({
       id: student.id,
       firstName: form.firstName.trim(),
@@ -305,7 +307,6 @@ function PersonalInfoForm({
       courseLevel: Number(form.courseLevel),
       interestedProgram: form.program,
       educationLoan: form.educationLoan,
-      applyThroughCp: form.applyThroughCp,
       middleName: strOrNull(form.middleName),
       maritalStatus: form.maritalStatus ? Number(form.maritalStatus) : null,
       mailingAddress1: strOrNull(form.mailA1),
@@ -618,14 +619,10 @@ function PersonalInfoForm({
       </div>
       <div className="mt-5 space-y-3.5">
         <YesNoRow
-          label="Is the student interested in an education loan?"
+          label="Is the student interested in applying for an education loan through Collegepond?"
+          required
           value={form.educationLoan}
           onChange={(educationLoan) => set({ educationLoan })}
-        />
-        <YesNoRow
-          label="Applying through Collegepond?"
-          value={form.applyThroughCp}
-          onChange={(applyThroughCp) => set({ applyThroughCp })}
         />
       </div>
 
@@ -837,16 +834,20 @@ function YesNoWithDetails({
 
 function YesNoRow({
   label,
+  required,
   value,
   onChange,
 }: {
   label: string;
-  value: boolean;
+  required?: boolean;
+  value: boolean | null;
   onChange: (v: boolean) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <span className="text-sm text-[#344054]">{label}</span>
+      <span className="text-sm text-[#344054]">
+        {label} {required && <span className="text-[#F04438]">*</span>}
+      </span>
       <div className="flex gap-5">
         {[true, false].map((option) => (
           <label

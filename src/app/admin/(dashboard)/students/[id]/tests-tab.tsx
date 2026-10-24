@@ -9,10 +9,9 @@ import {
   ALL_TESTS,
   ENGLISH_TESTS,
   STANDARDIZED_TESTS,
-  testDocType,
   type TestDef,
 } from "./profile-lib";
-import { InlineDocUpload } from "./doc-upload";
+import { DocumentsTabNote } from "./doc-upload";
 import { SectionHeader } from "./profile-tab";
 
 interface AttemptDraft {
@@ -238,15 +237,7 @@ export function TestsTab({
                         onChange={(e) => setDate(test.key, i, e.target.value)}
                       />
                     </div>
-                    <div className="mt-3 rounded-lg border border-[#F2F4F7] bg-white px-3 py-1">
-                      <InlineDocUpload
-                        student={student}
-                        docType={testDocType(test.key, i + 1)}
-                        name="Score Report"
-                        hint="Official score report — PDF, DOC, JPG or PNG."
-                        onToast={onToast}
-                      />
-                    </div>
+                    <DocumentsTabNote what="Score reports" />
                   </div>
                 ))}
                 <button
