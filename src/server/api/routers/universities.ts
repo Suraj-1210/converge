@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { type Prisma } from "generated/prisma";
 import {
+  adminSectionProcedure,
   createTRPCRouter,
   protectedAdminProcedure,
   protectedPartnerProcedure,
@@ -220,7 +221,7 @@ export const universitiesRouter = createTRPCRouter({
   // -------------------------------------------------------------------------
   // Universities
   // -------------------------------------------------------------------------
-  listUniversities: protectedAdminProcedure.query(async ({ ctx }) => {
+  listUniversities: adminSectionProcedure("universities").query(async ({ ctx }) => {
     const rows = await ctx.db.university.findMany({
       orderBy: { name: "asc" },
       take: LIST_CAP,
@@ -232,7 +233,7 @@ export const universitiesRouter = createTRPCRouter({
     }));
   }),
 
-  createUniversity: protectedAdminProcedure
+  createUniversity: adminSectionProcedure("universities")
     .input(universityInput)
     .mutation(async ({ ctx, input }) => {
       const created = await ctx.db.university.create({
@@ -252,7 +253,7 @@ export const universitiesRouter = createTRPCRouter({
       return toUniversityApi(created);
     }),
 
-  updateUniversity: protectedAdminProcedure
+  updateUniversity: adminSectionProcedure("universities")
     .input(z.object({ id: z.number().int().positive() }).merge(universityInput))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.university.update({
@@ -274,7 +275,7 @@ export const universitiesRouter = createTRPCRouter({
     }),
 
   // Lightweight status flip used by the Activate / Deactivate buttons.
-  setUniversityOpen: protectedAdminProcedure
+  setUniversityOpen: adminSectionProcedure("universities")
     .input(z.object({ id: z.number().int().positive(), isOpen: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.university.update({
@@ -284,7 +285,7 @@ export const universitiesRouter = createTRPCRouter({
       return toUniversityApi(updated);
     }),
 
-  deleteUniversity: protectedAdminProcedure
+  deleteUniversity: adminSectionProcedure("universities")
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
       // Course FK is ON DELETE RESTRICT; the DB will refuse if any course
@@ -335,7 +336,7 @@ export const universitiesRouter = createTRPCRouter({
       return rows.map(toCourseApi);
     }),
 
-  createCourse: protectedAdminProcedure
+  createCourse: adminSectionProcedure("universities")
     .input(courseInput)
     .mutation(async ({ ctx, input }) => {
       const uni = await ctx.db.university.findUnique({
@@ -396,7 +397,7 @@ export const universitiesRouter = createTRPCRouter({
     }),
 
   // Edit an existing program. Same fields as create (university is fixed).
-  updateCourse: protectedAdminProcedure
+  updateCourse: adminSectionProcedure("universities")
     .input(courseInput.extend({ id: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
       const existing = await ctx.db.course.findUnique({
@@ -543,7 +544,7 @@ export const universitiesRouter = createTRPCRouter({
     };
   }),
 
-  deleteCourse: protectedAdminProcedure
+  deleteCourse: adminSectionProcedure("universities")
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
       // Restrict if applications point at this course.

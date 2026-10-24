@@ -140,6 +140,20 @@ made during an impersonated tRPC request, so audit call sites need no changes.
 Route handlers outside tRPC don't get this — use `claims.realId ?? claims.id`.
 Client-side downloads log `export.downloaded` via `useExportLog()`.
 
+A Counsellor Lead can "View as" the active Counsellors in their own counselling
+team (header menu, `impersonation.startAsTeamCounsellor`). It is the same staff
+session swap with `imp` = the lead. `protectedAdminProcedure` re-checks team
+membership on every request, and one level only: an impersonated session can
+never start another.
+
+## Admin sections by role
+
+`src/lib/admin-sections.ts` is the one table of which admin roles may use which
+portal section. The sidebar, the page gate in `DashboardShell` (a hidden page
+shows "You don't have access", and its queries never run) and the server
+(`adminSectionProcedure(section)` in trpc.ts) all read it. Gate a new admin
+page by adding it there, not with ad-hoc role checks.
+
 ## Repo conventions
 
 - `generated/prisma/` is **committed**, so `prisma generate` produces diff noise

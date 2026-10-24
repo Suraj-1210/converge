@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  adminSectionProcedure,
   createTRPCRouter,
   protectedAdminProcedure,
   superAdminProcedure,
@@ -105,7 +106,7 @@ const personFields = z.object({
 });
 
 export const usersRouter = createTRPCRouter({
-  list: protectedAdminProcedure.query(async () => {
+  list: superAdminProcedure.query(async () => {
     const rows = await db.collegepond_user.findMany({
       orderBy: { created_at: "desc" },
       select: cpUserSelect,
@@ -115,7 +116,7 @@ export const usersRouter = createTRPCRouter({
 
   // Used by the partner-approval modal to pick a counsellor lead / counsellor.
   // Admin-only: team names must never reach the public signup form.
-  listByRole: protectedAdminProcedure
+  listByRole: adminSectionProcedure("partners")
     .input(z.object({ role: z.number().int() }))
     .query(async ({ input }) => {
       const rows = await db.collegepond_user.findMany({

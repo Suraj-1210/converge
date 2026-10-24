@@ -1,4 +1,4 @@
-import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
+import { adminSectionProcedure, createTRPCRouter } from "~/server/api/trpc";
 import { UniApplicationStatus } from "~/server/db/enums";
 import { staffApplicationScope } from "~/server/staff-access";
 
@@ -15,7 +15,7 @@ const PLACEMENT_STATUSES = [
 ];
 
 export const placementsRouter = createTRPCRouter({
-  list: protectedAdminProcedure.query(async ({ ctx }) => {
+  list: adminSectionProcedure("placements").query(async ({ ctx }) => {
     const apps = await ctx.db.application.findMany({
       where: {
         AND: [await staffApplicationScope(ctx.cpUser)],

@@ -24,6 +24,8 @@ import {
 import { runWithImpersonation } from "~/server/auth/impersonation-context";
 import { readCookie } from "~/server/auth/cookies";
 import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
+import { type AdminSection, canUseSection } from "~/lib/admin-sections";
+import { assertActiveStaffImpersonator } from "~/server/auth/impersonation";
 
 // `id`/`role` are the EFFECTIVE user: while a Super Admin impersonates a staff
 // user they are the impersonated user's, and `realId` is the admin's. Use
@@ -117,8 +119,9 @@ export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next })
   const cpUser = ctx.cpUser;
   if (!cpUser.realId) return next({ ctx: { ...ctx, cpUser } });
 
-  // Impersonating: the real admin must still be an active Super Admin.
-  await assertActiveImpersonator(ctx.db, cpUser.realId);
+  // Impersonating: the real admin must still be an active Super Admin, or a
+  // Counsellor Lead still leading this counsellor.
+  await assertActiveStaffImpersonator(cpUser.realId, cpUser.id);
   return runWithImpersonation(
     {
       realCpUserId: cpUser.realId,
@@ -156,6 +159,19 @@ export const superAdminProcedure = protectedAdminProcedure.use(({ ctx, next }) =
   }
   return next();
 });
+
+// Access to one section of the admin portal, by the shared role table in
+// ~/lib/admin-sections (the same one that hides the page in the sidebar).
+export const adminSectionProcedure = (section: AdminSection) =>
+  protectedAdminProcedure.use(({ ctx, next }) => {
+    if (!canUseSection(ctx.cpUser.role, section)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You don't have access to this section.",
+      });
+    }
+    return next();
+  });
 
 // Finance read access — Finance Manager / Executive (and Super Admin). Use for
 // listing/reading commission, billing, invoice and reconciliation data, and for

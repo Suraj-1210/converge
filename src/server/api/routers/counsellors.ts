@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  adminSectionProcedure,
   agencyOwnerProcedure,
   createTRPCRouter,
-  protectedAdminProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { UserStatus, UserType } from "~/server/db/enums";
@@ -315,7 +315,7 @@ async function logLifecycle(
 }
 
 export const counsellorsRouter = createTRPCRouter({
-  list: protectedAdminProcedure.query(async () => {
+  list: adminSectionProcedure("counsellorApprovals").query(async () => {
     const rows = await db.user.findMany({
       where: { type: UserType.AGENCY_COUNSELLOR },
       orderBy: { created_at: "desc" },
@@ -377,7 +377,7 @@ export const counsellorsRouter = createTRPCRouter({
     }));
   }),
 
-  setStatus: protectedAdminProcedure
+  setStatus: adminSectionProcedure("counsellorApprovals")
     .input(
       z.object({
         userId: z.number().int().positive(),
@@ -403,7 +403,7 @@ export const counsellorsRouter = createTRPCRouter({
 
   // Approve several pending counsellors at once (the list's "Approve Selected"
   // action). Non-counsellor ids are silently skipped; returns the count applied.
-  batchApprove: protectedAdminProcedure
+  batchApprove: adminSectionProcedure("counsellorApprovals")
     .input(
       z.object({
         userIds: z.array(z.number().int().positive()).min(1).max(100),
@@ -423,7 +423,7 @@ export const counsellorsRouter = createTRPCRouter({
 
   // Undo an agency's soft delete of a counsellor. They come back deactivated:
   // the owner (or an approval here) decides when they work again.
-  restoreRemoved: protectedAdminProcedure
+  restoreRemoved: adminSectionProcedure("counsellorApprovals")
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
       const user = await db.user.findFirst({

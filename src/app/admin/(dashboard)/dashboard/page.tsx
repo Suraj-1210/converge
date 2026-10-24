@@ -3,6 +3,7 @@
 import { type ReactNode } from "react";
 import Link from "next/link";
 import { api } from "~/trpc/react";
+import { canAccessAdminPath } from "~/lib/admin-sections";
 import {
   greeting,
   formatLongDate,
@@ -81,8 +82,8 @@ function activityStyle(action: string): { icon: string; bg: string } {
   return { icon: "•", bg: "#F2F4F7" };
 }
 
-function QuickActions({ pending }: { pending: number }) {
-  const items: { label: string; href: string; badge?: number }[] = [
+function QuickActions({ pending, role }: { pending: number; role: number }) {
+  const all: { label: string; href: string; badge?: number }[] = [
     // The count is partner signups under review, so it goes to Partners (which
     // opens on its Pending tab), not counsellor approvals.
     { label: "Review Approvals", href: "/admin/partners", badge: pending },
@@ -90,6 +91,7 @@ function QuickActions({ pending }: { pending: number }) {
     { label: "Add University", href: "/admin/universities" },
     { label: "View Students", href: "/admin/students" },
   ];
+  const items = all.filter((it) => canAccessAdminPath(role, it.href));
   return (
     <details className="relative">
       <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg bg-[#1570EF] px-4 text-[13px] font-semibold text-white hover:bg-[#1260d4] [&::-webkit-details-marker]:hidden">
@@ -100,7 +102,7 @@ function QuickActions({ pending }: { pending: number }) {
       <div className="absolute right-0 z-20 mt-2 w-56 rounded-xl border border-[#E4E7EC] bg-white p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.12)]">
         {items.map((it) => (
           <Link
-            key={it.href}
+            key={it.label}
             href={it.href}
             className="flex items-center justify-between rounded-lg px-3 py-2 text-[13px] text-[#344054] hover:bg-[#F0F7FF] hover:text-[#1570EF]"
           >
@@ -122,6 +124,8 @@ export default function DashboardPage() {
   const { data, isLoading } = api.dashboard.adminStats.useQuery();
   const firstName = me?.firstName ?? "";
   const k = data?.kpis;
+  // Partners is a lead-and-above section; counsellors get no links to it.
+  const seesPartners = !!me && canAccessAdminPath(me.role, "/admin/partners");
 
   const queueMap = new Map(
     (data?.applicationQueue ?? []).map((q) => [q.status, q.count]),
@@ -191,7 +195,7 @@ export default function DashboardPage() {
             <Icon name="calendar" size={15} className="text-[#667085]" />
             {formatLongDate(new Date())}
           </span>
-          <QuickActions pending={k?.pendingApprovals ?? 0} />
+          {me && <QuickActions pending={k?.pendingApprovals ?? 0} role={me.role} />}
         </div>
       </div>
 
@@ -225,7 +229,7 @@ export default function DashboardPage() {
             label="Partner Network"
             icon="partners"
             tone="green"
-            href="/admin/partners"
+            href={seesPartners ? "/admin/partners" : undefined}
             loading={!data}
             value={k ? num(k.partners.value) : "—"}
             trend={k?.partners.trend}
@@ -245,7 +249,7 @@ export default function DashboardPage() {
       </Stagger>
 
       {/* Pending approvals call-out */}
-      {k && k.pendingApprovals > 0 && (
+      {k && k.pendingApprovals > 0 && seesPartners && (
         <Link
           href="/admin/partners"
           className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-[#FEDF89] bg-[#FFFCF5] px-5 py-3.5 text-[13px] transition-colors hover:border-[#F79009]"
@@ -295,7 +299,7 @@ export default function DashboardPage() {
       <div className="mb-5 grid grid-cols-1 gap-5 lg:grid-cols-3">
         <DashboardCard
           title="Top Performing Partners"
-          link="/admin/partners"
+          link={seesPartners ? "/admin/partners" : undefined}
           className="lg:col-span-2"
           bodyClassName=""
         >

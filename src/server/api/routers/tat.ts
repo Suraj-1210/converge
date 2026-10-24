@@ -1,8 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { createTRPCRouter, protectedAdminProcedure, superAdminProcedure } from "~/server/api/trpc";
+import { adminSectionProcedure, createTRPCRouter, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { AdminRole } from "~/server/db/enums";
 import { staffStudentScope } from "~/server/staff-access";
 import {
   CHAT_RESPONSE,
@@ -18,21 +17,10 @@ import { describeHours, tatStatus } from "~/lib/tat";
 // the TAT Management page. "Chat Response" (Collegepond replying in partner
 // chat) is the first measured action. See src/server/tat.ts.
 
-// Who may open TAT Management. Its rows follow the admin Students list's
-// visibility (staff-access.ts), so a counsellor sees only their own students.
-const TAT_VIEW_ROLES: number[] = [
-  AdminRole.SUPER_ADMIN,
-  AdminRole.OPERATIONS_LEAD,
-  AdminRole.COUNSELLOR_LEAD,
-  AdminRole.COUNSELLOR,
-];
-
-const tatViewProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
-  if (!TAT_VIEW_ROLES.includes(ctx.cpUser.role)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "You don't have access to TAT Management." });
-  }
-  return next();
-});
+// Who may open TAT Management: the "tat" section in ~/lib/admin-sections
+// (Super Admin, Counsellor Lead, Operations Lead). Its rows follow the admin
+// Students list's visibility (staff-access.ts), so a lead sees their team's.
+const tatViewProcedure = adminSectionProcedure("tat");
 
 const fullName = (u: { first_name: string; last_name: string }) => `${u.first_name} ${u.last_name}`.trim();
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  adminSectionProcedure,
   createTRPCRouter,
-  protectedAdminProcedure,
   protectedPartnerProcedure,
   superAdminProcedure,
 } from "~/server/api/trpc";
@@ -394,7 +394,7 @@ export const partnerTiersRouter = createTRPCRouter({
   }),
 
   // A partner's tier for admin screens (any admin who can see partners).
-  partnerStatus: protectedAdminProcedure
+  partnerStatus: adminSectionProcedure("partners")
     .input(z.object({ userId: z.number().int().positive() }))
     .query(async ({ input }) => {
       const ref = await partnerRefForUser(input.userId);

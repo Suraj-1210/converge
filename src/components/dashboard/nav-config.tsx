@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import { type AdminSection } from "~/lib/admin-sections";
 import {
   ApprovalsIcon,
   AuditLogIcon,
@@ -39,10 +40,10 @@ export interface NavItem {
    *  re-enable later (the route/page still exists). Filtered out in Sidebar. */
   hidden?: boolean;
   roles?: AdminRole[];
-  /** Exact admin role codes (src/server/db/enums.ts) allowed to see the item,
-   *  for gates the string buckets above can't express (they merge counselling
-   *  and operations roles). Applied by DashboardShell. */
-  codes?: number[];
+  /** Portal section the item belongs to: only the roles allowed that section
+   *  in ~/lib/admin-sections see it (the server and the page gate in
+   *  DashboardShell use the same table). Unset = every admin role. */
+  section?: AdminSection;
 }
 
 export interface NavSection {
@@ -65,17 +66,6 @@ export const ROLE_OPTIONS: RoleOption[] = [
   { value: "finance_exec", name: "Amit Patel", label: "Finance Exec" },
   { value: "content_mgr", name: "Kavita Rao", label: "Content Mgr" },
 ];
-
-// Finance section is visible only to finance staff + admins; everyone else has
-// it hidden from the sidebar (the server also blocks the calls).
-const FINANCE_NAV_ROLES: AdminRole[] = [
-  "super_admin",
-  "finance_mgr",
-  "finance_exec",
-];
-
-// BDM Performance: BDMs and Super Admin only (the server also blocks the calls).
-const BDM_NAV_ROLES: AdminRole[] = ["super_admin", "bdm"];
 
 // Maps the numeric AdminRole code (src/server/db/enums.ts) to the sidebar's
 // string role. Ops/counsellor variants collapse to the nearest sidebar bucket;
@@ -113,6 +103,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/admin/partners",
         icon: <PartnersIcon />,
         badgeKey: "partners",
+        section: "partners",
       },
       { label: "Students", href: "/admin/students", icon: <StudentsIcon /> },
       { label: "Applications", href: "/admin/applications", icon: <InvoiceIcon /> },
@@ -120,29 +111,31 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Student Placements",
         href: "/admin/student-placements",
         icon: <PlacementsIcon />,
+        section: "placements",
       },
       {
         label: "Counselor Approvals",
         href: "/admin/counselor-approvals",
         icon: <ApprovalsIcon />,
         badgeKey: "approvals",
+        section: "counsellorApprovals",
       },
-      // Partner chat inbox: the counselling team and Super Admin (0, 3, 4).
+      // Partner chat inbox: Super Admin, Counsellor Lead, Counsellor.
       {
         label: "Partner Chat",
         href: "/admin/partner-chat",
         icon: <ChatIcon />,
         badgeKey: "partnerChat",
-        codes: [0, 3, 4],
+        section: "partnerChat",
       },
       // TAT Management: real data for Chat Response (partner chat); the other
       // actions are still dev-only samples. Super Admin, Operations Lead,
-      // Counsellor Lead, Counsellor (0, 5, 3, 4); the server enforces the same.
+      // Counsellor Lead.
       {
         label: "TAT Management",
         href: "/admin/tat-management",
         icon: <ClockIcon />,
-        codes: [0, 5, 3, 4],
+        section: "tat",
       },
       // Deprecated in favour of TAT Management (itself deferred to phase 2).
       // Hidden from the nav; set `hidden: false` to restore.
@@ -151,6 +144,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/admin/notes-reminders",
         icon: <ClockIcon />,
         hidden: true,
+        section: "notes",
       },
       { label: "Uni Assist", href: "/admin/uni-assist", icon: <SearchIcon /> },
     ],
@@ -162,7 +156,7 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "BDM Performance",
         href: "/admin/bdm-performance",
         icon: <BarChartIcon />,
-        roles: BDM_NAV_ROLES,
+        section: "bdm",
       },
     ],
   },
@@ -173,38 +167,38 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Commission Rates",
         href: "/admin/commission-rates",
         icon: <CommissionIcon />,
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
       {
         label: "University Billing",
         href: "/admin/university-billing",
         icon: <BillingIcon />,
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
       {
         label: "Commission Ledger",
         href: "/admin/commissions",
         icon: <AuditLogIcon />,
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
       {
         label: "Invoices & Payouts",
         href: "/admin/invoices",
         icon: <InvoiceIcon />,
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
       {
         label: "Reconciliation",
         href: "/admin/reconciliation",
         icon: <ReconciliationIcon />,
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
       {
         label: "Bank Verifications",
         href: "/admin/bank-verifications",
         icon: <BankIcon />,
         badgeKey: "bankVerifications",
-        roles: FINANCE_NAV_ROLES,
+        section: "finance",
       },
     ],
   },
@@ -215,6 +209,7 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Universities",
         href: "/admin/universities",
         icon: <StudentsIcon />,
+        section: "universities",
       },
       { label: "Events", href: "/admin/events", icon: <CalendarIcon /> },
     ],
@@ -227,10 +222,11 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/admin/reports",
         icon: <BarChartIcon />,
         disabled: true,
+        section: "system",
       },
-      { label: "Users", href: "/admin/users", icon: <UsersIcon /> },
-      { label: "Settings", href: "/admin/settings", icon: <SettingsIcon /> },
-      { label: "Audit Logs", href: "/admin/audit-logs", icon: <AuditLogIcon /> },
+      { label: "Users", href: "/admin/users", icon: <UsersIcon />, section: "system" },
+      { label: "Settings", href: "/admin/settings", icon: <SettingsIcon />, section: "system" },
+      { label: "Audit Logs", href: "/admin/audit-logs", icon: <AuditLogIcon />, section: "system" },
     ],
   },
 ];

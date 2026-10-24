@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
+import { adminSectionProcedure, createTRPCRouter } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
   appUrl,
@@ -102,11 +102,11 @@ async function sendStatusEmail(
 }
 
 export const partnersRouter = createTRPCRouter({
-  list: protectedAdminProcedure.query(async () => {
+  list: adminSectionProcedure("partners").query(async () => {
     return listApplications();
   }),
 
-  setStatus: protectedAdminProcedure
+  setStatus: adminSectionProcedure("partners")
     .input(
       z.object({
         email: z.string().email(),
@@ -148,7 +148,7 @@ export const partnersRouter = createTRPCRouter({
       return { ...app, emailSent };
     }),
 
-  setBdm: protectedAdminProcedure
+  setBdm: adminSectionProcedure("partners")
     .input(
       z.object({
         email: z.string().email(),
@@ -160,7 +160,7 @@ export const partnersRouter = createTRPCRouter({
       return { success: true as const };
     }),
 
-  setPan: protectedAdminProcedure
+  setPan: adminSectionProcedure("partners")
     .input(
       z.object({
         email: z.string().email(),
@@ -190,7 +190,7 @@ export const partnersRouter = createTRPCRouter({
   // After approval, assign a lead counsellor + counsellor (both rows from
   // collegepond_user) onto the partner's user row. Either side can be null
   // if the admin wants to skip and assign later.
-  assignCounsellors: protectedAdminProcedure
+  assignCounsellors: adminSectionProcedure("partners")
     .input(
       z.object({
         email: z.string().email(),
@@ -219,7 +219,7 @@ export const partnersRouter = createTRPCRouter({
       return { success: true as const };
     }),
 
-  setDocumentStatus: protectedAdminProcedure
+  setDocumentStatus: adminSectionProcedure("partners")
     .input(
       z.object({
         documentId: z.number().int().positive(),
@@ -261,7 +261,7 @@ export const partnersRouter = createTRPCRouter({
   // Admin adds a partner's document on their behalf. Partners can't upload
   // until approved, so missing / re-sent documents (usually emailed to
   // support) come in this way. Lands as "pending" for the usual verify step.
-  uploadDocumentForPartner: protectedAdminProcedure
+  uploadDocumentForPartner: adminSectionProcedure("partners")
     .input(
       z.object({
         email: z.string().email(),
@@ -329,7 +329,7 @@ export const partnersRouter = createTRPCRouter({
 
   // Remind an approved partner who hasn't signed the MOU yet. At most once a
   // day per partner (tracked in audit_log), so repeated clicks don't spam.
-  sendMouReminder: protectedAdminProcedure
+  sendMouReminder: adminSectionProcedure("partners")
     .input(z.object({ email: z.string().email() }))
     .mutation(async ({ ctx, input }) => {
       const user = await db.user.findUnique({
@@ -391,7 +391,7 @@ export const partnersRouter = createTRPCRouter({
 
   // Emails the partner a list of what is missing. Partner status is left
   // unchanged; the partner replies to the email (Reply-To: support).
-  requestMoreInfo: protectedAdminProcedure
+  requestMoreInfo: adminSectionProcedure("partners")
     .input(
       z
         .object({

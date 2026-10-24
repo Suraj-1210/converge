@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { db } from "~/server/db";
 import type { AdminSessionClaims, PartnerSessionClaims } from "~/server/auth/jwt";
 import {
@@ -21,6 +22,8 @@ import { AdminRole, AdminRoleLabel, UserType, isAdminRole } from "~/server/db/en
 //    the target (role = target's role) and which carries the real admin's id;
 //  - partner target: a cp_partner_session is issued for the target, carrying
 //    the real admin's id; the admin's own cp_session is left untouched.
+// A Counsellor Lead can do the same for the counsellors in their own
+// counselling team (staff target only, see startAsTeamCounsellor).
 // No OTP or email ever goes to the target. Start and end are written to
 // audit_log, and everything in between is attributed to the real admin (see
 // impersonation-context.ts).
@@ -165,9 +168,50 @@ export async function endOwnerImpersonation(
   return false;
 }
 
+// ---- Counsellor Lead → their team's counsellors -----------------------------
+// Same session swap as a Super Admin's staff impersonation (imp claim = the
+// lead), limited to active Counsellors in the lead's own counselling team,
+// with full access (decided with Suraj, 24 Oct 2026).
+
+// Whether `realId` may act as `targetId`: an active Super Admin, or an active
+// Counsellor Lead whose team still includes this active Counsellor.
+export async function canImpersonateStaff(realId: number, targetId: number): Promise<boolean> {
+  const real = await db.collegepond_user.findUnique({
+    where: { id: realId },
+    select: { status: true, role: true },
+  });
+  if (real?.status !== 1) return false;
+  if (real.role === AdminRole.SUPER_ADMIN) return true;
+  if (real.role !== AdminRole.COUNSELLOR_LEAD) return false;
+  return isTeamCounsellor(realId, targetId);
+}
+
+export async function isTeamCounsellor(leadId: number, counsellorId: number): Promise<boolean> {
+  const n = await db.counsellor_team_member.count({
+    where: {
+      cp_user_id: counsellorId,
+      team: { lead_cp_user_id: leadId },
+      cp_user: { role: AdminRole.COUNSELLOR, status: 1 },
+    },
+  });
+  return n > 0;
+}
+
+// Checked on every impersonated admin request, like account status.
+export async function assertActiveStaffImpersonator(realId: number, targetId: number): Promise<void> {
+  if (!(await canImpersonateStaff(realId, targetId))) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "Impersonation is no longer permitted. Exit and sign in again.",
+    });
+  }
+}
+
 // Ends a staff impersonation: restores the real admin's own session (same
 // expiry as the original login), or signs out if they are no longer an active
-// Super Admin. Returns where to send the browser.
+// Super Admin or Counsellor Lead. Returns where to send the browser.
+const STAFF_IMPERSONATOR_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.COUNSELLOR_LEAD];
+
 export async function endStaffImpersonation(ctx: SessionCtx & { cpUser: AdminSessionClaims & { realId: number } }): Promise<string> {
   const { realId, id: targetId, exp } = ctx.cpUser;
   await writeImpersonationAudit("ended", realId, "staff", targetId);
@@ -175,7 +219,7 @@ export async function endStaffImpersonation(ctx: SessionCtx & { cpUser: AdminSes
     where: { id: realId },
     select: { status: true, role: true },
   });
-  if (real?.status !== 1 || real.role !== AdminRole.SUPER_ADMIN) {
+  if (real?.status !== 1 || !STAFF_IMPERSONATOR_ROLES.includes(real.role)) {
     ctx.resHeaders.append("Set-Cookie", clearSessionCookie());
     return "/admin/login";
   }

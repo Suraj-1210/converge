@@ -28,6 +28,7 @@ import {
   endOwnerImpersonation,
   endPartnerImpersonation,
   endStaffImpersonation,
+  isTeamCounsellor,
   staffRoleLabel,
   writeImpersonationAudit,
   writeOwnerImpersonationAudit,
@@ -43,6 +44,18 @@ const impersonatorProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Only Super Admins can impersonate users.",
+    });
+  }
+  return next();
+});
+
+// A Counsellor Lead viewing as their team's counsellors, from their own
+// session only (one level: an impersonated session can't start another).
+const teamLeadProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
+  if (ctx.cpUser.realId || ctx.cpUser.role !== AdminRole.COUNSELLOR_LEAD) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only Counsellor Leads can view as their team's counsellors.",
     });
   }
   return next();
@@ -85,9 +98,15 @@ export const impersonationRouter = createTRPCRouter({
       if (!realId || !targetId) return null;
       const target = await describeTarget(input.side === "admin" ? "staff" : "partner", targetId);
       if (!target) return null;
+      // A Counsellor Lead viewing as a team counsellor, or a Super Admin.
+      const lead =
+        input.side === "admin" &&
+        (await ctx.db.collegepond_user.count({
+          where: { id: realId, role: AdminRole.COUNSELLOR_LEAD },
+        })) > 0;
       return {
         kind: input.side === "admin" ? ("staff" as const) : ("partner" as const),
-        by: "admin" as const,
+        by: lead ? ("lead" as const) : ("admin" as const),
         readOnly: false,
         ...target,
       };
@@ -187,6 +206,46 @@ export const impersonationRouter = createTRPCRouter({
           target.type === UserType.AGENCY_COUNSELLOR,
         ),
       };
+    }),
+
+  // Counsellor Lead: the counsellors in their own counselling team, for the
+  // header "View as" menu.
+  teamTargets: teamLeadProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db.collegepond_user.findMany({
+      where: {
+        status: 1,
+        role: AdminRole.COUNSELLOR,
+        counsellor_team_member: { team: { lead_cp_user_id: ctx.cpUser.id } },
+      },
+      orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
+      select: { id: true, first_name: true, last_name: true, email: true, role: true },
+    });
+    return rows.map((u) => ({
+      id: u.id,
+      name: `${u.first_name} ${u.last_name}`.trim(),
+      email: u.email,
+      roleLabel: staffRoleLabel(u.role),
+    }));
+  }),
+
+  // Counsellor Lead: "View as" a counsellor in their team. Same staff session
+  // swap as a Super Admin's (imp claim = the lead), so the banner, Exit, the
+  // per-request check (still their team?) and audit attribution all follow.
+  startAsTeamCounsellor: teamLeadProcedure
+    .input(z.object({ counsellorId: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      const lead = ctx.cpUser;
+      if (!(await isTeamCounsellor(lead.id, input.counsellorId))) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "That counsellor isn't in your team." });
+      }
+      // Expires with the lead's own login: viewing as never extends it.
+      const token = await signSessionJwt(
+        { id: input.counsellorId, role: AdminRole.COUNSELLOR, realId: lead.id },
+        lead.exp,
+      );
+      ctx.resHeaders.append("Set-Cookie", buildSessionCookie(token, maxAgeUntil(lead.exp)));
+      await writeImpersonationAudit("started", lead.id, "staff", input.counsellorId);
+      return { redirectUrl: "/admin/dashboard" };
     }),
 
   // Agency owner: "View as" one of their own counsellors, from the

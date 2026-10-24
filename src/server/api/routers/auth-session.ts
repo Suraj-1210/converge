@@ -29,6 +29,9 @@ export const authSessionRouter = createTRPCRouter({
       lastName: user.last_name,
       email: user.email,
       role: user.role,
+      // An impersonated session (Super Admin, or a lead viewing as a
+      // counsellor): it can never start another one.
+      impersonated: !!ctx.cpUser.realId,
     };
   }),
 

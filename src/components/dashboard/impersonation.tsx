@@ -59,7 +59,9 @@ export function ImpersonationBanner({
         <span className="truncate">
           Viewing as: <strong className="font-semibold">{current.name}</strong> ({current.roleLabel})
           {current.readOnly && " \u00b7 Deactivated, view only"}
-          {current.by === "owner" && !current.readOnly && " \u00b7 Actions are logged under your name"}
+          {(current.by === "owner" || current.by === "lead") &&
+            !current.readOnly &&
+            " \u00b7 Actions are logged under your name"}
         </span>
       </div>
       <button
@@ -85,17 +87,26 @@ interface Target {
 }
 
 /**
- * Header dropdown listing every active staff user and partner a Super Admin
- * can impersonate. Render it only for a real (non-impersonating) Super Admin.
+ * Header dropdown of the users the signed-in admin can view as. Render it only
+ * for a real (non-impersonating) session:
+ *   scope "all"  → Super Admin: every active staff user and partner;
+ *   scope "team" → Counsellor Lead: the counsellors in their own team.
  */
-export function ImpersonateMenu() {
+export function ImpersonateMenu({ scope = "all" }: { scope?: "all" | "team" }) {
+  const team = scope === "team";
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<"partner" | "staff">("partner");
+  const [tab, setTab] = useState<"partner" | "staff">(team ? "staff" : "partner");
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const targets = api.impersonation.targets.useQuery(undefined, { enabled: open });
+  const allTargets = api.impersonation.targets.useQuery(undefined, { enabled: open && !team });
+  const teamTargets = api.impersonation.teamTargets.useQuery(undefined, { enabled: open && team });
+  const targets = team
+    ? { ...teamTargets, data: teamTargets.data ? { staff: teamTargets.data, partners: [] } : undefined }
+    : allTargets;
   const start = api.impersonation.start.useMutation();
+  const startTeam = api.impersonation.startAsTeamCounsellor.useMutation();
+  const pending = start.isPending || startTeam.isPending;
 
   useEffect(() => {
     function onDown(e: MouseEvent) {
@@ -130,7 +141,9 @@ export function ImpersonateMenu() {
   async function pick(t: Target) {
     setError(null);
     try {
-      const { redirectUrl } = await start.mutateAsync({ kind: t.kind, id: t.id });
+      const { redirectUrl } = team
+        ? await startTeam.mutateAsync({ counsellorId: t.id })
+        : await start.mutateAsync({ kind: t.kind, id: t.id });
       // Hard navigation so the new session cookie and a clean cache take effect.
       window.location.href = redirectUrl;
     } catch (e) {
@@ -146,23 +159,26 @@ export function ImpersonateMenu() {
     <div ref={ref} className="relative">
       <button
         type="button"
-        aria-label="Impersonate a user"
-        title="View as another user"
+        aria-label={team ? "View as a team counsellor" : "Impersonate a user"}
+        title={team ? "View as a counsellor in your team" : "View as another user"}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-[#E4E7EC] bg-white px-2.5 text-[13px] font-medium text-[#475467] transition-colors hover:bg-[#F9FAFB]"
       >
         <UsersIcon className="h-[18px] w-[18px] stroke-[#667085]" />
-        <span className="hidden xl:inline">Impersonate</span>
+        <span className="hidden xl:inline">{team ? "View as" : "Impersonate"}</span>
       </button>
 
       {open && (
         <div className="absolute top-11 right-0 z-[100] flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-[#E4E7EC] bg-white shadow-[0_12px_40px_rgba(0,0,0,0.12)]">
           <div className="border-b border-[#E4E7EC] px-4 pt-3.5 pb-3">
-            <h3 className="text-sm font-semibold text-[#101828]">View as another user</h3>
+            <h3 className="text-sm font-semibold text-[#101828]">
+              {team ? "View as a team counsellor" : "View as another user"}
+            </h3>
             <p className="mt-0.5 text-xs text-[#98A2B3]">
               You act as this user with their access. Actions are logged under your name.
             </p>
+            {!team && (
             <div className="mt-3 flex gap-1 rounded-lg bg-[#F2F4F7] p-0.5">
               {(["partner", "staff"] as const).map((k) => (
                 <button
@@ -178,6 +194,7 @@ export function ImpersonateMenu() {
                 </button>
               ))}
             </div>
+            )}
             <div className="mt-2 flex h-8 items-center gap-2 rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] px-2.5">
               <SearchIcon className="h-3.5 w-3.5 shrink-0 stroke-[#98A2B3]" />
               <input
@@ -185,7 +202,7 @@ export function ImpersonateMenu() {
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, email, agency…"
+                placeholder={team ? "Search name, email…" : "Search name, email, agency…"}
                 className="flex-1 border-none bg-transparent text-[13px] text-[#101828] outline-none placeholder:text-[#98A2B3]"
               />
             </div>
@@ -197,13 +214,15 @@ export function ImpersonateMenu() {
             ) : targets.error ? (
               <p className="px-4 py-6 text-center text-xs text-[#F04438]">{targets.error.message}</p>
             ) : list.length === 0 ? (
-              <p className="px-4 py-6 text-center text-xs text-[#98A2B3]">No matching users.</p>
+              <p className="px-4 py-6 text-center text-xs text-[#98A2B3]">
+                {team && !query.trim() ? "No active counsellors in your team." : "No matching users."}
+              </p>
             ) : (
               list.map((t) => (
                 <button
                   key={t.key}
                   type="button"
-                  disabled={start.isPending}
+                  disabled={pending}
                   onClick={() => void pick(t)}
                   className="flex w-full cursor-pointer items-center justify-between gap-3 border-b border-[#F2F4F7] bg-transparent px-4 py-2.5 text-left transition-colors hover:bg-[#F0F7FF] disabled:cursor-wait disabled:opacity-60"
                 >

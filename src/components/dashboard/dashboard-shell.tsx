@@ -1,6 +1,8 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { Topbar, type NotificationItem } from "./topbar";
 import { MobileGate } from "./mobile-gate";
@@ -9,6 +11,7 @@ import { AdminRoleLabel, isAdminRole } from "~/server/db/enums";
 import { SHOW_DEMO_DATA } from "~/lib/demo";
 import { api } from "~/trpc/react";
 import { AdminRole } from "~/server/db/enums";
+import { canUseSection, sectionForPath } from "~/lib/admin-sections";
 import {
   ImpersonateMenu,
   ImpersonationBanner,
@@ -74,6 +77,11 @@ export function DashboardShell({
   // Non-null while a Super Admin is impersonating a staff user; `me` is then
   // the impersonated user.
   const impersonating = useImpersonation("admin");
+  // Sections are role-gated (~/lib/admin-sections). A page outside the
+  // signed-in role's sections renders a not-authorised state instead of
+  // mounting (so none of its queries run); the server refuses them anyway.
+  const pathname = usePathname();
+  const pageSection = sectionForPath(pathname);
 
   // Live admin signals (pending approvals, payouts ready, invoices awaiting
   // review, new students). Drives both the bell and the sidebar approvals badge.
@@ -120,14 +128,11 @@ export function DashboardShell({
     <div className="min-h-screen bg-[#F5F6FA] text-[#1D2939]" style={bannerOffsetStyle(!!impersonating)}>
       <ImpersonationBanner side="admin" />
       <Sidebar
-        sections={
-          me
-            ? NAV_SECTIONS.map((sec) => ({
-                ...sec,
-                items: sec.items.filter((i) => !i.codes || i.codes.includes(me.role)),
-              }))
-            : NAV_SECTIONS
-        }
+        sections={NAV_SECTIONS.map((sec) => ({
+          ...sec,
+          // Gated items appear once the role is known, never before.
+          items: sec.items.filter((i) => !i.section || (me && canUseSection(me.role, i.section))),
+        }))}
         logoSubtitle="Admin Portal"
         badges={effectiveBadges}
         role={me && isAdminRole(me.role) ? navRoleFromCode(me.role) : null}
@@ -142,13 +147,42 @@ export function DashboardShell({
         onMarkAllRead={() => setAllRead(true)}
         onLogout={handleLogout}
         actions={
-          me?.role === AdminRole.SUPER_ADMIN && !impersonating ? <ImpersonateMenu /> : null
+          !me || me.impersonated || impersonating ? null : me.role === AdminRole.SUPER_ADMIN ? (
+            <ImpersonateMenu />
+          ) : me.role === AdminRole.COUNSELLOR_LEAD ? (
+            <ImpersonateMenu scope="team" />
+          ) : null
         }
       />
       <main className="ml-16 min-h-screen pt-[calc(60px+var(--banner-h,0px))]">
-        <div className="p-6">{children}</div>
+        <div className="p-6">
+          {!pageSection ? (
+            children
+          ) : !me ? null : canUseSection(me.role, pageSection) ? (
+            children
+          ) : (
+            <NotAuthorised />
+          )}
+        </div>
       </main>
     </div>
     </MobileGate>
+  );
+}
+
+function NotAuthorised() {
+  return (
+    <div className="mx-auto mt-16 max-w-md rounded-xl border border-[#E4E7EC] bg-white px-6 py-10 text-center">
+      <h1 className="text-lg font-semibold text-[#101828]">You don&apos;t have access to this page</h1>
+      <p className="mt-2 text-sm text-[#667085]">
+        This section isn&apos;t part of your role. If you need it, ask a Super Admin.
+      </p>
+      <Link
+        href="/admin/dashboard"
+        className="mt-5 inline-block rounded-lg bg-[#1570EF] px-4 py-2 text-sm font-medium text-white hover:bg-[#175CD3]"
+      >
+        Go to Dashboard
+      </Link>
+    </div>
   );
 }

@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   createTRPCRouter,
-  protectedAdminProcedure,
   publicProcedure,
   superAdminProcedure,
 } from "~/server/api/trpc";
@@ -66,7 +65,7 @@ async function writeConfig(key: string, value: unknown): Promise<void> {
 
 export const settingsRouter = createTRPCRouter({
   // Real DB counts for the Settings → Data Management "Data Statistics" panel.
-  dataStats: protectedAdminProcedure.query(async () => {
+  dataStats: superAdminProcedure.query(async () => {
     const [universities, programs, students, invoices, events] = await Promise.all([
       db.university.count(),
       db.course.count(),
@@ -78,7 +77,7 @@ export const settingsRouter = createTRPCRouter({
   }),
 
   // System-wide general + notification settings (DB-backed; was localStorage).
-  getConfig: protectedAdminProcedure.query(async () => {
+  getConfig: superAdminProcedure.query(async () => {
     const [general, notifications] = await Promise.all([
       readConfig("general", GENERAL_DEFAULT),
       readConfig("notifications", NOTIFS_DEFAULT),

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedAdminProcedure, protectedPartnerProcedure } from "~/server/api/trpc";
+import { createTRPCRouter, protectedAdminProcedure, protectedPartnerProcedure, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
 import { BANK_AUDIT_ACTIONS } from "~/server/bank-accounts";
@@ -226,7 +226,7 @@ function mapRow(r: { id: number; created_at: Date; action: string; entity_type: 
 
 export const auditRouter = createTRPCRouter({
   // Static-ish filter options for the dropdowns.
-  filters: protectedAdminProcedure.query(async ({ ctx }) => {
+  filters: superAdminProcedure.query(async ({ ctx }) => {
     assertCanView(ctx.cpUser.role);
     const admins = await db.collegepond_user.findMany({
       orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
@@ -239,7 +239,7 @@ export const auditRouter = createTRPCRouter({
     };
   }),
 
-  list: protectedAdminProcedure
+  list: superAdminProcedure
     .input(z.object({
       page: z.number().int().min(1).default(1),
       module: z.string().optional(),
@@ -273,7 +273,7 @@ export const auditRouter = createTRPCRouter({
     }),
 
   // All matching rows (capped) for CSV export.
-  export: protectedAdminProcedure
+  export: superAdminProcedure
     .input(z.object({ module: z.string().optional(), category: z.string().optional(), actorId: z.number().int().optional(), from: z.string().optional(), to: z.string().optional(), search: z.string().optional() }))
     .query(async ({ ctx, input }) => {
       assertCanView(ctx.cpUser.role);
