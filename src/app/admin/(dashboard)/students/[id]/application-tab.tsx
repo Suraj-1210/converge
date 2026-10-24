@@ -589,6 +589,7 @@ export function ApplicationTab({
             <AppCard
               key={a.id}
               app={a}
+              studentId={student.id}
               onToast={onToast}
               invalidate={invalidate}
             />
@@ -605,6 +606,7 @@ export function ApplicationTab({
             <AppCard
               key={a.id}
               app={a}
+              studentId={student.id}
               onToast={onToast}
               invalidate={invalidate}
             />
@@ -621,10 +623,12 @@ export function ApplicationTab({
 
 function AppCard({
   app: a,
+  studentId,
   onToast,
   invalidate,
 }: {
   app: ApplicationCard;
+  studentId: number;
   onToast: (msg: string) => void;
   invalidate: () => void;
 }) {
@@ -821,7 +825,7 @@ function AppCard({
       )}
 
       {/* Deposit slip / visa documents the partner uploaded, to verify */}
-      <ApplicationDocsPanel app={a} onToast={onToast} invalidate={invalidate} />
+      <ApplicationDocsPanel app={a} studentId={studentId} onToast={onToast} invalidate={invalidate} />
     </div>
   );
 }

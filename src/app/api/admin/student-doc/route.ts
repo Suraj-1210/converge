@@ -2,7 +2,14 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, verifySessionJwt } from "~/server/auth/jwt";
 import { db } from "~/server/db";
-import { parseStudentDocUpload, storeStudentDocument } from "~/server/student-docs";
+import {
+  parseStudentDocUpload,
+  saveStudentDocument,
+  storeStudentDocument,
+  studentDocJson,
+} from "~/server/student-docs";
+import { DocumentStatus } from "~/server/db/enums";
+import { applicationUploadKind } from "~/lib/application-uploads";
 import { canSeeStudent } from "~/server/staff-access";
 
 // Student profile document upload (Documents tab). Multipart fields:
@@ -29,15 +36,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
-  return storeStudentDocument(
-    parsed.studentId,
-    parsed.docType,
-    parsed.file,
-    {
-      // Real admin while impersonating a staff user (see impersonation-context).
-      byCpUserId: claims.realId ?? claims.id,
-      ...(claims.realId ? { impersonation: { kind: "staff", id: claims.id } } : {}),
-    },
-    parsed.pendingItem,
-  );
+  const actor = {
+    // Real admin while impersonating a staff user (see impersonation-context).
+    byCpUserId: claims.realId ?? claims.id,
+    ...(claims.realId ? { impersonation: { kind: "staff", id: claims.id } } : {}),
+  };
+
+  // Collegepond uploading an application document itself (e.g. the deposit
+  // slip received by email): tied to the application and verified on upload,
+  // since Collegepond is the verifier. Commission approval needs a verified
+  // deposit slip.
+  if (parsed.applicationId && !parsed.pendingItem) {
+    const app = await db.application.findFirst({
+      where: { id: parsed.applicationId, student_id: parsed.studentId },
+      select: { id: true, status: true },
+    });
+    if (!app) return NextResponse.json({ error: "Application not found" }, { status: 404 });
+    if (!applicationUploadKind(app.status, parsed.docType.key)) {
+      return NextResponse.json(
+        { error: "That document can't be added for this application at its current stage" },
+        { status: 409 },
+      );
+    }
+    const doc = await saveStudentDocument(parsed.studentId, parsed.docType, parsed.file, actor, {
+      applicationId: app.id,
+    });
+    const verified = await db.document.update({
+      where: { id: doc.id },
+      data: {
+        status: DocumentStatus.APPROVED,
+        reviewed_at: new Date(),
+        reviewed_by_cp_user_id: claims.realId ?? claims.id,
+      },
+    });
+    await db.audit_log.create({
+      data: {
+        action: "application.document_verified",
+        entity_type: "application",
+        entity_id: app.id,
+        metadata: { documentId: doc.id, docType: doc.doc_type, fileName: doc.file_name, uploadedByCollegepond: true, ...actor },
+      },
+    });
+    return studentDocJson(verified);
+  }
+
+  return storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, actor, parsed.pendingItem);
 }

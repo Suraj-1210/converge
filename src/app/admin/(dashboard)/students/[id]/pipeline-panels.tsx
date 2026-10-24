@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Modal } from "~/components/ui/modal";
 import {
   INACTIVE_REASON_CODES,
@@ -12,7 +12,7 @@ import {
   partnerReportOption,
 } from "~/server/db/enums";
 import { api } from "~/trpc/react";
-import { APPLICATION_UPLOAD_KINDS } from "~/lib/application-uploads";
+import { APPLICATION_UPLOAD_KINDS, applicationUploadKinds } from "~/lib/application-uploads";
 import { IntakePicker, intakeProblem } from "~/components/students/intake-picker";
 import { type ApplicationCard } from "../lib";
 
@@ -560,15 +560,22 @@ const REVIEW_CHIP = {
 
 // The deposit slip, visa documents and visa approved copy the partner
 // uploaded for this application; a counsellor verifies or rejects each.
+// Collegepond can also add one itself (e.g. a slip received by email), which
+// counts as verified. Commission approval needs a verified deposit slip.
 export function ApplicationDocsPanel({
   app: a,
+  studentId,
   onToast,
   invalidate,
 }: {
   app: ApplicationCard;
+  studentId: number;
   onToast: (msg: string) => void;
   invalidate: () => void;
 }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [reason, setReason] = useState("");
   const reviewMut = api.applicationPipeline.reviewApplicationDocument.useMutation({
@@ -588,17 +595,72 @@ export function ApplicationDocsPanel({
     a.stage === UniApplicationStatus.ENROLLED
       ? !docs.some((d) => d.docType === "deposit_receipt" && d.review !== "rejected")
       : false;
-  if (docs.length === 0 && !depositMissing) return null;
+  const kinds = applicationUploadKinds(a.status);
+  if (docs.length === 0 && kinds.length === 0) return null;
   const labelOf = (t: string) => APPLICATION_UPLOAD_KINDS.find((k) => k.docType === t)?.label ?? t;
+  const upload = async (file: File) => {
+    const kind = kinds.find((k) => k.docType === target);
+    if (!kind) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("studentId", String(studentId));
+      fd.append("docType", kind.docType);
+      fd.append("applicationId", String(a.id));
+      fd.append("file", file);
+      const res = await fetch("/api/admin/student-doc", { method: "POST", body: fd });
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(body.error ?? "Upload failed");
+      onToast(`${kind.label} added and marked verified`);
+      invalidate();
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploading(false);
+      setTarget(null);
+    }
+  };
 
   return (
     <div className="mt-4 rounded-[10px] border border-[#E4E7EC] bg-white px-5 py-4">
-      <div className="mb-2 text-[13px] font-bold text-[#101828]">Partner uploads for this application</div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[13px] font-bold text-[#101828]">Documents for this application</span>
+        <span className="flex flex-wrap gap-1.5">
+          {kinds.map((k) => (
+            <button
+              key={k.docType}
+              type="button"
+              disabled={uploading}
+              onClick={() => {
+                setTarget(k.docType);
+                input.current?.click();
+              }}
+              title="Upload it yourself (counts as verified)"
+              className="cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB] disabled:opacity-50"
+            >
+              {uploading && target === k.docType ? "Uploading…" : `+ ${k.label}`}
+            </button>
+          ))}
+        </span>
+      </div>
       {depositMissing && (
         <div className="mb-2 rounded-md bg-[#FFFAEB] px-3 py-2 text-[12px] font-medium text-[#B54708]">
-          No deposit slip yet: the partner has been asked to upload it. Commission needs it.
+          No deposit slip yet. The partner has been asked to upload it, or add it here if you have it. Commission
+          can&apos;t be approved until it&apos;s verified.
         </div>
       )}
+      <input
+        ref={input}
+        type="file"
+        accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) void upload(f);
+          else setTarget(null);
+        }}
+      />
       <ul className="space-y-2">
         {docs.map((d) => {
           const chip = REVIEW_CHIP[d.review];
