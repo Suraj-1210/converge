@@ -18,6 +18,7 @@ import {
 import { appUrl, applicationStatusEmail } from "~/server/email";
 import { emailPartners, studentPartnerRecipients } from "~/server/email/partners";
 import { createNotifications } from "~/server/notify";
+import { notifyStudentCounsellor } from "~/server/counsellor-notify";
 import {
   buildPendingDocs,
   parsePendingDocs,
@@ -197,6 +198,22 @@ export async function transitionApplication(input: TransitionInput) {
     });
   }
 
+  // The student's counsellor hears about a change someone else made (a lead,
+  // a Super Admin, or a partner report someone else confirmed), reverts
+  // included. Skipped when the counsellor made it (counsellor-notify.ts).
+  if (target !== app.status || docsNews) {
+    void notifyCounsellorOfStage(app.id, app.student_id, input.actor.cpUserId, {
+      from: app.status,
+      to: target,
+      reason: input.reason ?? null,
+      reported: !!input.actor.partnerReport,
+      pendingDocs:
+        target === UniApplicationStatus.DOCUMENTS_PENDING
+          ? pendingDocs.filter((d) => !d.receivedAt).map((d) => d.label)
+          : null,
+    });
+  }
+
   await db.audit_log.create({
     data: {
       action: "application.status_updated",
@@ -221,6 +238,33 @@ export async function transitionApplication(input: TransitionInput) {
     },
   });
   return { status: target, from: app.status };
+}
+
+// ---- Counsellor notification -------------------------------------------------
+
+async function notifyCounsellorOfStage(
+  applicationId: number,
+  studentId: number,
+  actorCpUserId: number,
+  c: { from: number; to: number; reason: string | null; reported: boolean; pendingDocs: string[] | null },
+) {
+  const a = await applicationContext(applicationId);
+  if (!a) return;
+  await notifyStudentCounsellor({
+    studentId,
+    actorCpUserId,
+    type: "application.stage_changed",
+    title: (student, actor) => `${student}: ${label(c.to)} (${a.course.university.name}), by ${actor}`,
+    lines: [
+      `${a.course.university.name} – ${a.course.name}`,
+      c.from === c.to ? label(c.to) : `${label(c.from)} → ${label(c.to)}`,
+      ...(c.reported ? ["Confirmed from the partner's report"] : []),
+      ...(c.pendingDocs?.length ? [`Pending: ${c.pendingDocs.join(", ")}`] : []),
+      ...(c.reason ? [`Note: ${c.reason}`] : []),
+    ],
+    tone: c.to === UniApplicationStatus.DOCUMENTS_PENDING ? "orange" : "blue",
+    tab: "application",
+  });
 }
 
 // ---- Partner notifications ---------------------------------------------------

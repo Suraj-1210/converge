@@ -4,6 +4,7 @@ import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
 import { coveredCounsellorIds, responderFor } from "~/server/out-of-office";
+import { notifyCounsellorAssignment } from "~/server/counsellor-notify";
 
 // What a Collegepond staff user may see in the admin portal: the staff-side
 // counterpart of partner-access.ts. Every admin list, count, search and
@@ -273,6 +274,14 @@ export async function autoAssignStudents(studentIds: number[]): Promise<number> 
             ...(target !== chosen ? { coveringForCpUserId: chosen } : {}),
           },
         },
+      });
+      // Tell the counsellor it was routed to (counsellor-notify.ts).
+      void notifyCounsellorAssignment({
+        studentIds: [s.id],
+        newCounsellorId: target,
+        previous: new Map(),
+        actorCpUserId: null,
+        auto: true,
       });
     }
   } catch (e) {

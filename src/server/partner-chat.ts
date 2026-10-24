@@ -11,6 +11,7 @@ import {
 } from "~/server/email";
 import { createNotifications } from "~/server/notify";
 import { activeOutOfOffice, responderFor } from "~/server/out-of-office";
+import { notifyColleagueAction } from "~/server/counsellor-notify";
 import { createStaffNotifications, markStaffNotificationsRead, upsertStaffNotification } from "~/server/staff-notify";
 import {
   type ChatSide,
@@ -366,6 +367,9 @@ export async function sendMessage(
   if (actor.side === "staff") {
     await notifyPartnersInApp(studentId, thread.id);
     if (!actor.impersonatorId) await markStaffNotificationsRead(actor.id, NOTIFICATION_TYPE, staffChatLink(studentId));
+    // A lead or Super Admin replying on a counsellor's student: the
+    // counsellor hears (rolling, once a day per colleague).
+    void notifyColleagueAction(studentId, actor.id, "Replied in partner chat", { tab: "partner-chat" });
   } else {
     await notifyStaffInApp(studentId);
   }

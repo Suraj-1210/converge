@@ -19,6 +19,7 @@ import { checkNewIntake, intakeLabel } from "~/server/application-deferral";
 import { findVisibleStudent } from "~/server/partner-access";
 import { checkStudentDocFile, saveStudentDocument, studentDocTypeByKey } from "~/server/student-docs";
 import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server/student-changes";
+import { notifyStudentCounsellor } from "~/server/counsellor-notify";
 
 // A partner reports Deposit Paid (from Unconditional Offer) or a visa outcome
 // (from Visa Filed) on an application, with the supporting document. The
@@ -27,7 +28,8 @@ import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server
 // (applicationPipeline.confirmPartnerReport). Who may report: anyone who can
 // see the student (agency owner, the assigned agency counsellor, the
 // independent counsellor). Collegepond hears through the partner-change
-// alerts (student-changes.ts).
+// alerts (student-changes.ts), and the student's counsellor (or their
+// out-of-office alternate) also gets an in-app item to confirm it.
 //
 // A deferral (targetStatus = Deferred to Next Intake, from an offer onwards)
 // names the new intake; confirming it keeps the application open
@@ -154,5 +156,16 @@ export async function POST(req: Request) {
       ...pendingDocChanges(saved?.ticks ?? []),
     ]);
   }
+  // In-app only: the partner-change digest above already emails it.
+  await notifyStudentCounsellor({
+    studentId: app.student_id,
+    actorCpUserId: null,
+    type: "application.partner_report",
+    title: (student) => `${student}: partner reported ${option.label}, please confirm`,
+    lines: [where, ...(from ? [`Currently: ${from}`] : []), ...(note ? [`Note: ${note}`] : []), ...(file ? [`File: ${file.name}`] : [])],
+    tone: "orange",
+    tab: "application",
+    email: false,
+  });
   return NextResponse.json({ reportId: report.id });
 }

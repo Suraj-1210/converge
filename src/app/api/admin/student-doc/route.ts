@@ -8,14 +8,17 @@ import {
   storeStudentDocument,
   studentDocJson,
 } from "~/server/student-docs";
-import { DocumentStatus } from "~/server/db/enums";
+import { DocumentStatus, STUDENT_DOC_TYPES } from "~/server/db/enums";
 import { applicationUploadKind } from "~/lib/application-uploads";
 import { canSeeStudent } from "~/server/staff-access";
+import { notifyColleagueAction } from "~/server/counsellor-notify";
 
 // Student profile document upload (Documents tab). Multipart fields:
 // studentId, docType, file. Collegepond staff may upload for any student they
 // can see (src/server/staff-access.ts); validation and storage are shared with
 // the partner route.
+const docLabel = (key: string) => STUDENT_DOC_TYPES.find((d) => d.key === key)?.label ?? key;
+
 export async function POST(req: Request) {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE_NAME)?.value;
@@ -77,8 +80,18 @@ export async function POST(req: Request) {
         metadata: { documentId: doc.id, docType: doc.doc_type, fileName: doc.file_name, uploadedByCollegepond: true, ...actor },
       },
     });
+    void notifyColleagueAction(parsed.studentId, claims.realId ?? claims.id, `Uploaded ${docLabel(parsed.docType.key)}: ${doc.file_name}`, {
+      tab: "application",
+    });
     return studentDocJson(verified);
   }
 
-  return storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, actor, parsed.pendingItem);
+  const res = await storeStudentDocument(parsed.studentId, parsed.docType, parsed.file, actor, parsed.pendingItem);
+  // The student's counsellor hears when a colleague uploads (counsellor-notify.ts).
+  if (res.ok) {
+    void notifyColleagueAction(parsed.studentId, claims.realId ?? claims.id, `Uploaded ${docLabel(parsed.docType.key)}: ${parsed.file.name}`, {
+      tab: "documents",
+    });
+  }
+  return res;
 }

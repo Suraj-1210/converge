@@ -24,6 +24,7 @@ import { APPLICATION_UPLOAD_KINDS } from "~/lib/application-uploads";
 import { isClosedStage } from "~/lib/application-stages";
 import { partnerScope } from "~/server/partner-access";
 import { parsePendingDocs, savePendingDocs } from "~/server/pending-docs";
+import { notifyColleagueAction, notifyColleagueApplicationAction } from "~/server/counsellor-notify";
 import {
   isCounsellingRole,
   requireStaffApplication,
@@ -146,6 +147,11 @@ export const applicationPipelineRouter = createTRPCRouter({
           metadata: { item: item.label, received: input.received, byCpUserId: ctx.cpUser.id },
         },
       });
+      void notifyColleagueApplicationAction(
+        input.applicationId,
+        ctx.cpUser.id,
+        `${input.received ? "Ticked off" : "Un-ticked"} “${item.label}”`,
+      );
       return { ok: true };
     }),
 
@@ -378,6 +384,11 @@ export const applicationPipelineRouter = createTRPCRouter({
           },
         },
       });
+      void notifyColleagueAction(
+        input.studentId,
+        ctx.cpUser.id,
+        `Marked inactive: ${InactiveReasonLabel[input.reason]}${input.note ? ` (${input.note})` : ""}`,
+      );
       return { ok: true };
     }),
 
@@ -403,6 +414,7 @@ export const applicationPipelineRouter = createTRPCRouter({
           metadata: { previousReason: s.inactive_reason, byCpUserId: ctx.cpUser.id },
         },
       });
+      void notifyColleagueAction(input.studentId, ctx.cpUser.id, "Reactivated the student");
       return { ok: true };
     }),
 });

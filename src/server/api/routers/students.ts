@@ -8,6 +8,11 @@ import {
 } from "~/server/api/trpc";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import {
+  notifyColleagueApplicationAction,
+  notifyColleagueCourseAction,
+  notifyCounsellorAssignment,
+} from "~/server/counsellor-notify";
+import {
   hasPartnerSide,
   notifyCollegepondOfDecision,
   notifyCollegepondOfProposal,
@@ -1279,6 +1284,13 @@ export const studentsRouter = createTRPCRouter({
       if (cpCounsellorId === null) {
         await autoAssignStudents([created.id]);
         await keepVisibleToCreator(ctx.cpUser, [created.id]);
+      } else {
+        void notifyCounsellorAssignment({
+          studentIds: [created.id],
+          newCounsellorId: cpCounsellorId,
+          previous: new Map(),
+          actorCpUserId: ctx.cpUser.id,
+        });
       }
       const student = await db.student.findUniqueOrThrow({
         where: { id: created.id },
@@ -1375,6 +1387,19 @@ export const studentsRouter = createTRPCRouter({
           ).map((r) => r.id);
           await autoAssignStudents(ids);
           await keepVisibleToCreator(ctx.cpUser, ids);
+        } else {
+          const ids = (
+            await db.student.findMany({
+              where: { email: { in: toCreate.map((r) => r.email) } },
+              select: { id: true },
+            })
+          ).map((r) => r.id);
+          void notifyCounsellorAssignment({
+            studentIds: ids,
+            newCounsellorId: cpCounsellorId,
+            previous: new Map(),
+            actorCpUserId: ctx.cpUser.id,
+          });
         }
       }
 
@@ -1702,6 +1727,8 @@ export const studentsRouter = createTRPCRouter({
         ...partnerPicks.map((r) =>
           notifyPartnerOfDecision({ studentId: r.student_id, courseId: input.courseId, approved: true }),
         ),
+        // The students' counsellors, when a colleague did it.
+        notifyColleagueCourseAction(input.studentIds, ctx.cpUser.id, "Shortlisted", input.courseId),
       ]);
       return {
         added: result.count,
@@ -1762,6 +1789,12 @@ export const studentsRouter = createTRPCRouter({
         approved: input.approve,
         reason,
       });
+      void notifyColleagueCourseAction(
+        [input.studentId],
+        ctx.cpUser.id,
+        input.approve ? "Approved the partner's pick" : "Rejected the partner's pick",
+        input.courseId,
+      );
       return { ok: true as const };
     }),
 
@@ -1818,6 +1851,7 @@ export const studentsRouter = createTRPCRouter({
         note,
         reproposed: true,
       });
+      void notifyColleagueCourseAction([input.studentId], ctx.cpUser.id, "Re-proposed", input.courseId);
       return { ok: true as const };
     }),
 
@@ -1844,6 +1878,9 @@ export const studentsRouter = createTRPCRouter({
           metadata: { courseId: input.courseId, byCpUserId: ctx.cpUser.id },
         })),
       });
+      if (result.count > 0) {
+        void notifyColleagueCourseAction(input.studentIds, ctx.cpUser.id, "Removed from the shortlist:", input.courseId);
+      }
       return { removed: result.count };
     }),
 
@@ -1941,6 +1978,7 @@ export const studentsRouter = createTRPCRouter({
           },
         },
       });
+      void notifyColleagueApplicationAction(app.id, ctx.cpUser.id, "Started an application");
       return { applicationId: app.id, created: true };
     }),
 
@@ -2083,6 +2121,7 @@ export const studentsRouter = createTRPCRouter({
           deposit_amount: input.amount,
         },
       });
+      void notifyColleagueApplicationAction(input.applicationId, ctx.cpUser.id, "Updated the deposit details");
       return { ok: true };
     }),
 
@@ -2236,6 +2275,10 @@ export const studentsRouter = createTRPCRouter({
       // (counselling roles); a manual pick replaces any auto-assignment.
       await requireStaffStudents(ctx.cpUser, input.ids);
       const counsellor = await requireAssignableCounsellor(ctx.cpUser, input.cpCounsellorId);
+      const before = await db.student.findMany({
+        where: { id: { in: input.ids } },
+        select: { id: true, cp_counsellor_id: true },
+      });
       const result = await db.student.updateMany({
         where: { id: { in: input.ids } },
         data: { cp_counsellor_id: counsellor.id, cp_auto_assigned_at: null },
@@ -2250,6 +2293,13 @@ export const studentsRouter = createTRPCRouter({
             byCpUserId: ctx.cpUser.id,
           },
         })),
+      });
+      // The new counsellor and any previous one, unless they made the change.
+      void notifyCounsellorAssignment({
+        studentIds: input.ids,
+        newCounsellorId: counsellor.id,
+        previous: new Map(before.map((b) => [b.id, b.cp_counsellor_id])),
+        actorCpUserId: ctx.cpUser.id,
       });
       return { updated: result.count, counsellorName: fullName(counsellor) };
     }),

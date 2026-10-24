@@ -10,6 +10,7 @@ import { transitionApplication } from "~/server/application-transitions";
 import { appUrl, applicationStatusEmail } from "~/server/email";
 import { emailPartners, studentPartnerRecipients } from "~/server/email/partners";
 import { createNotifications } from "~/server/notify";
+import { notifyStudentCounsellor } from "~/server/counsellor-notify";
 
 // Deferral to a later intake (Portal Testing Day 5, 24 Oct 2026, with
 // Suraj). Deferring no longer closes the application: the new intake is
@@ -145,6 +146,23 @@ export async function deferApplication(input: DeferInput) {
   });
 
   void notifyDeferral(app.id, to, visaStage, !!input.partnerReport);
+  // The counsellor, unless they did it. A visa-stage deferral already told
+  // them through the move back to Deposit Paid (transitionApplication).
+  if (!visaStage) {
+    void notifyStudentCounsellor({
+      studentId: app.student_id,
+      actorCpUserId: input.cpUserId,
+      type: "application.stage_changed",
+      title: (student, actor) => `${student}: deferred to ${to}, by ${actor}`,
+      lines: [
+        ...(from ? [`${from} → ${to}`] : [`New intake: ${to}`]),
+        "The application stays open at its current stage",
+        ...(input.partnerReport ? ["Confirmed from the partner's report"] : []),
+        ...(note ? [`Note: ${note}`] : []),
+      ],
+      tab: "application",
+    });
+  }
   return { intake: to, from };
 }
 

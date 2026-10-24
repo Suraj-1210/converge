@@ -834,3 +834,19 @@ export function adminGstChangedEmail(
     ],
   );
 }
+
+// 27. Something happened to a student assigned to a Collegepond counsellor
+// that they didn't do themselves: a colleague's action, a stage change, a
+// partner report, a new assignment (src/server/counsellor-notify.ts). Goes
+// to the counsellor, or whoever covers them while they're out of office.
+export function counsellorStudentUpdateEmail(
+  r: { name: string },
+  u: { subject: string; heading: string; lines: string[]; link: string; coveringFor?: string | null },
+  appUrl: string,
+): EmailMessage {
+  return build(u.subject, u.heading, hello(r.name), [
+    ...(u.coveringFor ? [{ p: `You're covering for ${u.coveringFor} while they're out of office.` }] : []),
+    { list: u.lines },
+    { button: { label: "Open in the Admin Portal", url: portal(appUrl, u.link) } },
+  ]);
+}
