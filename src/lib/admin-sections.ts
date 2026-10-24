@@ -9,7 +9,7 @@ import { AdminRole } from "~/server/db/enums";
 //                                       Uni Assist, Events (+ Partner Chat: 4)
 //   Counsellor Lead / Ops Lead (3, 5) → that, plus Partners, Student
 //                                       Placements, Counselor Approvals,
-//                                       Universities, TAT (+ Partner Chat: 3)
+//                                       Universities, TAT, Partner Chat
 //   Finance, BDM, Content (1, 2, 8, 7) → what they had before
 //   Users, Settings, Audit Logs        → Super Admin only
 //
@@ -56,7 +56,7 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   counsellorApprovals: ABOVE_COUNSELLOR,
   universities: ABOVE_COUNSELLOR,
   notes: ABOVE_COUNSELLOR,
-  partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, COUNSELLOR],
+  partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
   tat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD],
   bdm: [SUPER_ADMIN, BDM],
   finance: [SUPER_ADMIN, FINANCE_MANAGER, FINANCE_EXECUTIVE],

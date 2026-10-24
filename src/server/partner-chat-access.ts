@@ -21,7 +21,8 @@ import { requireStaffStudent, staffStudentScope, studentPartner, type StaffUser 
 //   Counsellor Lead   → their own and their team's students, plus unassigned
 //                       students of the partners they lead
 //   Super Admin       → every student
-//   every other role (Finance, Operations, BDM, …) → refused
+//   Operations Lead   → every student (added by Suraj, 24 Oct 2026)
+//   every other role (Finance, Ops Executive, BDM, …) → refused
 //
 // Another agency's student, or one outside a staff user's scope, looks
 // exactly like a missing one (NOT_FOUND).
@@ -31,6 +32,7 @@ export type ChatSide = "partner" | "staff";
 export const CHAT_STAFF_ROLES: number[] = [
   AdminRole.SUPER_ADMIN,
   AdminRole.COUNSELLOR_LEAD,
+  AdminRole.OPERATIONS_LEAD,
   AdminRole.COUNSELLOR,
 ];
 
@@ -94,7 +96,7 @@ export function requireChatStaffRole(user: StaffUser) {
   if (!isChatStaffRole(user.role)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "Partner chat is for the student's counsellor, their Counselling Lead and Super Admins.",
+      message: "Partner chat is for the student's counsellor, their Counselling Lead, Operations Leads and Super Admins.",
     });
   }
 }

@@ -120,7 +120,7 @@ export const NAV_SECTIONS: NavSection[] = [
         badgeKey: "approvals",
         section: "counsellorApprovals",
       },
-      // Partner chat inbox: Super Admin, Counsellor Lead, Counsellor.
+      // Partner chat inbox: Super Admin, Counsellor Lead, Operations Lead, Counsellor.
       {
         label: "Partner Chat",
         href: "/admin/partner-chat",
