@@ -30,6 +30,9 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const markAllRead = api.partnerNotifications.markAllRead.useMutation({
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
+  const setRead = api.partnerNotifications.setRead.useMutation({
+    onSuccess: () => void utils.partnerNotifications.list.invalidate(),
+  });
 
   // Managing the team is the agency owner's job; counsellors and independents
   // don't get the Counsellors page. Commission is the agency's money, so
@@ -92,6 +95,10 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         notifications={feed.data?.notifications ?? []}
         onMarkAllRead={() => {
           if ((feed.data?.unread ?? 0) > 0) markAllRead.mutate();
+        }}
+        notificationsHref="/partner/notifications"
+        onNotificationClick={(n) => {
+          if (n.unread && /^\d+$/.test(n.id)) setRead.mutate({ id: Number(n.id), read: true });
         }}
         onLogout={handleLogout}
       />

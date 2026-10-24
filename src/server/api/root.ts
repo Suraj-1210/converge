@@ -29,6 +29,8 @@ import { fxRouter } from "~/server/api/routers/fx";
 import { geoRouter } from "~/server/api/routers/geo";
 import { notificationsRouter } from "~/server/api/routers/notifications";
 import { partnerNotificationsRouter } from "~/server/api/routers/partner-notifications";
+import { staffNotificationsRouter } from "~/server/api/routers/staff-notifications";
+import { outOfOfficeRouter } from "~/server/api/routers/out-of-office";
 import { chatRouter } from "~/server/api/routers/chat";
 import { partnerChatRouter } from "~/server/api/routers/partner-chat";
 import { tatRouter } from "~/server/api/routers/tat";
@@ -70,6 +72,8 @@ export const appRouter = createTRPCRouter({
   geo: geoRouter,
   notifications: notificationsRouter,
   partnerNotifications: partnerNotificationsRouter,
+  staffNotifications: staffNotificationsRouter,
+  outOfOffice: outOfOfficeRouter,
   chat: chatRouter,
   partnerChat: partnerChatRouter,
   tat: tatRouter,

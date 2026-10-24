@@ -18,6 +18,7 @@ import {
   bannerOffsetStyle,
   useImpersonation,
 } from "./impersonation";
+import { OutOfOfficeDialog, OutOfOfficeMenuItem } from "./out-of-office";
 
 // Dev-only illustrative bell content. In production the bell is driven entirely
 // by api.notifications.list (real, current actionable state); these never render
@@ -86,8 +87,15 @@ export function DashboardShell({
   // Live admin signals (pending approvals, payouts ready, invoices awaiting
   // review, new students). Drives both the bell and the sidebar approvals badge.
   const signals = api.notifications.list.useQuery().data;
+  // Stored notifications for this person (chat, TAT, shortlist, out of office).
+  const utils = api.useUtils();
+  const feed = api.staffNotifications.recent.useQuery(undefined, { refetchInterval: 60_000 }).data;
+  const refreshFeed = () => void utils.staffNotifications.recent.invalidate();
+  const markFeedRead = api.staffNotifications.markAllRead.useMutation({ onSuccess: refreshFeed });
+  const setFeedRead = api.staffNotifications.setRead.useMutation({ onSuccess: refreshFeed });
   const branding = api.settings.branding.useQuery().data;
   const [allRead, setAllRead] = useState(false);
+  const [oooOpen, setOooOpen] = useState(false);
 
   // Resolution order: explicit prop override → real live data → dev-only demo
   // (empty in prod, never synthetic).
@@ -97,9 +105,16 @@ export function DashboardShell({
     notifications ??
     signals?.notifications ??
     (SHOW_DEMO_DATA ? DEFAULT_NOTIFICATIONS : []);
-  const shownNotifications = allRead
+  const derived = allRead
     ? liveNotifications.map((n) => ({ ...n, unread: false }))
     : liveNotifications;
+  // Unread stored items first, then the live signals, then recent read ones.
+  const stored = feed?.notifications ?? [];
+  const shownNotifications = [
+    ...stored.filter((n) => n.unread),
+    ...derived,
+    ...stored.filter((n) => !n.unread).slice(0, 5),
+  ];
 
   async function handleLogout() {
     try {
@@ -144,7 +159,23 @@ export function DashboardShell({
         roleLabel={roleLabel}
         notifications={shownNotifications}
         taskCount={taskCount}
-        onMarkAllRead={() => setAllRead(true)}
+        onMarkAllRead={() => {
+          setAllRead(true);
+          if ((feed?.unread ?? 0) > 0) markFeedRead.mutate();
+        }}
+        notificationsHref="/admin/notifications"
+        onNotificationClick={(n) => {
+          const item = stored.find((s) => s.id === n.id);
+          if (item?.unread) setFeedRead.mutate({ id: item.dbId, read: true });
+        }}
+        menuItems={(close) => (
+          <OutOfOfficeMenuItem
+            onClick={() => {
+              close();
+              setOooOpen(true);
+            }}
+          />
+        )}
         onLogout={handleLogout}
         actions={
           !me || me.impersonated || impersonating ? null : me.role === AdminRole.SUPER_ADMIN ? (
@@ -154,6 +185,7 @@ export function DashboardShell({
           ) : null
         }
       />
+      <OutOfOfficeDialog open={oooOpen} onClose={() => setOooOpen(false)} />
       <main className="ml-16 min-h-screen pt-[calc(60px+var(--banner-h,0px))]">
         <div className="p-6">
           {!pageSection ? (

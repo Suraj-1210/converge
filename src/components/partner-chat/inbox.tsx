@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "~/trpc/react";
 import { Toast } from "~/components/ui/toast";
 import { type TatStatus } from "~/lib/tat";
+import { CHAT_FILTER_DEFINITIONS } from "~/lib/partner-chat-rules";
 import { type ChatSide, PartnerChatPanel } from "./chat-panel";
 
 // Partner chat inbox: every student thread this person takes part in, with
@@ -13,17 +14,23 @@ import { type ChatSide, PartnerChatPanel } from "./chat-panel";
 
 type Filter = "all" | "unread" | "awaiting" | "overdue";
 
-const FILTERS: Record<ChatSide, { id: Filter; label: string }[]> = {
-  partner: [
-    { id: "all", label: "All" },
-    { id: "unread", label: "Unread" },
-  ],
-  staff: [
-    { id: "all", label: "All" },
-    { id: "unread", label: "Unread" },
-    { id: "awaiting", label: "Awaiting reply" },
-    { id: "overdue", label: "Overdue" },
-  ],
+// Labels and tooltips come from one set of definitions
+// (src/lib/partner-chat-rules.ts), shared with the server's filters.
+const FILTER_IDS: Record<ChatSide, Filter[]> = {
+  partner: ["all", "unread"],
+  staff: ["all", "unread", "awaiting", "overdue"],
+};
+const FILTERS: Record<ChatSide, { id: Filter; label: string; help: string }[]> = {
+  partner: FILTER_IDS.partner.map((id) => ({
+    id,
+    label: CHAT_FILTER_DEFINITIONS[id].label,
+    help: CHAT_FILTER_DEFINITIONS[id].partner,
+  })),
+  staff: FILTER_IDS.staff.map((id) => ({
+    id,
+    label: CHAT_FILTER_DEFINITIONS[id].label,
+    help: CHAT_FILTER_DEFINITIONS[id].staff,
+  })),
 };
 
 const TAT_PILL: Record<TatStatus, string> = {
@@ -109,6 +116,8 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
                     key={f.id}
                     type="button"
                     onClick={() => setFilter(f.id)}
+                    title={f.help}
+                    aria-describedby="chat-filter-help"
                     className={`rounded-full px-3 py-1 text-xs font-semibold ${
                       filter === f.id ? "bg-[#1570EF] text-white" : "bg-[#F2F4F7] text-[#344054] hover:bg-[#EAECF0]"
                     }`}
@@ -117,6 +126,12 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
                   </button>
                 ))}
               </div>
+              {filter !== "all" && (
+                <p id="chat-filter-help" className="text-[11px] leading-snug text-[#667085]">
+                  <span className="font-semibold text-[#344054]">{CHAT_FILTER_DEFINITIONS[filter].label}:</span>{" "}
+                  {FILTERS[side].find((f) => f.id === filter)?.help}
+                </p>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto">
               {listQ.isLoading ? (
@@ -154,7 +169,7 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
                         {r.lastPreview}
                       </span>
                       {r.awaiting && (
-                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${TAT_PILL[r.awaiting.status]}`} title="Awaiting a Collegepond reply (business hours)">
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${TAT_PILL[r.awaiting.status]}`} title={`${r.awaiting.status === "Breached" ? "Overdue" : "Awaiting reply"}: waiting ${r.awaiting.label} for a Collegepond reply (business hours)`}>
                           {r.awaiting.label}
                         </span>
                       )}

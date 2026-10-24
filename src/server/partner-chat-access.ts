@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
+import { type OooNotice, oooNotices, responderFor } from "~/server/out-of-office";
 import { partnerScope } from "~/server/partner-access";
 import { requireStaffStudent, staffStudentScope, studentPartner, type StaffUser } from "~/server/staff-access";
 
@@ -155,15 +156,24 @@ export async function partnerParticipants(studentId: number): Promise<{ all: Per
 // The Collegepond side: the student's counsellor and the Counselling Lead
 // over them (for an unassigned student, the partner's Counsellor Lead).
 // Super Admins can join any chat but aren't emailed.
+//
+// Out of office (out-of-office.ts): `responder` is who answers this chat
+// today (the counsellor, or their alternate while they're out; with no
+// counsellor, the lead or theirs) and `leadResponder` who takes escalations
+// (the lead or their alternate). `outOfOffice` lists whichever of the two is
+// out today, for display.
 export async function staffParticipants(studentId: number): Promise<{
   counsellor: Person | null;
   lead: Person | null;
+  responder: Person | null;
+  leadResponder: Person | null;
+  outOfOffice: OooNotice[];
 }> {
   const s = await db.student.findUnique({
     where: { id: studentId },
     select: { cp_counsellor_id: true, org_id: true, created_by_user_id: true },
   });
-  if (!s) return { counsellor: null, lead: null };
+  if (!s) return { counsellor: null, lead: null, responder: null, leadResponder: null, outOfOffice: [] };
   const activeCp = (id: number | null) =>
     id === null ? Promise.resolve(null) : db.collegepond_user.findFirst({ where: { id, status: 1 }, select: personSelect });
 
@@ -181,5 +191,16 @@ export async function staffParticipants(studentId: number): Promise<{
     leadId = (await studentPartner(s))?.lead_counsellor_id ?? null;
   }
   const lead = leadId !== null && leadId !== counsellor?.id ? await activeCp(leadId) : null;
-  return { counsellor, lead };
+
+  const cover = async (p: Person | null): Promise<Person | null> => {
+    if (!p) return null;
+    const id = await responderFor(p.id);
+    return id === p.id ? p : ((await activeCp(id)) ?? p);
+  };
+  const [counsellorCover, leadResponder, outOfOffice] = await Promise.all([
+    cover(counsellor),
+    cover(lead),
+    oooNotices([counsellor?.id, lead?.id]),
+  ]);
+  return { counsellor, lead, responder: counsellorCover ?? leadResponder, leadResponder, outOfOffice };
 }

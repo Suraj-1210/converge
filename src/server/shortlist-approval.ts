@@ -17,7 +17,9 @@ import {
   studentPartnerRecipients,
 } from "~/server/email/partners";
 import { createNotifications } from "~/server/notify";
+import { responderFor } from "~/server/out-of-office";
 import { studentPartner } from "~/server/staff-access";
+import { createStaffNotifications } from "~/server/staff-notify";
 import { notificationPrefCode } from "~/lib/constants/notification-prefs";
 
 // University assignment approval (Phase 3B, decided with Suraj 17 Oct 2026).
@@ -31,9 +33,10 @@ import { notificationPrefCode } from "~/lib/constants/notification-prefs";
 //     re-propose it (back to pending, optional note) or remove it.
 //   - No timeout and no reminders.
 // The other side hears about every proposal and decision: partners in-app
-// and by email (preference "app.shortlist"); Collegepond by email (the
-// student's counsellor → the partner's Counsellor Lead → every Lead, as for
-// partner profile edits) and through the admin bell.
+// and by email (preference "app.shortlist"); Collegepond by email and in-app
+// (the student's counsellor → the partner's Counsellor Lead → every Lead, as
+// for partner profile edits; plus the counsellor's alternate while they're
+// out of office) and through the admin bell.
 //
 // Every function here runs after the change is saved, so failures are logged
 // and never thrown back at the caller.
@@ -241,6 +244,14 @@ async function counsellingRecipients(studentId: number, alsoCpUserId?: number | 
           select: pick,
         });
   }
+  // While the counsellor is out of office, their alternate hears too.
+  if (cp) {
+    const cover = await responderFor(cp.id);
+    if (cover !== cp.id) {
+      const alt = await db.collegepond_user.findFirst({ where: { id: cover, status: 1 }, select: pick });
+      if (alt) list.push(alt);
+    }
+  }
   if (alsoCpUserId && !list.some((r) => r.id === alsoCpUserId)) {
     const extra = await db.collegepond_user.findFirst({
       where: { id: alsoCpUserId, status: 1 },
@@ -255,6 +266,7 @@ async function emailCounselling(
   studentId: number,
   alsoCpUserId: number | null,
   build: (r: { name: string }) => ReturnType<typeof shortlistProposedEmail>,
+  inApp: { title: string; body: string; tone: "blue" | "green" | "red" | "orange" },
   context: string,
 ) {
   const recipients = await counsellingRecipients(studentId, alsoCpUserId);
@@ -262,6 +274,10 @@ async function emailCounselling(
     console.log(`${LOG} ${context}: no Collegepond counsellor or lead to email`);
     return;
   }
+  await createStaffNotifications(
+    recipients.map((r) => r.id),
+    { type: "student.shortlist", ...inApp, link: `/admin/students/${studentId}?tab=application` },
+  );
   for (const r of recipients) {
     try {
       await sendEmail(r.email, build({ name: fullName(r) }));
@@ -312,6 +328,11 @@ export async function notifyCollegepondOfProposal(args: {
           },
           appUrl(),
         ),
+      {
+        title: `Approve ${programs[0]!.university} for ${name}?`,
+        body: `${by} ${args.reproposed ? "re-proposed" : "proposed"} ${programs[0]!.university} – ${programs[0]!.program}. Approve or reject from the student's Application tab.`,
+        tone: "orange",
+      },
       `partner proposal email for student ${args.studentId}`,
     );
   } catch (e) {
@@ -354,6 +375,13 @@ export async function notifyCollegepondOfDecision(args: {
           },
           appUrl(),
         ),
+      {
+        title: `${program.university} ${args.approved ? "approved" : "rejected"} by the partner for ${name}`,
+        body: args.approved
+          ? `${by} approved ${program.program}. It can now be applied for.`
+          : `${by} rejected ${program.program}${args.reason ? `: ${args.reason}` : "."}`,
+        tone: args.approved ? "green" : "red",
+      },
       `partner decision email for student ${args.studentId}`,
     );
   } catch (e) {

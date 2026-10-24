@@ -1742,6 +1742,8 @@ CREATE TABLE IF NOT EXISTS `partner_chat_message` (
   `tat_started_at`            TIMESTAMP   NULL DEFAULT NULL,
   `tat_business_minutes`      INT         NULL DEFAULT NULL,
   `tat_counsellor_cp_user_id` INT         NULL DEFAULT NULL,
+  `no_reply_needed_at`        TIMESTAMP   NULL DEFAULT NULL,
+  `no_reply_needed_by_cp_user_id` INT     NULL DEFAULT NULL,
   `created_at`                TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_partner_chat_message_thread` (`thread_id` ASC, `id` ASC) VISIBLE,
@@ -1810,6 +1812,8 @@ CREATE TABLE IF NOT EXISTS `tat_setting` (
   `work_days`             VARCHAR(20) NOT NULL DEFAULT '1,2,3,4,5,6',
   `day_start_minute`      SMALLINT    NOT NULL DEFAULT 600,
   `day_end_minute`        SMALLINT    NOT NULL DEFAULT 1140,
+  `chat_ack_phrases`      VARCHAR(1000) NULL DEFAULT NULL,
+  `chat_ack_max_length`   SMALLINT    NOT NULL DEFAULT 40,
   `updated_by_cp_user_id` INT         NULL DEFAULT NULL,
   `updated_at`            TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
@@ -1844,6 +1848,51 @@ VALUES (1, 'Asia/Kolkata', '1,2,3,4,5,6', 600, 1140);
 
 INSERT IGNORE INTO `tat_action_target` (`action_key`, `label`, `threshold_minutes`, `warning_pct`, `active`)
 VALUES ('chat_response', 'Chat Response', 120, 80, 1);
+
+
+-- Out of office (24 Oct 2026): one row per Collegepond counsellor, the dates
+-- (inclusive, TAT timezone) and the alternate who covers them. See
+-- src/server/out-of-office.ts.
+-- cp_notification: persistent in-app feed for Collegepond staff (admin
+-- Notifications page); `notification` is the partner users' feed.
+CREATE TABLE IF NOT EXISTS `cp_out_of_office` (
+  `id`                   INT       NOT NULL AUTO_INCREMENT,
+  `cp_user_id`           INT       NOT NULL,
+  `from_date`            DATE      NOT NULL,
+  `to_date`              DATE      NOT NULL,
+  `alternate_cp_user_id` INT       NOT NULL,
+  `set_by_cp_user_id`    INT       NULL DEFAULT NULL,
+  `created_at`           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_cp_out_of_office_user` (`cp_user_id` ASC) VISIBLE,
+  INDEX `fk_cp_out_of_office_alternate_idx` (`alternate_cp_user_id` ASC) VISIBLE,
+  INDEX `idx_cp_out_of_office_dates` (`from_date` ASC, `to_date` ASC) VISIBLE,
+  CONSTRAINT `fk_cp_out_of_office_user`
+    FOREIGN KEY (`cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_cp_out_of_office_alternate`
+    FOREIGN KEY (`alternate_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `cp_notification` (
+  `id`         INT          NOT NULL AUTO_INCREMENT,
+  `cp_user_id` INT          NOT NULL,
+  `type`       VARCHAR(50)  NOT NULL,
+  `title`      VARCHAR(255) NOT NULL,
+  `body`       VARCHAR(500) NULL DEFAULT NULL,
+  `link`       VARCHAR(255) NULL DEFAULT NULL,
+  `tone`       VARCHAR(10)  NOT NULL DEFAULT 'blue',
+  `read_at`    TIMESTAMP    NULL DEFAULT NULL,
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_cp_notification_user_created` (`cp_user_id` ASC, `created_at` ASC) VISIBLE,
+  INDEX `idx_cp_notification_user_read` (`cp_user_id` ASC, `read_at` ASC) VISIBLE,
+  CONSTRAINT `fk_cp_notification_user`
+    FOREIGN KEY (`cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE
+) ENGINE = InnoDB;
 
 
 SET SQL_MODE            = @OLD_SQL_MODE;

@@ -16,6 +16,7 @@ import {
   messageStudentId,
   saveAttachmentToDocuments,
   sendMessage,
+  setNoReplyNeeded,
   unreadThreadCount,
 } from "~/server/partner-chat";
 
@@ -122,6 +123,14 @@ export const partnerChatRouter = createTRPCRouter({
     await requireStaffChatStudent(ctx.cpUser, input.studentId);
     return markRead(staffActor(ctx), input.studentId, input.upToId);
   }),
+
+  // "No reply needed" on a partner message: takes it off the reply clock.
+  staffNoReplyNeeded: protectedAdminProcedure
+    .input(z.object({ messageId: z.number().int().positive(), on: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffChatStudent(ctx.cpUser, await messageStudentId(input.messageId));
+      return setNoReplyNeeded(staffActor(ctx), input.messageId, input.on);
+    }),
 
   staffSaveAttachment: protectedAdminProcedure.input(saveInput).mutation(async ({ ctx, input }) => {
     await requireStaffChatStudent(ctx.cpUser, await attachmentStudentId(input.attachmentId));

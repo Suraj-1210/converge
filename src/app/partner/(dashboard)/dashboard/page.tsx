@@ -68,6 +68,9 @@ export default function PartnerDashboardPage() {
 
   const contacts = stats?.contacts ?? [];
   const rm = stats?.relationshipManager ?? null;
+  // Their Collegepond counsellor or lead out of office today, with who to
+  // contact instead.
+  const away = api.outOfOffice.partnerNotices.useQuery(undefined, { retry: false }).data ?? [];
 
   return (
     <>
@@ -213,6 +216,26 @@ export default function PartnerDashboardPage() {
             </div>
           ) : contacts.length || rm ? (
             <div className="space-y-3 text-[13px]">
+              {away.map((o) => (
+                <div
+                  key={o.cpUserId}
+                  className="rounded-lg border border-[#FEDF89] bg-[#FFFAEB] px-3 py-2 text-[12px] leading-snug text-[#B54708]"
+                >
+                  <span className="font-semibold">{o.name}</span> is out of office {o.dates}. Contact{" "}
+                  <span className="font-semibold">{o.alternate.name}</span>{" "}
+                  <a href={`mailto:${o.alternate.email}`} className="underline">
+                    {o.alternate.email}
+                  </a>
+                  {o.alternate.phone ? (
+                    <>
+                      {" · "}
+                      <a href={`tel:${o.alternate.phone.replace(/\s+/g, "")}`} className="underline">
+                        {o.alternate.phone}
+                      </a>
+                    </>
+                  ) : null}
+                </div>
+              ))}
               {contacts.length > 0 && (
                 <div>
                   <TeamHeading>Counselling Team</TeamHeading>

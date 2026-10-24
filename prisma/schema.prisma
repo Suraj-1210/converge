@@ -694,6 +694,9 @@ model collegepond_user {
   counsellor_team_member                                      counsellor_team_member?
   partner_tier_rule_created                                   partner_tier_rule[]
   partner_tier_override_set                                   partner_tier_override[]
+  out_of_office                                               cp_out_of_office?            @relation("cp_out_of_office_user")
+  covering_out_of_office                                      cp_out_of_office[]           @relation("cp_out_of_office_alternate")
+  cp_notification                                             cp_notification[]
 
   @@index([department_id], map: "fk_cp_user_department_idx")
   @@map("cp_user")
@@ -1454,6 +1457,10 @@ model partner_chat_message {
   tat_started_at            DateTime?                 @db.Timestamp(0)
   tat_business_minutes      Int?
   tat_counsellor_cp_user_id Int?
+  // A Collegepond user marked this partner message "No reply needed":
+  // it no longer holds the thread's reply clock.
+  no_reply_needed_at            DateTime? @db.Timestamp(0)
+  no_reply_needed_by_cp_user_id Int?
   created_at                DateTime                  @default(now()) @db.Timestamp(0)
   thread                    partner_chat_thread       @relation(fields: [thread_id], references: [id], onDelete: Cascade, map: "fk_partner_chat_message_thread")
   attachment                partner_chat_attachment[]
@@ -1513,6 +1520,10 @@ model tat_setting {
   work_days             String   @default("1,2,3,4,5,6") @db.VarChar(20)
   day_start_minute      Int      @default(600) @db.SmallInt
   day_end_minute        Int      @default(1140) @db.SmallInt
+  // Partner chat acknowledgements that don't start the reply clock
+  // (newline-separated; NULL = the built-in list, src/lib/partner-chat-rules.ts).
+  chat_ack_phrases      String?  @db.VarChar(1000)
+  chat_ack_max_length   Int      @default(40) @db.SmallInt
   updated_by_cp_user_id Int?
   updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
 }
@@ -1534,4 +1545,42 @@ model tat_action_target {
   active                Int      @default(1) @db.TinyInt
   updated_by_cp_user_id Int?
   updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
+}
+
+// Out of office (24 Oct 2026). One row per counsellor; "out" is worked out
+// from the dates (inclusive, TAT timezone), so it ends by itself. While out,
+// the alternate covers their partner chats, chat reply TAT and new
+// auto-assigned students. See src/server/out-of-office.ts.
+model cp_out_of_office {
+  id                   Int              @id @default(autoincrement())
+  cp_user_id           Int              @unique(map: "uq_cp_out_of_office_user")
+  from_date            DateTime         @db.Date
+  to_date              DateTime         @db.Date
+  alternate_cp_user_id Int
+  set_by_cp_user_id    Int?
+  created_at           DateTime         @default(now()) @db.Timestamp(0)
+  updated_at           DateTime         @default(now()) @updatedAt @db.Timestamp(0)
+  cp_user              collegepond_user @relation("cp_out_of_office_user", fields: [cp_user_id], references: [id], onDelete: Cascade, map: "fk_cp_out_of_office_user")
+  alternate            collegepond_user @relation("cp_out_of_office_alternate", fields: [alternate_cp_user_id], references: [id], onDelete: Cascade, map: "fk_cp_out_of_office_alternate")
+
+  @@index([alternate_cp_user_id], map: "fk_cp_out_of_office_alternate_idx")
+  @@index([from_date, to_date], map: "idx_cp_out_of_office_dates")
+}
+
+// Persistent in-app feed for Collegepond staff (admin Notifications page and
+// bell). The partner users' feed is `notification`.
+model cp_notification {
+  id         Int              @id @default(autoincrement())
+  cp_user_id Int
+  type       String           @db.VarChar(50)
+  title      String           @db.VarChar(255)
+  body       String?          @db.VarChar(500)
+  link       String?          @db.VarChar(255)
+  tone       String           @default("blue") @db.VarChar(10)
+  read_at    DateTime?        @db.Timestamp(0)
+  created_at DateTime         @default(now()) @db.Timestamp(0)
+  cp_user    collegepond_user @relation(fields: [cp_user_id], references: [id], onDelete: Cascade, map: "fk_cp_notification_user")
+
+  @@index([cp_user_id, created_at], map: "idx_cp_notification_user_created")
+  @@index([cp_user_id, read_at], map: "idx_cp_notification_user_read")
 }

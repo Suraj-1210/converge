@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import { AdminRole } from "~/server/db/enums";
+import { coveredCounsellorIds, responderFor } from "~/server/out-of-office";
 
 // What a Collegepond staff user may see in the admin portal: the staff-side
 // counterpart of partner-access.ts. Every admin list, count, search and
@@ -15,6 +16,8 @@ import { AdminRole } from "~/server/db/enums";
 //                       team, plus unassigned students of partners whose
 //                       Counsellor Lead they are (so they can dispatch them)
 //   everyone else     → every student (Super Admin, finance, ops, BDM, …)
+// A counsellor or lead covering for someone out of office (out-of-office.ts)
+// also sees that person's assigned students, until the To date passes.
 //
 // Partner visibility (dashboard Top Partners, partner counts):
 //   Counsellor        → partners whose counsellor or counsellor lead they are
@@ -80,10 +83,15 @@ async function ledPartners(leadId: number) {
 // Prisma filter for the students this staff user may see. `{}` = all.
 export async function staffStudentScope(user: StaffUser): Promise<Prisma.studentWhereInput> {
   if (user.role === AdminRole.COUNSELLOR) {
-    return { cp_counsellor_id: user.id };
+    const covering = await coveredCounsellorIds(user.id);
+    return covering.length ? { cp_counsellor_id: { in: [user.id, ...covering] } } : { cp_counsellor_id: user.id };
   }
   if (user.role === AdminRole.COUNSELLOR_LEAD) {
-    const [team, led] = await Promise.all([teamMemberIds(user.id), ledPartners(user.id)]);
+    const [team, led, covering] = await Promise.all([
+      teamMemberIds(user.id),
+      ledPartners(user.id),
+      coveredCounsellorIds(user.id),
+    ]);
     const unassignedOfMyPartners: Prisma.studentWhereInput[] = [];
     if (led.orgIds.length) unassignedOfMyPartners.push({ org_id: { in: led.orgIds } });
     if (led.independentIds.length) {
@@ -91,7 +99,7 @@ export async function staffStudentScope(user: StaffUser): Promise<Prisma.student
     }
     return {
       OR: [
-        { cp_counsellor_id: { in: [user.id, ...team] } },
+        { cp_counsellor_id: { in: [user.id, ...team, ...covering] } },
         ...(unassignedOfMyPartners.length
           ? [{ cp_counsellor_id: null, OR: unassignedOfMyPartners }]
           : []),
@@ -215,6 +223,8 @@ export async function studentPartner(student: { org_id: number | null; created_b
 // Assign switched on:
 //   1. the partner's own Collegepond counsellor, if active;
 //   2. otherwise the lead's primary SPOC, if active.
+// If that person is out of office today, their alternate gets the student
+// instead (out-of-office.ts, decided with Suraj 24 Oct 2026).
 // Never touches a student that already has a counsellor, so a hand-picked
 // assignment always wins. Each assignment is audit-logged. Never throws:
 // the students are already saved; a failure leaves them unassigned.
@@ -241,6 +251,8 @@ export async function autoAssignStudents(studentIds: number[]): Promise<number> 
         target = await activeCounsellor(team.primary_spoc_cp_user_id);
       }
       if (target === null) continue;
+      const chosen = target;
+      target = (await activeCounsellor(await responderFor(chosen))) ?? chosen;
 
       // Conditional update: a manual assignment that raced us wins.
       const res = await db.student.updateMany({
@@ -254,7 +266,12 @@ export async function autoAssignStudents(studentIds: number[]): Promise<number> 
           action: "student.cp_counsellor_auto_assigned",
           entity_type: "student",
           entity_id: s.id,
-          metadata: { cpCounsellorId: target, leadCpUserId: partner.lead_counsellor_id, rule },
+          metadata: {
+            cpCounsellorId: target,
+            leadCpUserId: partner.lead_counsellor_id,
+            rule,
+            ...(target !== chosen ? { coveringForCpUserId: chosen } : {}),
+          },
         },
       });
     }

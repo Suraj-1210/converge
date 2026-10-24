@@ -12,6 +12,13 @@ import {
   tatClock,
 } from "~/server/tat";
 import { describeHours, tatStatus } from "~/lib/tat";
+import {
+  ACK_MAX_LENGTH_LIMIT,
+  ACK_MAX_PHRASE_LENGTH,
+  ACK_MAX_PHRASES,
+  DEFAULT_ACK_MAX_LENGTH,
+  parseAckPhrases,
+} from "~/lib/partner-chat-rules";
 
 // TAT master (Settings -> TAT Settings, Super Admin) and the real data behind
 // the TAT Management page. "Chat Response" (Collegepond replying in partner
@@ -49,6 +56,12 @@ async function readMaster() {
       warningPct: t.warning_pct,
       active: t.active === 1,
     })),
+    // Partner chat acknowledgements that don't start the reply clock.
+    chatAck: {
+      phrases: parseAckPhrases(row?.chat_ack_phrases),
+      maxLength: row?.chat_ack_max_length ?? DEFAULT_ACK_MAX_LENGTH,
+      isDefault: !row?.chat_ack_phrases,
+    },
   };
 }
 
@@ -170,6 +183,45 @@ export const tatRouter = createTRPCRouter({
             key: t.action_key,
             before: { thresholdMinutes: t.threshold_minutes, warningPct: t.warning_pct, active: t.active === 1 },
             after: { thresholdMinutes: input.thresholdMinutes, warningPct: input.warningPct, active: input.active },
+          },
+        },
+      });
+      invalidateTatCache();
+      return { ok: true as const };
+    }),
+
+  // The acknowledgement list (src/lib/partner-chat-rules.ts). An empty list
+  // goes back to the built-in default. Applies to new messages; threads
+  // already waiting keep their clock until the next message or edit.
+  updateChatAck: superAdminProcedure
+    .input(
+      z.object({
+        phrases: z.array(z.string().trim().min(1).max(ACK_MAX_PHRASE_LENGTH)).max(ACK_MAX_PHRASES),
+        maxLength: z.number().int().min(1).max(ACK_MAX_LENGTH_LIMIT),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const phrases = [...new Set(input.phrases.map((p) => p.replace(/\s+/g, " ")))];
+      const stored = phrases.length ? phrases.join("\n") : null;
+      if (stored && stored.length > 1000) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "The list is too long. Remove a few phrases." });
+      }
+      const before = await db.tat_setting.findUnique({ where: { id: 1 } });
+      const by = ctx.cpUser.realId ?? ctx.cpUser.id;
+      await db.tat_setting.upsert({
+        where: { id: 1 },
+        create: { id: 1, chat_ack_phrases: stored, chat_ack_max_length: input.maxLength, updated_by_cp_user_id: by },
+        update: { chat_ack_phrases: stored, chat_ack_max_length: input.maxLength, updated_by_cp_user_id: by },
+      });
+      await db.audit_log.create({
+        data: {
+          action: "tat.chat_ack_updated",
+          entity_type: "tat_setting",
+          entity_id: 1,
+          metadata: {
+            byCpUserId: by,
+            before: { phrases: before?.chat_ack_phrases ?? null, maxLength: before?.chat_ack_max_length ?? null },
+            after: { phrases: stored, maxLength: input.maxLength },
           },
         },
       });

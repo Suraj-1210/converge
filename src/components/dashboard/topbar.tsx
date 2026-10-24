@@ -42,6 +42,17 @@ interface TopbarProps {
   onLogout?: () => void;
   /** Extra controls rendered before the Tasks button (e.g. Impersonate). */
   actions?: ReactNode;
+  /** When set, the bell shows a "View all" link to the full notifications page. */
+  notificationsHref?: string;
+  /** Called when a notification row is clicked (e.g. to mark it read). */
+  onNotificationClick?: (n: NotificationItem) => void;
+  /** Overrides the red dot on the bell (default: any item is unread). */
+  hasUnreadOverride?: boolean;
+  /**
+   * Extra profile-menu entries above Log out (e.g. Out of office). Receives a
+   * function that closes the menu.
+   */
+  menuItems?: (close: () => void) => ReactNode;
 }
 
 const DOT_TONES: Record<NotificationItem["tone"], string> = {
@@ -66,13 +77,17 @@ export function Topbar({
   onMarkAllRead,
   onLogout,
   actions,
+  notificationsHref,
+  onNotificationClick,
+  hasUnreadOverride,
+  menuItems,
 }: TopbarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
-  const hasUnread = notifications.some((n) => n.unread);
+  const hasUnread = hasUnreadOverride ?? notifications.some((n) => n.unread);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -193,18 +208,34 @@ export function Topbar({
                       key={n.id}
                       href={n.href}
                       className={rowClass}
-                      onClick={() => setNotifOpen(false)}
+                      onClick={() => {
+                        onNotificationClick?.(n);
+                        setNotifOpen(false);
+                      }}
                     >
                       {body}
                     </Link>
                   ) : (
-                    <div key={n.id} className={rowClass}>
+                    <div
+                      key={n.id}
+                      className={rowClass}
+                      onClick={() => onNotificationClick?.(n)}
+                    >
                       {body}
                     </div>
                   );
                 })
               )}
             </div>
+            {notificationsHref && (
+              <Link
+                href={notificationsHref}
+                onClick={() => setNotifOpen(false)}
+                className="block shrink-0 border-t border-[#E4E7EC] px-4 py-2.5 text-center text-xs font-semibold text-[#1570EF] hover:bg-[#F9FAFB]"
+              >
+                View all notifications
+              </Link>
+            )}
           </div>
         )}
       </div>
@@ -258,6 +289,12 @@ export function Topbar({
                   <ProfileIcon className="h-4 w-4 stroke-[#667085]" />
                   My Account
                 </Link>
+                <div className="my-1 h-px bg-[#E4E7EC]" />
+              </>
+            )}
+            {menuItems && (
+              <>
+                {menuItems(() => setProfileOpen(false))}
                 <div className="my-1 h-px bg-[#E4E7EC]" />
               </>
             )}

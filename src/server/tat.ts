@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "~/server/db";
 import { type TatTarget, tatStatus } from "~/lib/tat";
+import { type AckRules, DEFAULT_ACK_MAX_LENGTH, parseAckPhrases } from "~/lib/partner-chat-rules";
 
 // Business-hours TAT, configured in Settings -> TAT Settings (Super Admin).
 // Decided with Suraj, 17 Oct 2026: Mon–Sat 10:00–19:00 IST, holidays
@@ -26,7 +27,7 @@ export const DEFAULT_TAT_CONFIG: Omit<TatConfig, "holidays"> = {
 export const CHAT_RESPONSE = "chat_response";
 
 const CACHE_MS = 30_000;
-let cache: { at: number; config: TatConfig; targets: Map<string, TatTarget> } | null = null;
+let cache: { at: number; config: TatConfig; targets: Map<string, TatTarget>; ack: AckRules } | null = null;
 
 export function invalidateTatCache() {
   cache = null;
@@ -64,6 +65,10 @@ async function load() {
   cache = {
     at: Date.now(),
     config,
+    ack: {
+      phrases: parseAckPhrases(row?.chat_ack_phrases),
+      maxLength: row?.chat_ack_max_length ?? DEFAULT_ACK_MAX_LENGTH,
+    },
     targets: new Map(
       targets.map((t) => [
         t.action_key,
@@ -76,6 +81,12 @@ async function load() {
 
 export async function getTatConfig(): Promise<TatConfig> {
   return (await load()).config;
+}
+
+// Partner chat acknowledgements that don't start the reply clock
+// (src/lib/partner-chat-rules.ts).
+export async function getChatAckRules(): Promise<AckRules> {
+  return (await load()).ack;
 }
 
 // The target for an action, or null if it's missing or switched off (then

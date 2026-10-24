@@ -97,6 +97,13 @@ export function PartnerChatPanel({
   const edit = isPartner ? partnerEdit : staffEdit;
   const save = isPartner ? partnerSave : staffSave;
   const markRead = isPartner ? partnerRead : staffRead;
+  const noReply = api.partnerChat.staffNoReplyNeeded.useMutation({
+    onError,
+    onSuccess: () => {
+      void refresh();
+      void utils.notifications.list.invalidate();
+    },
+  });
 
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
@@ -254,6 +261,23 @@ export function PartnerChatPanel({
         )}
       </div>
 
+      {/* Out of office: who to contact instead (both sides) */}
+      {data && data.outOfOffice.length > 0 && (
+        <div className="space-y-1 border-b border-[#FEDF89] bg-[#FFFAEB] px-5 py-2 text-[12px] text-[#B54708]">
+          {data.outOfOffice.map((o) => (
+            <div key={o.name}>
+              <span className="font-semibold">{o.name}</span> is out of office {o.dates}. Contact{" "}
+              <span className="font-semibold">{o.alternate.name}</span>{" "}
+              <a href={`mailto:${o.alternate.email}`} className="underline">
+                {o.alternate.email}
+              </a>
+              {o.alternate.phone ? ` · ${o.alternate.phone}` : ""}
+              {!isPartner && " (they get this chat and its reply clock meanwhile)"}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Messages */}
       <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto bg-[#F5F6FA] px-5 py-4">
         {q.isLoading ? (
@@ -363,6 +387,31 @@ export function PartnerChatPanel({
                   {m.editedAt && <span>· edited</span>}
                   {m.replyMinutes != null && <span title="Collegepond reply time, business hours">· replied in {fmtMinutes(m.replyMinutes)}</span>}
                   {m.mine && <span className={m.seen ? "text-[#1570EF]" : ""}>· {m.seen ? "Seen" : "Sent"}</span>}
+                  {m.ack && !m.noReplyNeeded && (
+                    <span title="A short acknowledgement: it doesn't start the reply clock (Settings → TAT Settings)">
+                      · Acknowledgement, no reply clock
+                    </span>
+                  )}
+                  {m.noReplyNeeded && (
+                    <span className="text-[#027A48]" title={`Marked ${timeLabel(m.noReplyNeeded.at)}. It no longer holds the reply clock.`}>
+                      · No reply needed ({m.noReplyNeeded.by})
+                    </span>
+                  )}
+                  {m.canMarkNoReply && !m.ack && (
+                    <button
+                      type="button"
+                      disabled={noReply.isPending}
+                      onClick={() => noReply.mutate({ messageId: m.id, on: !m.noReplyNeeded })}
+                      title={
+                        m.noReplyNeeded
+                          ? "Put this message back on the reply clock"
+                          : "This message doesn't need a Collegepond reply: stop its reply clock"
+                      }
+                      className="font-semibold text-[#667085] hover:text-[#1570EF] disabled:opacity-50"
+                    >
+                      · {m.noReplyNeeded ? "Undo" : "No reply needed"}
+                    </button>
+                  )}
                   {m.canEdit && !isEditing && (
                     <button type="button" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })} className="font-semibold text-[#667085] hover:text-[#1570EF]">
                       · Edit

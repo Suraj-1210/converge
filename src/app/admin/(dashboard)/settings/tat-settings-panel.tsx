@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "~/trpc/react";
 import { WEEKDAYS, describeHours, fmtMinutes, hhmmToMinute, minuteToHhmm } from "~/lib/tat";
+import { ACK_MAX_LENGTH_LIMIT, ACK_MAX_PHRASE_LENGTH, ACK_MAX_PHRASES } from "~/lib/partner-chat-rules";
 
 const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -30,6 +31,8 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
   const [end, setEnd] = useState("19:00");
   const [holiday, setHoliday] = useState({ date: "", name: "" });
   const [edit, setEdit] = useState<{ key: string; hours: string; warningPct: string; active: boolean } | null>(null);
+  const [ackText, setAckText] = useState("");
+  const [ackMax, setAckMax] = useState("40");
 
   useEffect(() => {
     if (!q.data) return;
@@ -37,6 +40,8 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
     setDays(q.data.hours.workDays);
     setStart(minuteToHhmm(q.data.hours.dayStartMinute));
     setEnd(minuteToHhmm(q.data.hours.dayEndMinute));
+    setAckText(q.data.chatAck.phrases.join("\n"));
+    setAckMax(String(q.data.chatAck.maxLength));
   }, [q.data]);
 
   const onError = (e: { message: string }) => toast(e.message);
@@ -44,6 +49,15 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
   const addHol = api.tat.addHoliday.useMutation({ onSuccess: async () => { await refresh(); setHoliday({ date: "", name: "" }); toast("Holiday added"); }, onError });
   const delHol = api.tat.removeHoliday.useMutation({ onSuccess: async () => { await refresh(); toast("Holiday removed"); }, onError });
   const targetMut = api.tat.updateTarget.useMutation({ onSuccess: async () => { await refresh(); setEdit(null); toast("TAT target saved"); }, onError });
+  const ackMut = api.tat.updateChatAck.useMutation({ onSuccess: async () => { await refresh(); toast("Acknowledgements saved"); }, onError });
+  const saveAck = (reset = false) => {
+    const max = Number(ackMax);
+    if (!Number.isInteger(max) || max < 1 || max > ACK_MAX_LENGTH_LIMIT) return toast(`Max length must be 1–${ACK_MAX_LENGTH_LIMIT} characters`);
+    const phrases = reset ? [] : [...new Set(ackText.split("\n").map((p) => p.trim()).filter(Boolean))];
+    if (phrases.length > ACK_MAX_PHRASES) return toast(`Up to ${ACK_MAX_PHRASES} phrases`);
+    if (phrases.some((p) => p.length > ACK_MAX_PHRASE_LENGTH)) return toast(`Each phrase can be up to ${ACK_MAX_PHRASE_LENGTH} characters`);
+    ackMut.mutate({ phrases, maxLength: max });
+  };
 
   const saveHours = () => {
     const s = hhmmToMinute(start);
@@ -198,6 +212,39 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Chat acknowledgements */}
+      <div className={CARD}>
+        <div className="border-b border-[#E4E7EC] px-5 py-4">
+          <h3 className="text-[15px] font-semibold text-[#101828]">Chat acknowledgements</h3>
+          <p className="mt-0.5 text-xs text-[#667085]">
+            A short partner message made only of these phrases (e.g. &ldquo;Ok, thanks! 👍&rdquo;) doesn&apos;t start the Chat Response clock. It
+            still shows in the thread. Messages with a file always count. One phrase per line; emoji work too.
+            {q.data.chatAck.isDefault ? " Using the built-in list." : ""}
+          </p>
+        </div>
+        <div className="space-y-3 p-5">
+          <textarea
+            value={ackText}
+            onChange={(e) => setAckText(e.target.value)}
+            rows={8}
+            className="w-full max-w-md rounded-lg border border-[#D0D5DD] px-2.5 py-2 font-mono text-sm outline-none focus:border-[#1570EF]"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-[#344054]">Only for messages up to</span>
+            <input value={ackMax} onChange={(e) => setAckMax(e.target.value)} inputMode="numeric" className={`${INPUT} w-20`} />
+            <span className="text-sm text-[#667085]">characters</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => saveAck()} disabled={ackMut.isPending} className="h-10 rounded-lg bg-[#1570EF] px-4 text-[13px] font-semibold text-white hover:bg-[#1565d8] disabled:opacity-50">
+              Save acknowledgements
+            </button>
+            <button type="button" onClick={() => saveAck(true)} disabled={ackMut.isPending} className="h-10 rounded-lg border border-[#D0D5DD] px-4 text-[13px] font-semibold text-[#344054] disabled:opacity-50">
+              Reset to built-in list
+            </button>
+          </div>
         </div>
       </div>
 

@@ -10,6 +10,8 @@ import {
   sendEmail,
 } from "~/server/email";
 import { createNotifications } from "~/server/notify";
+import { activeOutOfOffice, responderFor } from "~/server/out-of-office";
+import { createStaffNotifications, markStaffNotificationsRead, upsertStaffNotification } from "~/server/staff-notify";
 import {
   type ChatSide,
   type Person,
@@ -24,11 +26,13 @@ import { readStoredFile, resolveStorageUrl, saveBuffer } from "~/server/storage"
 import {
   CHAT_RESPONSE,
   businessMinutesBetween,
+  getChatAckRules,
   getTatConfig,
   getTatTarget,
   tatClock,
 } from "~/server/tat";
 import { fmtMinutes, type TatStatus } from "~/lib/tat";
+import { type AckRules, isAcknowledgement } from "~/lib/partner-chat-rules";
 import {
   DEFAULT_NOTIFICATION_PREF,
   type NotificationPref,
@@ -47,9 +51,16 @@ import {
 //    unread, and they never start or stop the TAT clock.
 //  - TAT ("chat_response", src/server/tat.ts): the clock starts at the first
 //    partner message without a Collegepond reply and stops at the next
-//    Collegepond message. Only business hours count.
+//    Collegepond message. Only business hours count. Short acknowledgements
+//    ("thanks", 👍; src/lib/partner-chat-rules.ts) don't start it, and a
+//    message a Collegepond user marked "No reply needed" doesn't hold it
+//    (24 Oct 2026).
+//  - Out of office (out-of-office.ts): while the student's counsellor is out,
+//    their alternate is the one waited on: bell, emails, TAT alerts and the
+//    reply's TAT attribution go to the alternate.
 //  - Notifications: a partner bell item per thread (respecting the "chat.message"
-//    preference); admin bell items derived from state (staffChatSignals); an
+//    preference); a staff in-app item per thread for whoever answers it
+//    (cp_notification); admin bell items derived from state (staffChatSignals); an
 //    email when a message has stayed unread for 15 minutes; TAT warning and
 //    breach emails. These run from runChatJobs (a timer, plus polling).
 
@@ -124,8 +135,14 @@ export async function getThread(actor: ChatActor, studentId: number) {
       ...(sp.lead ? [`${fullName(sp.lead)} (Counselling Lead)`] : []),
     ],
   };
+  // Shown to both sides: "<Name> is out of office <dates>. Contact <Alternate>".
+  const outOfOffice = sp.outOfOffice.map((o) => ({
+    name: o.name,
+    dates: o.dates,
+    alternate: { name: o.alternate.name, email: o.alternate.email, phone: o.alternate.phone },
+  }));
   if (!thread) {
-    return { messages: [], participants, tat: null, myLastReadId: 0, otherSideReadId: 0, lastMessageId: 0 };
+    return { messages: [], participants, outOfOffice, tat: null, myLastReadId: 0, otherSideReadId: 0, lastMessageId: 0 };
   }
 
   const rows = (
@@ -147,6 +164,20 @@ export async function getThread(actor: ChatActor, studentId: number) {
     : [];
 
   const now = Date.now();
+  // Reply-time markers, for the Collegepond side only.
+  const ackRules = actor.side === "staff" ? await getChatAckRules() : null;
+  const lastStaffId = Math.max(0, ...rows.filter((m) => m.kind === "user" && m.sender_side === "staff").map((m) => m.id));
+  const markers = rows.flatMap((m) => (m.no_reply_needed_by_cp_user_id !== null ? [m.no_reply_needed_by_cp_user_id] : []));
+  const markerNames = markers.length
+    ? new Map(
+        (
+          await db.collegepond_user.findMany({
+            where: { id: { in: [...new Set(markers)] } },
+            select: { id: true, first_name: true, last_name: true },
+          })
+        ).map((c) => [c.id, fullName(c)]),
+      )
+    : new Map<number, string>();
   const messages = rows.map((m) => {
     const side = m.sender_side as ChatSide | "system";
     const who =
@@ -173,6 +204,22 @@ export async function getThread(actor: ChatActor, studentId: number) {
       // For my side's messages: has anyone on the other side read it?
       seen: m.kind === "user" && side === actor.side && otherSideReadId >= m.id,
       replyMinutes: actor.side === "staff" ? m.tat_business_minutes : null,
+      // A partner message that doesn't start the reply clock (staff only).
+      ack:
+        ackRules !== null && m.kind === "user" && side === "partner" && isAcknowledgement(m.body, m.attachment.length > 0, ackRules),
+      noReplyNeeded:
+        actor.side === "staff" && m.no_reply_needed_at
+          ? {
+              at: m.no_reply_needed_at.toISOString(),
+              by:
+                m.no_reply_needed_by_cp_user_id !== null
+                  ? (markerNames.get(m.no_reply_needed_by_cp_user_id) ?? "Former user")
+                  : "Former user",
+            }
+          : null,
+      // Partner messages after the last Collegepond reply can be marked
+      // "No reply needed" (or unmarked).
+      canMarkNoReply: actor.side === "staff" && m.kind === "user" && side === "partner" && m.id > lastStaffId,
       attachments: m.attachment.map((a) => {
         const saved = savedDocs.find((d) => d.id === a.saved_document_id);
         return {
@@ -204,7 +251,7 @@ export async function getThread(actor: ChatActor, studentId: number) {
   }
 
   void runChatJobs();
-  return { messages, participants, tat, myLastReadId, otherSideReadId, lastMessageId: thread.last_message_id ?? 0 };
+  return { messages, participants, outOfOffice, tat, myLastReadId, otherSideReadId, lastMessageId: thread.last_message_id ?? 0 };
 }
 
 // ---- Sending ---------------------------------------------------------------------
@@ -248,6 +295,11 @@ export async function sendMessage(
     where: { id: studentId },
     select: { cp_counsellor_id: true },
   });
+  // The reply's TAT counts against whoever answers for the counsellor today
+  // (their alternate while they're out of office).
+  const tatOwner = await responderFor(student?.cp_counsellor_id ?? null);
+  // A short acknowledgement from the partner doesn't start the clock.
+  const ack = actor.side === "partner" && isAcknowledgement(body, atts.length > 0, await getChatAckRules());
   const now = new Date();
   const msg = await db.$transaction(async (tx) => {
     const t = await tx.partner_chat_thread.findUniqueOrThrow({ where: { id: thread.id } });
@@ -279,11 +331,14 @@ export async function sendMessage(
       },
     });
     if (actor.side === "partner") {
-      // Starts the clock unless it's already running.
-      await tx.partner_chat_thread.updateMany({
-        where: { id: thread.id, awaiting_since: null },
-        data: { awaiting_since: now, awaiting_message_id: m.id },
-      });
+      // Starts the clock unless it's already running, or this is only an
+      // acknowledgement.
+      if (!ack) {
+        await tx.partner_chat_thread.updateMany({
+          where: { id: thread.id, awaiting_since: null },
+          data: { awaiting_since: now, awaiting_message_id: m.id },
+        });
+      }
     } else if (t.awaiting_since) {
       // A Collegepond reply stops it. Conditional, so two replies racing
       // record the wait only once.
@@ -297,7 +352,7 @@ export async function sendMessage(
           data: {
             tat_started_at: t.awaiting_since,
             tat_business_minutes: businessMinutesBetween(t.awaiting_since, now, await getTatConfig()),
-            tat_counsellor_cp_user_id: student?.cp_counsellor_id ?? null,
+            tat_counsellor_cp_user_id: tatOwner,
           },
         });
       }
@@ -308,7 +363,12 @@ export async function sendMessage(
   // Replying means you've seen what came before. Not while impersonating, so
   // a Super Admin's look never shows up as the user's read receipt.
   if (!actor.impersonatorId) await advanceRead(thread.id, actor, msg.id);
-  if (actor.side === "staff") await notifyPartnersInApp(studentId, thread.id);
+  if (actor.side === "staff") {
+    await notifyPartnersInApp(studentId, thread.id);
+    if (!actor.impersonatorId) await markStaffNotificationsRead(actor.id, NOTIFICATION_TYPE, staffChatLink(studentId));
+  } else {
+    await notifyStaffInApp(studentId);
+  }
   const filed = fileAs.length ? await fileAttachments(actor, fileAs) : [];
   void runChatJobs();
   return { id: msg.id, filed };
@@ -360,6 +420,8 @@ export async function editMessage(actor: ChatActor, messageId: number, newBody: 
 
   const now = new Date();
   await db.partner_chat_message.update({ where: { id: m.id }, data: { body: body || null, edited_at: now } });
+  // An edit can turn "thanks" into a question, or the other way round.
+  if (m.sender_side === "partner") await recomputeAwaiting(m.thread.id);
   await db.partner_chat_thread.update({
     where: { id: m.thread.id },
     data: {
@@ -412,7 +474,88 @@ export async function markRead(actor: ChatActor, studentId: number, upToId: numb
       where: { user_id: actor.id, type: NOTIFICATION_TYPE, link: partnerChatLink(studentId), read_at: null },
       data: { read_at: new Date() },
     });
+  } else {
+    await markStaffNotificationsRead(actor.id, NOTIFICATION_TYPE, staffChatLink(studentId));
   }
+  return { ok: true as const };
+}
+
+// ---- Reply clock -------------------------------------------------------------------
+
+// Puts the thread's reply clock where the rules say it should be: at the
+// first partner message after the last Collegepond reply that is neither an
+// acknowledgement nor marked "No reply needed"; stopped if there's none. A
+// clock that moves starts its warning and breach alerts afresh.
+export async function recomputeAwaiting(threadId: number, rules?: AckRules) {
+  const ackRules = rules ?? (await getChatAckRules());
+  const lastStaff = await db.partner_chat_message.findFirst({
+    where: { thread_id: threadId, kind: "user", sender_side: "staff" },
+    orderBy: { id: "desc" },
+    select: { id: true },
+  });
+  const candidates = await db.partner_chat_message.findMany({
+    where: {
+      thread_id: threadId,
+      kind: "user",
+      sender_side: "partner",
+      id: { gt: lastStaff?.id ?? 0 },
+      no_reply_needed_at: null,
+    },
+    orderBy: { id: "asc" },
+    select: { id: true, body: true, created_at: true, _count: { select: { attachment: true } } },
+  });
+  const first = candidates.find((c) => !isAcknowledgement(c.body, c._count.attachment > 0, ackRules)) ?? null;
+  const t = await db.partner_chat_thread.findUnique({
+    where: { id: threadId },
+    select: { awaiting_message_id: true },
+  });
+  if (!t || t.awaiting_message_id === (first?.id ?? null)) return;
+  await db.partner_chat_thread.update({
+    where: { id: threadId },
+    data: {
+      awaiting_since: first?.created_at ?? null,
+      awaiting_message_id: first?.id ?? null,
+      tat_warned_at: null,
+      tat_breached_at: null,
+    },
+  });
+}
+
+// "No reply needed" on a partner message (Collegepond only): it stops holding
+// the reply clock. `on: false` undoes it. Audit-logged.
+export async function setNoReplyNeeded(actor: ChatActor, messageId: number, on: boolean) {
+  if (actor.side !== "staff") throw new TRPCError({ code: "FORBIDDEN", message: "Only Collegepond can do this." });
+  const m = await db.partner_chat_message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true,
+      kind: true,
+      sender_side: true,
+      no_reply_needed_at: true,
+      thread: { select: { id: true, student_id: true } },
+    },
+  });
+  if (!m) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
+  if (m.kind !== "user" || m.sender_side !== "partner") {
+    throw bad("Only partner messages can be marked “No reply needed”.");
+  }
+  if (on === (m.no_reply_needed_at !== null)) return { ok: true as const };
+  const by = actor.impersonatorId ?? actor.id;
+  await db.partner_chat_message.update({
+    where: { id: m.id },
+    data: on
+      ? { no_reply_needed_at: new Date(), no_reply_needed_by_cp_user_id: by }
+      : { no_reply_needed_at: null, no_reply_needed_by_cp_user_id: null },
+  });
+  await recomputeAwaiting(m.thread.id);
+  await db.audit_log.create({
+    data: {
+      action: on ? "partner_chat.no_reply_needed" : "partner_chat.no_reply_needed_undone",
+      entity_type: "student",
+      entity_id: m.thread.student_id,
+      metadata: { messageId: m.id, byCpUserId: by, ...(by !== actor.id ? { asCpUserId: actor.id } : {}) },
+    },
+  });
   return { ok: true as const };
 }
 
@@ -496,13 +639,36 @@ export async function inbox(
           last_name: true,
           organization: { select: { name: true } },
           user: { select: { first_name: true, last_name: true } },
-          cp_counsellor: { select: { first_name: true, last_name: true } },
+          cp_counsellor: { select: { id: true, first_name: true, last_name: true } },
           created_by: { select: { first_name: true, last_name: true } },
         },
       },
     },
   });
   const unread = await unreadByThread(actor, threads.map((t) => t.id));
+  // "Priya (out of office → Rahul)" on the Collegepond side.
+  const ooo = actor.side === "staff" ? await activeOutOfOffice() : new Map<number, unknown>();
+  const coverIds = new Map<number, number>();
+  for (const t of threads) {
+    const c = t.student.cp_counsellor;
+    if (c && ooo.has(c.id)) coverIds.set(c.id, await responderFor(c.id));
+  }
+  const coverNames = coverIds.size
+    ? new Map(
+        (
+          await db.collegepond_user.findMany({
+            where: { id: { in: [...new Set(coverIds.values())] } },
+            select: { id: true, first_name: true, last_name: true },
+          })
+        ).map((c) => [c.id, fullName(c)]),
+      )
+    : new Map<number, string>();
+  const counsellorLabel = (c: { id: number; first_name: string; last_name: string } | null) => {
+    if (!c) return null;
+    const cover = coverIds.get(c.id);
+    const coverName = cover !== undefined && cover !== c.id ? coverNames.get(cover) : undefined;
+    return coverName ? `${fullName(c)} (out of office → ${coverName})` : fullName(c);
+  };
   const target = actor.side === "staff" ? await getTatTarget(CHAT_RESPONSE) : null;
   const cfg = target ? await getTatConfig() : null;
   const now = new Date();
@@ -515,7 +681,7 @@ export async function inbox(
       studentName: fullName(s),
       partnerName: s.organization?.name ?? (s.created_by ? fullName(s.created_by) : "—"),
       partnerCounsellor: s.user ? fullName(s.user) : null,
-      cpCounsellor: s.cp_counsellor ? fullName(s.cp_counsellor) : null,
+      cpCounsellor: counsellorLabel(s.cp_counsellor),
       lastAt: t.last_message_at?.toISOString() ?? null,
       lastPreview: t.last_preview ?? "",
       lastSide: t.last_sender_side,
@@ -711,6 +877,42 @@ async function notifyPartnersInApp(studentId: number, threadId: number) {
   }
 }
 
+// The Collegepond side's in-app item: one per thread for whoever answers it
+// today (the counsellor, their alternate while out of office, or the lead
+// when nobody is assigned), updated rather than repeated while it's unread.
+// Never throws.
+async function notifyStaffInApp(studentId: number) {
+  try {
+    const [sp, student, thread] = await Promise.all([
+      staffParticipants(studentId),
+      db.student.findUnique({
+        where: { id: studentId },
+        select: { first_name: true, last_name: true, organization: { select: { name: true } } },
+      }),
+      db.partner_chat_thread.findUnique({ where: { student_id: studentId }, select: { id: true, last_preview: true } }),
+    ]);
+    const to = sp.responder;
+    if (!to || !student || !thread) return;
+    const n =
+      (await unreadByThread({ side: "staff", id: to.id, role: 0, impersonatorId: null }, [thread.id])).get(thread.id) ?? 0;
+    if (n === 0) return;
+    const from = student.organization?.name ? ` (${student.organization.name})` : "";
+    const covering = sp.counsellor && to.id !== sp.counsellor.id ? ` · covering for ${fullName(sp.counsellor)}` : "";
+    await upsertStaffNotification(to.id, {
+      type: NOTIFICATION_TYPE,
+      title:
+        n === 1
+          ? `New partner message about ${fullName(student)}${from}`
+          : `${n} new partner messages about ${fullName(student)}${from}`,
+      body: `${thread.last_preview ?? ""}${covering}`.trim() || null,
+      link: staffChatLink(studentId),
+      tone: "blue",
+    });
+  } catch (e) {
+    console.error("[partner-chat] staff in-app notification failed:", e instanceof Error ? e.message : e);
+  }
+}
+
 type BellItem = {
   id: string;
   title: string;
@@ -754,10 +956,14 @@ export async function staffChatSignals(
   if (target && waiting.length) {
     const cfg = await getTatConfig();
     const now = new Date();
-    const status = waiting.map((w) => ({
-      mine: w.student.cp_counsellor_id === user.id,
-      status: tatClock(w.awaiting_since!, now, target, cfg).status,
-    }));
+    // "Mine" = I answer for the student's counsellor today: mine, or a
+    // colleague's I'm covering while they're out of office.
+    const status = await Promise.all(
+      waiting.map(async (w) => ({
+        mine: (await responderFor(w.student.cp_counsellor_id)) === user.id,
+        status: tatClock(w.awaiting_since!, now, target, cfg).status,
+      })),
+    );
     const mine = status.filter((s) => s.mine && s.status !== "On Track");
     if (mine.length) {
       const overdue = mine.filter((s) => s.status === "Breached").length;
@@ -842,8 +1048,8 @@ export async function sendUnreadEmails(now = new Date()): Promise<number> {
           recipient = (await partnerParticipants(t.student_id)).primary;
           if (recipient && !(await chatPref(recipient.id)).email) continue;
         } else {
-          const sp = await staffParticipants(t.student_id);
-          recipient = sp.counsellor ?? sp.lead;
+          // The counsellor, or their alternate while out of office.
+          recipient = (await staffParticipants(t.student_id)).responder;
         }
         if (!recipient) continue;
 
@@ -894,7 +1100,9 @@ export async function sendUnreadEmails(now = new Date()): Promise<number> {
 
 // Warning → the student's Collegepond counsellor (or the lead if there's no
 // counsellor). Breach → their Counselling Lead (or Super Admins if there's
-// no lead). Once per wait each; a reply resets both.
+// no lead). Once per wait each; a reply resets both. Whoever is out of office
+// is replaced by their alternate (staffParticipants). Each email also lands
+// in the recipient's in-app feed.
 export async function sendTatAlerts(now = new Date()): Promise<number> {
   const target = await getTatTarget(CHAT_RESPONSE);
   if (!target) return 0;
@@ -929,8 +1137,15 @@ export async function sendTatAlerts(now = new Date()): Promise<number> {
           where: { id: t.id, awaiting_since: t.awaiting_since, tat_warned_at: null },
           data: { tat_warned_at: now },
         });
-        const to = sp.counsellor ?? sp.lead;
+        const to = sp.responder;
         if (claim.count === 1 && to) {
+          await createStaffNotifications([to.id], {
+            type: "chat.tat",
+            title: `${clock.status === "Breached" ? "Overdue" : "Reply due soon"}: partner chat about ${base.studentName}`,
+            body: `${base.partnerName} has waited ${base.waiting} (target ${base.target}).`,
+            link: base.link,
+            tone: clock.status === "Breached" ? "red" : "orange",
+          });
           await sendEmail(
             to.email,
             partnerChatTatAlertEmail({ name: fullName(to) }, { ...base, overdue: clock.status === "Breached", escalation: false }, appUrl()),
@@ -944,14 +1159,24 @@ export async function sendTatAlerts(now = new Date()): Promise<number> {
           data: { tat_breached_at: now },
         });
         if (claim.count === 1) {
-          const leads: Person[] = sp.lead
-            ? [sp.lead]
+          const leads: Person[] = sp.leadResponder
+            ? [sp.leadResponder]
             : await db.collegepond_user.findMany({
                 where: { role: AdminRole.SUPER_ADMIN, status: 1 },
                 select: { id: true, first_name: true, last_name: true, email: true },
               });
-          for (const l of leads) {
-            if (l.id === sp.counsellor?.id) continue;
+          const escalate = leads.filter((l) => l.id !== sp.responder?.id);
+          await createStaffNotifications(
+            escalate.map((l) => l.id),
+            {
+              type: "chat.tat",
+              title: `Overdue partner chat reply: ${base.studentName}`,
+              body: `${base.partnerName} has waited ${base.waiting} (target ${base.target})${base.counsellor ? `. Counsellor: ${base.counsellor}` : ""}.`,
+              link: base.link,
+              tone: "red",
+            },
+          );
+          for (const l of escalate) {
             await sendEmail(
               l.email,
               partnerChatTatAlertEmail({ name: fullName(l) }, { ...base, overdue: true, escalation: true }, appUrl()),
