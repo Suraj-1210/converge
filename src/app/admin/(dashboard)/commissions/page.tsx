@@ -55,10 +55,11 @@ const STATUS_TONE: Record<number, string> = {
   [CommissionStatus.CANCELLED]: "bg-[#F2F4F7] text-[#667085]",
 };
 
-function StatusPill({ status }: { status: number }) {
+// `label` overrides the stage name (e.g. "Part paid · awaiting collection").
+function StatusPill({ status, label }: { status: number; label?: string | null }) {
   return (
-    <span className={`rounded-[10px] px-2.5 py-0.5 text-[11px] font-semibold ${STATUS_TONE[status] ?? STATUS_TONE[CommissionStatus.CANCELLED]}`}>
-      {CommissionStatusLabel[status as CommissionStatus] ?? "—"}
+    <span className={`rounded-[10px] px-2.5 py-0.5 text-[11px] font-semibold whitespace-nowrap ${STATUS_TONE[status] ?? STATUS_TONE[CommissionStatus.CANCELLED]}`}>
+      {label ?? CommissionStatusLabel[status as CommissionStatus] ?? "—"}
     </span>
   );
 }
@@ -218,7 +219,7 @@ export default function AdminCommissionsPage() {
     const body = src.map((r) => [
       r.cpStudentId, r.studentName, r.partner, r.university, r.country, r.program, r.intake ?? "", r.vendorName,
       r.currency, r.tuition, r.rate, r.commissionAmount, r.commissionInr, r.partnerSharePct ?? "Not set", r.partnerShareInr,
-      CommissionStatusLabel[r.status as CommissionStatus] ?? "", `${r.tranche.collected}/${r.tranche.total}`, `${r.tranche.paid}/${r.tranche.total}`,
+      r.statusLabel ?? CommissionStatusLabel[r.status as CommissionStatus] ?? "", `${r.tranche.collected}/${r.tranche.total}`, `${r.tranche.paid}/${r.tranche.total}`,
       r.vendorInvoice?.number ?? "", r.partnerInvoice?.number ?? "",
     ]);
     downloadCsv(`commission-ledger-${stamp()}.csv`, [header, ...body]);
@@ -374,7 +375,7 @@ export default function AdminCommissionsPage() {
                           <>{r.partnerSharePct}%{r.partnerTier && <span className="block text-xs text-[#98A2B3]">{r.partnerTier}</span>}</>
                         )}
                       </td>
-                      <td className={TD}><StatusPill status={r.status} /></td>
+                      <td className={TD}><StatusPill status={r.status} label={r.statusLabel} /></td>
                       <td className={TD}><TrancheBar t={r.tranche} /></td>
                       <td className={`${TD} text-right`}><NextStep next={r.next} /></td>
                     </tr>
@@ -446,7 +447,7 @@ function PartnersTab({
                         <td className={TD}>{r.university}</td>
                         <td className={TD}>{r.currency} {r.commissionAmount.toLocaleString()}</td>
                         <td className={`${TD} font-semibold text-[#101828]`}>{inr(r.commissionInr)}</td>
-                        <td className={TD}><StatusPill status={r.status} /></td>
+                        <td className={TD}><StatusPill status={r.status} label={r.statusLabel} /></td>
                         <td className={`${TD} text-right`}><NextStep next={r.next} /></td>
                       </tr>
                     ))}
@@ -491,7 +492,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
           <PayeeTags partnerType={row.partnerType} payeeInactive={row.payeeInactive} />
         </span><span>·</span>
         <span>{row.isDirect ? "Direct" : row.vendorName}</span>
-        <StatusPill status={row.status} />
+        <StatusPill status={row.status} label={row.statusLabel} />
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
@@ -537,6 +538,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
         <div className="rounded-lg border border-[#E4E7EC] p-4">
           <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Linked Documents</div>
           <div className="space-y-2.5 text-sm">
+            <div className="flex justify-between gap-3"><span className="text-[#667085]">Commission approved</span><span className="text-right text-[#344054]">{row.approvedBy ? `${row.approvedBy}${row.approvedAt ? ` · ${formatDate(row.approvedAt)}` : ""}` : "Not recorded"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Vendor invoice</span><span className="font-medium text-[#101828]">{row.vendorInvoice?.number ?? "—"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Partner invoice</span><span className="font-medium text-[#101828]">{row.partnerInvoice?.number ?? "—"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Fully collected (CP)</span><span className="text-[#344054]">{row.receivedAt ? formatDate(row.receivedAt) : "—"}</span></div>

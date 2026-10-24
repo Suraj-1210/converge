@@ -582,6 +582,10 @@ CREATE TABLE IF NOT EXISTS `commission` (
   `claimable_inr`            DECIMAL(14,2) NULL DEFAULT NULL,
   `received_fx_rate`         DECIMAL(12,4) NULL DEFAULT NULL,
   `vendor_id`                INT NULL DEFAULT NULL,
+  -- Who approved the commission (University Billing > Approve commission) and
+  -- when. Loose cp_user ref, like partner_payout.ops_approved_by_cp_user_id.
+  `approved_by_cp_user_id`   INT NULL DEFAULT NULL,
+  `approved_at`              TIMESTAMP NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_commission_application1_idx`  (`application_id` ASC) VISIBLE,
   UNIQUE INDEX `application_id_UNIQUE`    (`application_id` ASC) VISIBLE,

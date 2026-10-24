@@ -110,7 +110,6 @@ export default function InvoicesPayoutsPage() {
   };
   const review = api.partnerPayouts.review.useMutation({ onSuccess: onOk("Moved to under review"), onError: (e) => showToast(e.message) });
   const approve = api.partnerPayouts.approve.useMutation({ onSuccess: onOk("Approved for payment"), onError: (e) => showToast(e.message) });
-  const partialApprove = api.partnerPayouts.partialApprove.useMutation({ onSuccess: onOk("Partial approval recorded"), onError: (e) => showToast(e.message) });
   const reject = api.partnerPayouts.reject.useMutation({
     onSuccess: () => { void utils.partnerPayouts.invalidate(); showToast("Invoice rejected"); setRejectFor(null); },
     onError: (e) => showToast(e.message),
@@ -261,7 +260,6 @@ export default function InvoicesPayoutsPage() {
                       inv.status === PartnerInvoiceStatus.SUBMITTED ||
                       inv.status === PartnerInvoiceStatus.UNDER_REVIEW;
                     const actionable = reviewable && !inv.hasPayout;
-                    const canPartial = inv.verifiedCount > 0 && inv.verifiedCount < inv.students;
                     return (
                       <Fragment key={inv.id}>
                         <tr className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#FCFCFD]">
@@ -298,11 +296,9 @@ export default function InvoicesPayoutsPage() {
                                 canApprove={canApprove}
                                 reviewOnly={reviewOnly}
                                 actionable={actionable}
-                                canPartial={canPartial}
                                 onApprove={() => approve.mutate({ invoiceId: inv.id })}
-                                onPartial={() => partialApprove.mutate({ invoiceId: inv.id })}
                                 onReject={() => setRejectFor(inv)}
-                                busy={approve.isPending || partialApprove.isPending}
+                                busy={approve.isPending}
                               />
                             </td>
                           </tr>
@@ -373,9 +369,7 @@ function CrossRef({
   canApprove,
   reviewOnly,
   actionable,
-  canPartial,
   onApprove,
-  onPartial,
   onReject,
   busy,
 }: {
@@ -383,9 +377,7 @@ function CrossRef({
   canApprove: boolean;
   reviewOnly: boolean;
   actionable: boolean;
-  canPartial: boolean;
   onApprove: () => void;
-  onPartial: () => void;
   onReject: () => void;
   busy: boolean;
 }) {
@@ -434,7 +426,10 @@ function CrossRef({
           <tbody>
             {inv.items.map((it, i) => (
               <tr key={i} className="border-b border-[#F2F4F7] last:border-0">
-                <td className={`${TD} font-medium text-[#101828]`}>{it.student}</td>
+                <td className={`${TD} font-medium text-[#101828]`}>
+                  {it.student}
+                  {it.tranche && <span className="block text-xs font-normal text-[#98A2B3]">{it.tranche}</span>}
+                </td>
                 <td className={TD}>{it.university}</td>
                 <td className={TD}>{it.program}</td>
                 <td className={`${TD} font-semibold text-[#101828]`}>{inr(it.claimed)}</td>
@@ -467,16 +462,6 @@ function CrossRef({
           >
             Approve for Payment
           </button>
-          {canPartial && (
-            <button
-              className="rounded-lg bg-[#FEF0C7] px-4 py-2 text-[13px] font-semibold text-[#B54708] hover:bg-[#FEDF89] disabled:opacity-50"
-              disabled={busy}
-              title={`Approve only the ${inv.verifiedCount} verified student(s)`}
-              onClick={onPartial}
-            >
-              Partial Approve ({inv.verifiedCount}/{inv.students})
-            </button>
-          )}
           <button className="rounded-lg border border-[#FDA29B] px-4 py-2 text-[13px] font-semibold text-[#B42318] hover:bg-[#FEF3F2]" onClick={onReject}>
             Reject
           </button>

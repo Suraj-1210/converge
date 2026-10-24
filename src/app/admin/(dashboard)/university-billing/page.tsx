@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
@@ -34,6 +35,7 @@ type BillingStudent = RO["universityBilling"]["vendorBillingStudents"][number];
 type ConfirmedStudent =
   RO["universityBilling"]["confirmedStudents"]["students"][number];
 type Invoice = RO["universityBilling"]["listVendorInvoices"][number];
+type DepositSlip = ConfirmedStudent["depositSlip"];
 type AgeingRow = RO["universityBilling"]["ageing"]["rows"][number];
 
 const BILLING_CURRENCIES = ["USD", "GBP", "AUD", "CAD", "EUR", "INR", "NZD", "SGD"];
@@ -98,6 +100,39 @@ function TrancheCollection({ tranches }: { tranches: { total: number; collected:
         {tranches.collected}/{tranches.total} tranches collected
       </div>
     </div>
+  );
+}
+
+// Deposit slip state for "Approve commission": only a verified slip allows it.
+const SLIP: Record<DepositSlip, { label: string; tone: string; hint: string }> = {
+  verified: { label: "Verified", tone: "bg-[#ECFDF3] text-[#067647]", hint: "" },
+  pending: {
+    label: "Awaiting verification",
+    tone: "bg-[#FFF6ED] text-[#B54708]",
+    hint: "The deposit slip hasn't been verified yet — a counsellor verifies it on the student's Application tab.",
+  },
+  rejected: {
+    label: "Rejected",
+    tone: "bg-[#FEF3F2] text-[#B42318]",
+    hint: "The deposit slip was rejected. A new one needs uploading and verifying on the student's Application tab.",
+  },
+  missing: {
+    label: "Missing",
+    tone: "bg-[#F2F4F7] text-[#667085]",
+    hint: "No deposit slip yet. The partner uploads it, or a counsellor adds it, on the student's Application tab.",
+  },
+};
+
+function SlipPill({ status, studentId }: { status: DepositSlip; studentId: number }) {
+  const s = SLIP[status];
+  return (
+    <Link
+      href={`/admin/students/${studentId}?tab=application`}
+      title={s.hint || "Open the student's Application tab"}
+      className={`rounded-[10px] px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap hover:underline ${s.tone}`}
+    >
+      {s.label}
+    </Link>
   );
 }
 
@@ -262,7 +297,7 @@ function UniversityBilling() {
     }
     setTab("billing");
     setFocusInvoiceId(inv.id);
-    if (inv.status === VendorInvoiceStatus.FULLY_PAID) {
+    if (inv.status === VendorInvoiceStatus.FULLY_PAID && !inv.hasUncollected) {
       toast(`Invoice ${inv.invoiceNumber} is already fully paid.`);
     } else if (!canEdit) {
       toast("Only Finance Managers and Super Admins can record a payment.");
@@ -371,13 +406,7 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
   const logExport = useExportLog();
   const q = api.universityBilling.confirmedStudents.useQuery();
   const [status, setStatus] = useState<"all" | "attended">("all");
-  const confirm = api.universityBilling.confirmBilling.useMutation({
-    onSuccess: () => {
-      void utils.universityBilling.invalidate();
-      onToast("Confirmed for billing");
-    },
-    onError: (e) => onToast(e.message),
-  });
+  const [reviewing, setReviewing] = useState<ConfirmedStudent | null>(null);
 
   const data = q.data;
   const students = useMemo(() => data?.students ?? [], [data]);
@@ -443,7 +472,7 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
         <p className="mt-2 text-xs text-[#667085]">
           {pct >= 100
             ? "All attended students vendor-confirmed — ready for billing."
-            : `${confirmedCount} of ${progressTotal} attended students confirmed — click Confirm to move to Vendor Billing.`}
+            : `${confirmedCount} of ${progressTotal} attended students confirmed — approve a student's commission to move it to Vendor Billing.`}
         </p>
       </div>
 
@@ -478,6 +507,7 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
                       <th className={TH}>Program</th>
                       <th className={TH}>Intake</th>
                       <th className={TH}>Status</th>
+                      <th className={TH}>Deposit Slip</th>
                       <th className={`${TH} text-right`}>Action</th>
                     </tr>
                   </thead>
@@ -494,16 +524,21 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
                         <td className={TD}>
                           <span className="rounded-[10px] bg-[#EFF8FF] px-2 py-0.5 text-[11px] font-semibold text-[#1570EF]">Attended</span>
                         </td>
+                        <td className={TD}>
+                          <SlipPill status={r.depositSlip} studentId={r.studentId} />
+                        </td>
                         <td className={`${TD} text-right`}>
                           {canEdit ? (
-                            <Button
-                              variant={r.hasDefaultRate ? "primary" : "secondary"}
-                              className="!h-9 !px-4 !text-[13px]"
-                              disabled={!r.hasDefaultRate || confirm.isPending}
-                              onClick={() => confirm.mutate({ applicationId: r.applicationId })}
-                            >
-                              Confirm
-                            </Button>
+                            <span title={!r.hasDefaultRate ? "Set a default commission rate first" : SLIP[r.depositSlip].hint}>
+                              <Button
+                                variant={r.hasDefaultRate && r.depositSlip === "verified" ? "primary" : "secondary"}
+                                className="!h-9 !px-4 !text-[13px] whitespace-nowrap"
+                                disabled={!r.hasDefaultRate || r.depositSlip !== "verified"}
+                                onClick={() => setReviewing(r)}
+                              >
+                                Approve commission
+                              </Button>
+                            </span>
                           ) : !r.hasDefaultRate ? (
                             <span className="text-[11px] font-semibold text-[#B42318]">No default rate</span>
                           ) : (
@@ -519,6 +554,142 @@ function ConfirmedStudentsTab({ canEdit, onToast }: { canEdit: boolean; onToast:
           </div>
         ))
       )}
+      {reviewing && (
+        <ApproveCommissionModal
+          student={reviewing}
+          onClose={() => setReviewing(null)}
+          onApproved={() => {
+            void utils.universityBilling.invalidate();
+            void utils.commissions.invalidate();
+            onToast(`Commission approved for ${reviewing.studentName}`);
+            setReviewing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Review before approving: what the commission will be stamped with.
+function ApproveCommissionModal({
+  student,
+  onClose,
+  onApproved,
+}: {
+  student: ConfirmedStudent;
+  onClose: () => void;
+  onApproved: () => void;
+}) {
+  const q = api.universityBilling.approvalPreview.useQuery({ applicationId: student.applicationId });
+  const [err, setErr] = useState("");
+  const approve = api.universityBilling.confirmBilling.useMutation({
+    onSuccess: onApproved,
+    onError: (e) => setErr(e.message),
+  });
+  const p = q.data;
+  const blocker = !p
+    ? null
+    : p.depositSlip !== "verified"
+      ? SLIP[p.depositSlip].hint
+      : p.gross == null
+        ? "Set a default commission rate for this university in Commission Rates first."
+        : !p.payee
+          ? "This student isn't linked to an agency or an independent counsellor."
+          : p.sharePct == null
+            ? "Partner Tiers aren't set up, so the partner's share can't be worked out."
+            : null;
+  return (
+    <Modal
+      open
+      title="Approve commission"
+      width="w-[600px]"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={() => approve.mutate({ applicationId: student.applicationId })}
+            loading={approve.isPending}
+            disabled={!p || blocker != null}
+          >
+            Approve commission
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm text-[#475467]">
+        {student.studentName} · {student.university} — {student.program}
+      </p>
+      {q.error ? (
+        <p className="text-xs font-medium text-[#F04438]">{q.error.message}</p>
+      ) : !p ? (
+        <SkeletonTable rows={3} cols={3} />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-[#F9FAFB] px-3.5 py-3 sm:grid-cols-3">
+            <ReviewField label="Tuition">{money(p.tuition, p.currency)}</ReviewField>
+            <ReviewField label="Rate" sub={p.rateType}>
+              {p.rate == null ? "—" : p.isFlat ? `Flat ${money(p.rate, p.currency)}` : `${p.rate}%`}
+            </ReviewField>
+            <ReviewField label="Gross commission">{p.gross == null ? "—" : money(p.gross, p.currency)}</ReviewField>
+            <ReviewField
+              label="Payee"
+              sub={p.payee ? (p.payee.type === "agency" ? "Agency" : "Independent counsellor") : null}
+            >
+              {p.payee?.name ?? "—"}
+            </ReviewField>
+            <ReviewField
+              label="Tier / share"
+              sub={p.partnerShare != null ? `≈ ${money(p.partnerShare, p.currency)} to the partner` : null}
+            >
+              {p.sharePct == null ? "—" : `${p.tier ?? "—"} · ${p.sharePct}%`}
+            </ReviewField>
+            <ReviewField label="Vendor">{p.vendorName ?? "—"}</ReviewField>
+          </div>
+          {p.tranches.length > 0 && (
+            <div>
+              <div className="mb-1 text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">
+                {p.tranches.length > 1 ? `Collected in ${p.tranches.length} tranches` : "Single payment"}
+              </div>
+              <ul className="space-y-1 text-sm text-[#344054]">
+                {p.tranches.map((t) => (
+                  <li key={t.seq} className="flex justify-between gap-3">
+                    <span>{t.seq}. {t.name ?? `Tranche ${t.seq}`}</span>
+                    <span className="font-medium">{money(t.amount, p.currency)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="text-[#667085]">Deposit slip</span>
+            <SlipPill status={p.depositSlip} studentId={p.studentId} />
+          </div>
+          <p className="text-xs text-[#667085]">
+            The share is the partner&apos;s tier as of now and is fixed on approval; later tier changes don&apos;t alter it. You&apos;re recorded as the approver.
+          </p>
+          {blocker && <p className="text-xs font-medium text-[#B54708]">{blocker}</p>}
+        </>
+      )}
+      {err && <p className="text-xs font-medium text-[#F04438]">{err}</p>}
+    </Modal>
+  );
+}
+
+function ReviewField({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub?: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="text-[11px] tracking-wide text-[#98A2B3] uppercase">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold text-[#101828]">{children}</div>
+      {sub && <div className="text-[11px] text-[#667085]">{sub}</div>}
     </div>
   );
 }
@@ -908,10 +1079,18 @@ function InvoicesView({
             {isOpen && (
               <div className="space-y-4 border-t border-[#E4E7EC] px-5 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-xs text-[#667085]">received ₹{inv.paidInr.toLocaleString()} · remaining {money(remaining, inv.currency)}</div>
+                  <div className="text-xs text-[#667085]">
+                    received ₹{inv.paidInr.toLocaleString()} · remaining {money(remaining, inv.currency)}
+                    {inv.tranches.length > 1 && (
+                      <span className="ml-2">
+                        · tranches:{" "}
+                        {inv.tranches.map((t) => `${t.name ?? t.seq} ${t.uncollected === 0 ? "✓" : "pending"}`).join(", ")}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <Button variant="secondary" className="!h-9 !px-4 !text-[13px]" onClick={() => downloadInvoice(inv)}>Download CSV</Button>
-                    {canEdit && inv.status !== VendorInvoiceStatus.FULLY_PAID && (
+                    {canEdit && (inv.status !== VendorInvoiceStatus.FULLY_PAID || inv.hasUncollected) && (
                       <Button className="!h-9 !px-4 !text-[13px]" onClick={() => onOpenRecordPayment(inv)}>Record Payment</Button>
                     )}
                   </div>
@@ -1334,6 +1513,11 @@ function CreateInvoiceModal({
 // =============================================================================
 // Record Payment modal (FX)
 // =============================================================================
+// Collection is tranche-aware: Finance ticks the tranche(s) this payment
+// completes (default: the next one still outstanding). Only ticked tranches
+// become claimable; a payment that completes none is recorded as a
+// part-payment and unlocks nothing. "Final payment" collects every tranche
+// still outstanding.
 function RecordPaymentModal({
   invoice,
   onClose,
@@ -1344,26 +1528,38 @@ function RecordPaymentModal({
   onToast: (m: string) => void;
 }) {
   const utils = api.useUtils();
+  const outstanding = invoice.tranches.filter((t) => t.uncollected > 0);
   const [amountInr, setAmountInr] = useState("");
   const [rate, setRate] = useState("");
   const [date, setDate] = useState(todayInput());
   const [reference, setReference] = useState("");
-  const [isTranche, setIsTranche] = useState(false);
-  const [trancheNumber, setTrancheNumber] = useState("");
-  const [totalTranches, setTotalTranches] = useState("");
-  const [isFinal, setIsFinal] = useState(true);
+  const [picked, setPicked] = useState<Set<number>>(
+    () => new Set(outstanding.length > 0 ? [outstanding[0]!.seq] : []),
+  );
+  const [isFinal, setIsFinal] = useState(false);
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState("");
 
   const paidForeign = Math.round(invoice.payments.reduce((s, p) => s + p.amountForeign, 0) * 100) / 100;
   const remaining = Math.max(0, Math.round((invoice.totalExpected - paidForeign) * 100) / 100);
+  // Pre-tranche invoices have no schedule: only a final payment unlocks them.
+  const hasSchedule = invoice.tranches.length > 0;
+  const covered = isFinal ? outstanding : outstanding.filter((t) => picked.has(t.seq));
+  const coveredExpected = Math.round(covered.reduce((s, t) => s + t.uncollectedExpected, 0) * 100) / 100;
+  const completesInvoice = isFinal || (hasSchedule && covered.length === outstanding.length);
 
   const record = api.universityBilling.recordVendorPayment.useMutation({
-    onSuccess: () => {
+    onSuccess: (r) => {
       void utils.universityBilling.invalidate();
       // The ledger's stage + next step change with collection.
       void utils.commissions.invalidate();
-      onToast(isFinal ? "Payment recorded — students now claimable" : "Partial payment recorded");
+      onToast(
+        r.fullyPaid
+          ? "Payment recorded — invoice fully paid, every tranche claimable"
+          : r.collectedTranches > 0
+            ? "Payment recorded — the covered tranche is now claimable"
+            : "Part-payment recorded — nothing becomes claimable until a tranche is complete",
+      );
       onClose();
     },
     onError: (e) => setErr(e.message),
@@ -1371,6 +1567,15 @@ function RecordPaymentModal({
 
   const equivalent =
     amountInr && rate && Number(rate) > 0 ? Math.round((Number(amountInr) / Number(rate)) * 100) / 100 : null;
+  const shortOfCovered = equivalent != null && covered.length > 0 && equivalent < coveredExpected * 0.99;
+
+  const toggle = (seq: number) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(seq)) n.delete(seq);
+      else n.add(seq);
+      return n;
+    });
 
   const save = () => {
     if (!amountInr || Number(amountInr) <= 0) return setErr("Enter the rupee amount received");
@@ -1381,9 +1586,7 @@ function RecordPaymentModal({
       exchangeRate: Number(rate),
       paymentDate: date,
       reference: reference || undefined,
-      isTranche,
-      trancheNumber: isTranche && trancheNumber ? Number(trancheNumber) : undefined,
-      totalTranches: isTranche && totalTranches ? Number(totalTranches) : undefined,
+      trancheSeqs: isFinal ? [] : covered.map((t) => t.seq),
       isFinal,
       notes: notes || undefined,
     });
@@ -1429,20 +1632,51 @@ function RecordPaymentModal({
         <FormInput label="Payment Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         <FormInput label="Payment Reference" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="WIRE / NEFT ref" />
       </div>
-      <label className="flex cursor-pointer items-center gap-2 text-sm text-[#344054]">
-        <input type="checkbox" checked={isTranche} onChange={(e) => setIsTranche(e.target.checked)} />
-        This is a tranche payment
-      </label>
-      {isTranche && (
-        <div className="flex gap-3">
-          <FormInput label="Tranche Number" type="number" value={trancheNumber} onChange={(e) => setTrancheNumber(e.target.value)} />
-          <FormInput label="Total Tranches" type="number" value={totalTranches} onChange={(e) => setTotalTranches(e.target.value)} />
+
+      {hasSchedule && (
+        <div>
+          <div className="mb-1.5 text-sm font-medium text-[#344054]">Which tranche does this payment complete?</div>
+          <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#E4E7EC]">
+            {invoice.tranches.map((t) => {
+              const done = t.uncollected === 0;
+              const checked = done || isFinal || picked.has(t.seq);
+              return (
+                <label
+                  key={t.seq}
+                  className={`flex items-center justify-between gap-3 px-3 py-2 text-sm ${done || isFinal ? "text-[#98A2B3]" : "cursor-pointer text-[#344054]"}`}
+                >
+                  <span className="flex items-center gap-2">
+                    <input type="checkbox" checked={checked} disabled={done || isFinal} onChange={() => toggle(t.seq)} />
+                    <span className="font-medium">{t.seq}. {t.name ?? `Tranche ${t.seq}`}</span>
+                    {invoice.items.length > 1 && !done && (
+                      <span className="text-xs text-[#98A2B3]">{t.uncollected} of {t.students} students</span>
+                    )}
+                  </span>
+                  <span className="text-xs">
+                    {done ? "Collected ✓" : money(t.uncollectedExpected, invoice.currency)}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </div>
       )}
       <label className="flex cursor-pointer items-center gap-2 text-sm text-[#344054]">
         <input type="checkbox" checked={isFinal} onChange={(e) => setIsFinal(e.target.checked)} />
-        This is the final payment (marks the invoice fully paid → unlocks the partner claim)
+        This is the final payment (collects every remaining tranche → invoice fully paid)
       </label>
+      <p className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#475467]">
+        {covered.length > 0
+          ? `${covered.map((t) => t.name ?? `Tranche ${t.seq}`).join(", ")} becomes claimable by the partner${completesInvoice ? " and the invoice is marked fully paid" : ""}.`
+          : isFinal
+            ? "The invoice is marked fully paid and the partner can claim."
+            : "No tranche ticked: the money is recorded as a part-payment and nothing becomes claimable yet."}
+      </p>
+      {shortOfCovered && (
+        <p className="text-xs font-medium text-[#B54708]">
+          This is less than the {money(coveredExpected, invoice.currency)} expected for the ticked tranche(s). Only tick a tranche once it&apos;s fully paid.
+        </p>
+      )}
       <FormTextarea label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
       {err && <p className="text-xs font-medium text-[#F04438]">{err}</p>}
     </Modal>

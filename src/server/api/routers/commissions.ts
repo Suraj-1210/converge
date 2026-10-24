@@ -4,7 +4,6 @@ import {
   createTRPCRouter,
   financeManagerProcedure,
   financeProcedure,
-  operationsProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
@@ -124,6 +123,19 @@ export const commissionsRouter = createTRPCRouter({
         },
       },
     });
+    // Who approved each commission (a loose cp_user ref).
+    const approverIds = Array.from(
+      new Set(comms.map((c) => c.approved_by_cp_user_id).filter((id): id is number => id != null)),
+    );
+    const approvers = new Map(
+      (approverIds.length > 0
+        ? await db.collegepond_user.findMany({
+            where: { id: { in: approverIds } },
+            select: { id: true, first_name: true, last_name: true },
+          })
+        : []
+      ).map((u) => [u.id, `${u.first_name} ${u.last_name}`.trim()]),
+    );
 
     return comms.map((c) => {
       // Stamped from the partner's tier at billing confirmation. Unset (rows
@@ -197,6 +209,10 @@ export const commissionsRouter = createTRPCRouter({
       else if (collectedUnpaid) status = CommissionStatus.RECEIVED;
       else if (hasVendorInvoice) status = CommissionStatus.INVOICED;
       else status = CommissionStatus.NOT_INVOICED;
+      // Some tranches already paid out, the rest still to collect from the
+      // vendor: Invoiced by stage, but say so.
+      const statusLabel =
+        status === CommissionStatus.INVOICED && paid > 0 ? "Part paid · awaiting collection" : null;
 
       const commissionInr = toINR(num(c.commision_amount), c.currency);
       const intake =
@@ -230,6 +246,7 @@ export const commissionsRouter = createTRPCRouter({
               : round2(100 - partnerSharePct),
         partnerShareInr: share(commissionInr),
         status,
+        statusLabel,
         tranche: { total, collected, paid },
         // Per-tranche detail for the slide-over (partner-share amounts).
         tranches: tranches.map((t) => ({
@@ -255,6 +272,11 @@ export const commissionsRouter = createTRPCRouter({
           : null,
         payoutStatus: latestInvoice?.payoutStatus ?? null,
         fy: financialYearOf(c.created_at),
+        approvedBy:
+          c.approved_by_cp_user_id != null
+            ? (approvers.get(c.approved_by_cp_user_id) ?? `Staff #${c.approved_by_cp_user_id}`)
+            : null,
+        approvedAt: c.approved_at,
         next: nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null),
       };
     });
@@ -265,7 +287,8 @@ export const commissionsRouter = createTRPCRouter({
   // collected advance (server re-checks). The money-moving steps (record
   // collection / release payment) are NOT bulk-mutated here — they stay in
   // their own screens where the FX rate / payment reference is captured.
-  bulkApprove: operationsProcedure
+  // Super Admin / Finance Manager only, like approving a single claim.
+  bulkApprove: financeManagerProcedure
     .input(z.object({ commissionIds: z.array(z.number().int().positive()).min(1) }))
     .mutation(async ({ ctx, input }) => {
       // Resolve selected commissions → their pending partner invoices.

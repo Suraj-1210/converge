@@ -165,6 +165,10 @@ model commission {
   vendor_id               Int?
   // Tier whose share was stamped onto partner_share_pct at billing confirmation.
   partner_tier_id         Int?
+  // Who approved the commission (University Billing > Approve commission) and
+  // when. Loose cp_user ref (no relation), like partner_payout's approver.
+  approved_by_cp_user_id  Int?
+  approved_at             DateTime?            @db.Timestamp(0)
   application             application          @relation(fields: [application_id], references: [id], onDelete: Cascade, map: "fk_commission_application")
   organization            organization?        @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_commission_org")
   payee_user              user?                @relation("commission_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_commission_payee_user")

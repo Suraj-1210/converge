@@ -120,6 +120,18 @@ function refuseUnsetShare(comms: { partner_share_pct: unknown }[]): void {
 
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
 
+// Partner invoice numbers are unique across ALL partners (a schema rule), so
+// a number another partner already used is refused with a clear message
+// rather than Prisma's P2002.
+function prismaCode(e: unknown): string | undefined {
+  return typeof e === "object" && e !== null ? (e as { code?: string }).code : undefined;
+}
+const invoiceNumberTaken = (n: string) =>
+  new TRPCError({
+    code: "CONFLICT",
+    message: `Invoice number ${n} is already in use — use a different number.`,
+  });
+
 export const partnerCommissionRouter = createTRPCRouter({
   // Every commission for the partner (agency or independent), with a derived
   // claim status.
@@ -497,6 +509,11 @@ export const partnerCommissionRouter = createTRPCRouter({
       const partnerGstin = orNull(input.gstin);
       const tax = computeTax(subtotal, partnerGstin);
 
+      const taken = await db.invoice.findUnique({
+        where: { invoice_number: input.invoiceNumber },
+        select: { id: true },
+      });
+      if (taken) throw invoiceNumberTaken(input.invoiceNumber);
       const created = await db.$transaction(async (tx) => {
         const inv = await tx.invoice.create({
           data: {
@@ -534,6 +551,18 @@ export const partnerCommissionRouter = createTRPCRouter({
           })),
         });
         return inv;
+      }).catch((e: unknown) => {
+        // Lost a race for the number; a tranche claimed twice at once also
+        // lands here (uq_invoice_item_tranche).
+        if (prismaCode(e) === "P2002") {
+          const detail = `${JSON.stringify((e as { meta?: unknown }).meta ?? null)} ${(e as Error).message}`;
+          if (detail.includes("invoice_number")) throw invoiceNumberTaken(input.invoiceNumber);
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "One of these tranches was just claimed on another invoice. Refresh and try again.",
+          });
+        }
+        throw e;
       });
       return { invoiceId: created.id, netPayable: tax.netPayable };
     }),
@@ -618,7 +647,10 @@ export const partnerCommissionRouter = createTRPCRouter({
     }),
 
   // Per-financial-year aggregates for the year-over-year card + the loyalty tier
-  // (tier is derived from the count of students in the current FY).
+  // (tier is derived from the count of students in the current FY). Earned is
+  // the partner's share of every tranche CP has collected; paid, of every
+  // tranche paid out. Pre-tranche rows fall back to the commission-level
+  // claimable_inr and partner_paid_at.
   yearlyStats: payeeProcedure.query(async ({ ctx }) => {
     const payee = payeeFromSession(ctx.payee);
     const comms = await db.commission.findMany({
@@ -628,6 +660,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         partner_paid_at: true,
         claimable_inr: true,
         partner_share_pct: true,
+        commission_tranche: { select: { status: true, amount_inr: true } },
       },
     });
     const byFy = new Map<number, { students: number; earned: number; paid: number }>();
@@ -635,11 +668,19 @@ export const partnerCommissionRouter = createTRPCRouter({
       const fy = financialYearOf(c.created_at);
       // No stamped share yet: nothing is earned on it until Finance sets one.
       const share = c.partner_share_pct == null ? 0 : num(c.partner_share_pct);
-      const claimable = round2((num(c.claimable_inr) * share) / 100);
       const e = byFy.get(fy) ?? { students: 0, earned: 0, paid: 0 };
       e.students += 1;
-      e.earned += claimable;
-      if (c.partner_paid_at != null) e.paid += claimable;
+      if (c.commission_tranche.length > 0) {
+        for (const t of c.commission_tranche) {
+          const part = round2((num(t.amount_inr) * share) / 100);
+          if (t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID) e.earned += part;
+          if (t.status === TrancheStatus.PAID) e.paid += part;
+        }
+      } else {
+        const claimable = round2((num(c.claimable_inr) * share) / 100);
+        e.earned += claimable;
+        if (c.partner_paid_at != null) e.paid += claimable;
+      }
       byFy.set(fy, e);
     }
     return Array.from(byFy.entries())
