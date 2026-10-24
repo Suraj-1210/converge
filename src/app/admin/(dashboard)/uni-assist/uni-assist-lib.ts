@@ -1,4 +1,12 @@
 import { type RouterOutputs } from "~/trpc/react";
+import { fasterTatLabel } from "~/lib/faster-tat";
+import {
+  HOME_CURRENCY,
+  convertAmount,
+  formatMoney,
+  inBracket,
+  type InrRates,
+} from "~/lib/fx-convert";
 
 export type Program = RouterOutputs["universities"]["listCourses"][number];
 
@@ -95,48 +103,16 @@ export const ENG_TESTS: Array<{
 
 export type EngTest = "IELTS" | "TOEFL" | "TOEFL2026" | "DET";
 
-// Static USD-pivot rates for the tuition-range filter and tuition sorting —
-// same table the design mock ships. Good enough for filtering; not a source
-// of truth for money.
-export const CURRENCY_RATES: Record<string, number> = {
-  USD: 1.0,
-  GBP: 0.79,
-  EUR: 0.92,
-  CAD: 1.36,
-  AUD: 1.53,
-  NZD: 1.67,
-  SGD: 1.34,
-  CHF: 0.88,
-  HKD: 7.82,
-  JPY: 150.0,
-  INR: 83.0,
-};
+// Currencies a user can view, filter and sort fees in. Conversion uses the
+// live fx_rate table (Settings → Exchange Rates) via ~/lib/fx-convert.
+export const DISPLAY_CURRENCIES = ["EUR", "INR", "USD", "GBP"];
 
-export const CURRENCY_SYMBOLS: Record<string, string> = {
-  USD: "$",
-  GBP: "£",
-  EUR: "€",
-  CAD: "C$",
-  AUD: "A$",
-  NZD: "NZ$",
-  SGD: "S$",
-  CHF: "CHF",
-  HKD: "HK$",
-  JPY: "¥",
-  INR: "₹",
-};
-
-export function convertCurrency(
-  amount: number,
-  from: string | null,
-  to: string,
-): number {
-  const fromRate = from ? CURRENCY_RATES[from] : undefined;
-  const toRate = CURRENCY_RATES[to];
-  // Unknown course currency → no conversion (treat as already in target).
-  if (!fromRate || !toRate) return amount;
-  return (amount / fromRate) * toRate;
-}
+// Faster TAT filter: programs at least this fast.
+export const FASTER_TAT_FILTER: Array<{ value: string; label: string }> = [
+  { value: "3", label: "Any faster TAT" },
+  { value: "2", label: "1–3 days or faster" },
+  { value: "1", label: "Same day" },
+];
 
 // ----- Filter state -------------------------------------------------------
 
@@ -160,8 +136,11 @@ export interface FilterState {
   feeWaiver: TriState;
   scholarship: TriState;
   open: TriState;
+  fasterTat: string; // "" = any, else the slowest faster-TAT code allowed
+  // Currency fees are shown (≈), sorted and bracketed in.
   tuitionCurrency: string;
-  tuitionMin: string; // comma-formatted digits
+  // The picked bracket's bounds in tuitionCurrency, digits ("" = open end).
+  tuitionMin: string;
   tuitionMax: string;
 }
 
@@ -180,7 +159,8 @@ export const emptyFilters = (): FilterState => ({
   feeWaiver: emptyTri(),
   scholarship: emptyTri(),
   open: emptyTri(),
-  tuitionCurrency: "",
+  fasterTat: "",
+  tuitionCurrency: HOME_CURRENCY,
   tuitionMin: "",
   tuitionMax: "",
 });
@@ -190,10 +170,9 @@ export function parseAmount(formatted: string): number {
   return raw ? parseInt(raw, 10) : 0;
 }
 
-export function formatAmount(raw: string): string {
-  const digits = raw.replace(/[^0-9]/g, "");
-  if (!digits) return "";
-  return parseInt(digits, 10).toLocaleString("en-US");
+// Bracket key for the dropdown ("10000-20000", "-10000", "40000-").
+export function bracketKey(min: string, max: string): string {
+  return min || max ? `${min}-${max}` : "";
 }
 
 function passTri(t: TriState, value: boolean): boolean {
@@ -201,15 +180,20 @@ function passTri(t: TriState, value: boolean): boolean {
   return t.yes ? value : !value;
 }
 
-export function applyFilters(rows: Program[], f: FilterState): Program[] {
+export function applyFilters(
+  rows: Program[],
+  f: FilterState,
+  rates: InrRates,
+): Program[] {
   const query = f.query.trim().toLowerCase();
   const year = f.intakeYear ? Number(f.intakeYear) : null;
   const level = f.degreeLevel === "" ? null : Number(f.degreeLevel);
   const duration = f.duration ? Number(f.duration) : null;
   const engScore = f.engTest && f.engScore ? Number(f.engScore) : null;
-  const tuitionMin = parseAmount(f.tuitionMin);
-  const tuitionMax = parseAmount(f.tuitionMax);
-  const tuitionActive = !!f.tuitionCurrency && (tuitionMin > 0 || tuitionMax > 0);
+  const fasterTat = f.fasterTat ? Number(f.fasterTat) : null;
+  const tuitionMin = f.tuitionMin ? parseAmount(f.tuitionMin) : null;
+  const tuitionMax = f.tuitionMax ? parseAmount(f.tuitionMax) : null;
+  const tuitionActive = tuitionMin !== null || tuitionMax !== null;
 
   return rows.filter((p) => {
     if (query) {
@@ -233,6 +217,9 @@ export function applyFilters(rows: Program[], f: FilterState): Program[] {
     if (!passTri(f.feeWaiver, p.hasAppFeeWaiver)) return false;
     if (!passTri(f.scholarship, p.hasScholarship)) return false;
     if (!passTri(f.open, p.isOpen)) return false;
+    if (fasterTat !== null && (p.fasterTat === null || p.fasterTat > fasterTat)) {
+      return false;
+    }
     if (engScore !== null && !Number.isNaN(engScore)) {
       // Pass when the program states no requirement, or the student's score
       // meets it. TOEFL is compared on the scale the student's score is on:
@@ -249,10 +236,13 @@ export function applyFilters(rows: Program[], f: FilterState): Program[] {
       if (req !== null && req > engScore) return false;
     }
     if (tuitionActive) {
-      if (p.tuitionFee === null) return false;
-      const fee = convertCurrency(p.tuitionFee, p.currency, f.tuitionCurrency);
-      if (tuitionMin > 0 && fee < tuitionMin) return false;
-      if (tuitionMax > 0 && fee > tuitionMax) return false;
+      // Courses are priced in their own currencies: compare converted fees.
+      // One with no rate can't be placed in a bracket, so it drops out.
+      const fee =
+        p.tuitionFee === null
+          ? null
+          : convertAmount(p.tuitionFee, p.currency, f.tuitionCurrency, rates);
+      if (fee === null || !inBracket(fee, tuitionMin, tuitionMax)) return false;
     }
     return true;
   });
@@ -260,24 +250,29 @@ export function applyFilters(rows: Program[], f: FilterState): Program[] {
 
 export type SortBy = "relevance" | "tuition-asc" | "tuition-desc" | "uni-az";
 
-export function sortPrograms(rows: Program[], sortBy: SortBy): Program[] {
+export function sortPrograms(
+  rows: Program[],
+  sortBy: SortBy,
+  currency: string,
+  rates: InrRates,
+): Program[] {
   const sorted = [...rows];
   const uniName = (p: Program) => p.university?.name ?? "";
-  // Tuition sorts compare in USD so mixed currencies order sensibly.
-  // Programs without a fee always sort last.
-  const usd = (p: Program, missing: number) =>
-    p.tuitionFee === null
-      ? missing
-      : convertCurrency(p.tuitionFee, p.currency, "USD");
+  // Tuition sorts compare fees converted to the picked currency so mixed
+  // currencies order correctly. No fee, or no rate for it, sorts last.
+  const fee = (p: Program, missing: number) =>
+    (p.tuitionFee === null
+      ? null
+      : convertAmount(p.tuitionFee, p.currency, currency, rates)) ?? missing;
   if (sortBy === "tuition-asc") {
     sorted.sort(
       (a, b) =>
-        usd(a, Infinity) - usd(b, Infinity) || a.name.localeCompare(b.name),
+        fee(a, Infinity) - fee(b, Infinity) || a.name.localeCompare(b.name),
     );
   } else if (sortBy === "tuition-desc") {
     sorted.sort(
       (a, b) =>
-        usd(b, -Infinity) - usd(a, -Infinity) || a.name.localeCompare(b.name),
+        fee(b, -Infinity) - fee(a, -Infinity) || a.name.localeCompare(b.name),
     );
   } else {
     // "relevance" and "uni-az" both order by university then program name.
@@ -296,8 +291,27 @@ export function formatTuition(
   currency: string | null,
 ): string | null {
   if (fee === null) return null;
-  const ccy = currency ?? "";
-  return `${ccy} ${fee.toLocaleString("en-US")}/yr`.trim();
+  return `${formatMoney(fee, currency)}/yr`;
+}
+
+// Approximate fee in another currency ("≈ ₹17,40,000"). Null when it's
+// already in that currency or there's no rate to convert with.
+export function approxIn(
+  fee: number | null,
+  from: string | null,
+  to: string,
+  rates: InrRates,
+): string | null {
+  if (fee === null || !from || from === to) return null;
+  const converted = convertAmount(fee, from, to, rates);
+  return converted === null ? null : `≈ ${formatMoney(converted, to)}`;
+}
+
+// Application fee alone, in the course currency ("€70"; "None" when zero).
+// The fee waiver is a separate field: see feeWaiverLabel / the card tag.
+export function appFeeOnly(fee: number | null, currency: string | null): string | null {
+  if (fee === null) return null;
+  return fee === 0 ? "None" : formatMoney(fee, currency);
 }
 
 // Application fee as the Universities page shows it (course currency + amount),
@@ -308,8 +322,13 @@ export function appFeeAmount(
   hasWaiver: boolean,
 ): string | null {
   if (fee === null) return hasWaiver ? "Waiver available" : null;
-  const amount = fee === 0 ? "None" : `${currency ?? ""} ${fee.toLocaleString("en-US")}`.trim();
+  const amount = appFeeOnly(fee, currency)!;
   return `${amount}${hasWaiver && fee > 0 ? " (waiver available)" : ""}`;
+}
+
+export function fasterTatTag(code: number | null): string | null {
+  const label = fasterTatLabel(code);
+  return label ? `Faster TAT: ${label}` : null;
 }
 
 // The same, labelled for a card's meta line ("App fee: USD 75").
@@ -395,10 +414,22 @@ export type SearchTemplate =
 // templates saved before a field existed still load cleanly.
 export function templateToFilters(t: SearchTemplate): FilterState {
   const stored = (t.filters ?? {}) as Partial<FilterState>;
-  return { ...emptyFilters(), ...stored };
+  const merged = { ...emptyFilters(), ...stored };
+  // Templates from before brackets saved "" for "any currency" and free-typed
+  // amounts like "10,000": keep the bounds, default the currency.
+  return {
+    ...merged,
+    tuitionCurrency: merged.tuitionCurrency || HOME_CURRENCY,
+    tuitionMin: merged.tuitionMin.replace(/[^0-9]/g, ""),
+    tuitionMax: merged.tuitionMax.replace(/[^0-9]/g, ""),
+  };
 }
 
 // ----- Download ------------------------------------------------------------
+
+// Only a selected student's shortlist can be downloaded, this many programs
+// per sheet (Portal Testing Day 5).
+export const MAX_DOWNLOAD_PROGRAMS = 10;
 
 export interface DownloadField {
   key: string;
@@ -408,7 +439,24 @@ export interface DownloadField {
 
 const yesNo = (v: boolean) => (v ? "Yes" : "No");
 
-export const DOWNLOAD_FIELDS: DownloadField[] = [
+// Fixed columns plus, when fees are being viewed in another currency, an
+// approximate tuition column in it.
+export function downloadFields(displayCurrency: string, rates: InrRates): DownloadField[] {
+  return [
+    ...DOWNLOAD_FIELDS,
+    {
+      key: "tuitionApprox",
+      label: `Tuition Fee (approx. ${displayCurrency})`,
+      value: (p) => {
+        if (p.tuitionFee === null) return "";
+        const v = convertAmount(p.tuitionFee, p.currency, displayCurrency, rates);
+        return v === null ? "" : formatMoney(v, displayCurrency);
+      },
+    },
+  ];
+}
+
+const DOWNLOAD_FIELDS: DownloadField[] = [
   { key: "uni", label: "University", value: (p) => p.university?.name ?? "" },
   { key: "course", label: "Course / Program", value: (p) => p.name },
   { key: "level", label: "Study Level", value: (p) => degreeLabel(p.degreeLevel) },
@@ -425,7 +473,20 @@ export const DOWNLOAD_FIELDS: DownloadField[] = [
   {
     key: "tuition",
     label: "Tuition Fee",
-    value: (p) => formatTuition(p.tuitionFee, p.currency) ?? "",
+    value: (p) => (p.tuitionFee === null ? "" : formatMoney(p.tuitionFee, p.currency)),
+  },
+  // Two separate fields, never combined: what the application costs, and
+  // whether the university waives it.
+  {
+    key: "appFee",
+    label: "Application Fee",
+    value: (p) => appFeeOnly(p.appFee, p.currency) ?? "",
+  },
+  { key: "feeWaiver", label: "Fee Waiver", value: (p) => yesNo(p.hasAppFeeWaiver) },
+  {
+    key: "fasterTat",
+    label: "Faster TAT",
+    value: (p) => fasterTatLabel(p.fasterTat) ?? "Standard",
   },
   {
     key: "country",
@@ -436,6 +497,5 @@ export const DOWNLOAD_FIELDS: DownloadField[] = [
   { key: "city", label: "City", value: (p) => p.university?.city ?? "" },
   { key: "stem", label: "STEM", value: (p) => yesNo(p.isStem) },
   { key: "scholarship", label: "Scholarship", value: (p) => yesNo(p.hasScholarship) },
-  { key: "feeWaiver", label: "Fee Waiver", value: (p) => yesNo(p.hasAppFeeWaiver) },
   { key: "open", label: "Open Program", value: (p) => yesNo(p.isOpen) },
 ];

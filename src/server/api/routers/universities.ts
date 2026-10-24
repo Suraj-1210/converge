@@ -6,8 +6,21 @@ import {
   createTRPCRouter,
   protectedAdminProcedure,
   protectedPartnerProcedure,
+  superAdminProcedure,
 } from "~/server/api/trpc";
-import { AdminRole } from "~/server/db/enums";
+import { AdminRole, VendorType } from "~/server/db/enums";
+import {
+  HOME_CURRENCY,
+  convertAmount,
+  inBracket,
+  type BracketConfig,
+} from "~/lib/fx-convert";
+import { DIRECT_VENDOR } from "~/server/universities/default-vendor";
+import {
+  loadBracketConfig,
+  loadInrRates,
+  saveBracketConfig,
+} from "~/server/universities/uni-assist-config";
 import { resolveStorageUrl } from "~/server/storage";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
@@ -72,7 +85,8 @@ const courseInput = z.object({
   scholarshipAmount: z.number().nonnegative().nullable().optional(),
   minEntryRequirements: z.string().trim().max(2000).nullable().optional(),
   minEntryRequirementsScale: z.string().trim().max(20).nullable().optional(),
-  hasFasterTat: z.boolean().default(false),
+  // src/lib/faster-tat.ts codes; null = standard.
+  fasterTat: z.number().int().min(1).max(3).nullable().default(null),
 });
 
 // Shape of a saved Uni Assist filter set (mirrors the page's FilterState).
@@ -95,11 +109,29 @@ const templateFilters = z.object({
   tuitionCurrency: z.string().max(3),
   tuitionMin: z.string().max(20),
   tuitionMax: z.string().max(20),
+  fasterTat: z.string().max(2).optional(),
 });
 
 function bool(v: boolean): number {
   return v ? 1 : 0;
 }
+
+// Both columns are written until has_faster_tat is dropped (migration
+// 20261024100000_course_faster_tat.sql).
+function fasterTatColumns(code: number | null) {
+  return { faster_tat: code, has_faster_tat: code === null ? 0 : 1 };
+}
+
+const courseUniversitySelect = {
+  id: true,
+  name: true,
+  country: true,
+  city: true,
+  logo_url: true,
+} as const;
+
+// Cap on explicit id lookups (a student's shortlist, for download).
+const MAX_IDS = 500;
 
 function toUniversityApi(u: {
   id: number;
@@ -164,6 +196,7 @@ function toCourseApi(c: {
   min_entry_requirements: string | null;
   min_entry_requirements_scale: string | null;
   has_faster_tat: number | null;
+  faster_tat: number | null;
   university?: {
     id: number;
     name: string;
@@ -204,7 +237,8 @@ function toCourseApi(c: {
     scholarshipAmount: c.scholarship_amount?.toNumber() ?? null,
     minEntryRequirements: c.min_entry_requirements,
     minEntryRequirementsScale: c.min_entry_requirements_scale,
-    hasFasterTat: c.has_faster_tat === 1,
+    // A row flagged before faster_tat existed reads as the migration's mapping.
+    fasterTat: c.faster_tat ?? (c.has_faster_tat === 1 ? 3 : null),
     university: c.university
       ? {
           id: c.university.id,
@@ -311,14 +345,18 @@ export const universitiesRouter = createTRPCRouter({
       z
         .object({
           universityId: z.number().int().positive().optional(),
+          // Exact programs (a student's shortlist for download), so they
+          // load even past LIST_CAP.
+          ids: z.array(z.number().int().positive()).max(MAX_IDS).optional(),
         })
         .optional(),
     )
     .query(async ({ ctx, input }) => {
       const rows = await ctx.db.course.findMany({
-        where: input?.universityId
-          ? { university_id: input.universityId }
-          : undefined,
+        where: {
+          ...(input?.universityId ? { university_id: input.universityId } : {}),
+          ...(input?.ids ? { id: { in: input.ids } } : {}),
+        },
         orderBy: [{ university_id: "asc" }, { name: "asc" }],
         take: LIST_CAP,
         include: {
@@ -379,7 +417,7 @@ export const universitiesRouter = createTRPCRouter({
           scholarship_amount: input.scholarshipAmount ?? null,
           min_entry_requirements: input.minEntryRequirements ?? null,
           min_entry_requirements_scale: input.minEntryRequirementsScale ?? null,
-          has_faster_tat: bool(input.hasFasterTat),
+          ...fasterTatColumns(input.fasterTat),
         },
         include: {
           university: {
@@ -437,7 +475,7 @@ export const universitiesRouter = createTRPCRouter({
           scholarship_amount: input.scholarshipAmount ?? null,
           min_entry_requirements: input.minEntryRequirements ?? null,
           min_entry_requirements_scale: input.minEntryRequirementsScale ?? null,
-          has_faster_tat: bool(input.hasFasterTat),
+          ...fasterTatColumns(input.fasterTat),
         },
         include: {
           university: {
@@ -462,15 +500,24 @@ export const universitiesRouter = createTRPCRouter({
           // the comma-separated intake_month string.
           intakeMonth: z.string().trim().max(20).optional(),
           degreeLevel: z.number().int().min(0).max(255).optional(),
+          // Faster TAT code: programs at least this fast (1 = Same day only).
+          fasterTat: z.number().int().min(1).max(3).optional(),
+          // Currency the tuition bracket is in and tuition sorts compare in.
+          // Each course's fee is converted to it via fx_rate first.
+          currency: z.string().trim().length(3).default(HOME_CURRENCY),
+          tuitionMin: z.number().nonnegative().optional(),
+          tuitionMax: z.number().positive().optional(),
+          // Exact programs (a student's shortlist, for download).
+          courseIds: z.array(z.number().int().positive()).max(MAX_IDS).optional(),
           // Sort key. "relevance" is the default order (university then name).
           sortBy: z
             .enum(["relevance", "tuition-asc", "tuition-desc", "uni-az"])
             .default("relevance"),
         })
-        .default({ sortBy: "relevance" }),
+        .default({ sortBy: "relevance", currency: HOME_CURRENCY }),
     )
     .query(async ({ ctx, input }) => {
-      const where: Record<string, unknown> = {};
+      const where: Prisma.courseWhereInput = {};
       if (input.query) {
         // Match either the program name or the parent university's name.
         where.OR = [
@@ -486,39 +533,145 @@ export const universitiesRouter = createTRPCRouter({
         where.intake_month = { contains: input.intakeMonth };
       }
       if (input.degreeLevel !== undefined) where.degree_level = input.degreeLevel;
+      if (input.fasterTat !== undefined) where.faster_tat = { lte: input.fasterTat };
+      if (input.courseIds) where.id = { in: input.courseIds };
 
-      const orderBy =
-        input.sortBy === "tuition-asc"
-          ? [{ tuition_fee: "asc" as const }, { name: "asc" as const }]
-          : input.sortBy === "tuition-desc"
-            ? [{ tuition_fee: "desc" as const }, { name: "asc" as const }]
-            : input.sortBy === "uni-az"
-              ? [
-                  { university: { name: "asc" as const } },
-                  { name: "asc" as const },
-                ]
-              : [
-                  { university: { name: "asc" as const } },
-                  { name: "asc" as const },
-                ];
+      const include = { university: { select: courseUniversitySelect } };
+      const bracketActive =
+        input.tuitionMin !== undefined || input.tuitionMax !== undefined;
+      const tuitionSort =
+        input.sortBy === "tuition-asc" || input.sortBy === "tuition-desc";
 
-      const rows = await ctx.db.course.findMany({
+      if (!bracketActive && !tuitionSort) {
+        const rows = await ctx.db.course.findMany({
+          where,
+          orderBy: [{ university: { name: "asc" } }, { name: "asc" }],
+          take: LIST_CAP,
+          include,
+        });
+        return rows.map(toCourseApi);
+      }
+
+      // Courses are priced in different currencies, so the bracket and the
+      // sort run on converted fees: rank every match on a light select, then
+      // load the top LIST_CAP in full. A fee with no rate can't be placed: it
+      // fails a bracket and sorts last.
+      const { rates } = await loadInrRates();
+      const light = await ctx.db.course.findMany({
         where,
-        orderBy,
-        take: LIST_CAP,
-        include: {
-          university: {
-            select: {
-              id: true,
-              name: true,
-              country: true,
-              city: true,
-              logo_url: true,
-            },
-          },
+        select: {
+          id: true,
+          name: true,
+          tuition_fee: true,
+          currency: true,
+          university: { select: { name: true } },
         },
       });
+      const ranked = light
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          uni: c.university.name,
+          fee: convertAmount(c.tuition_fee.toNumber(), c.currency, input.currency, rates),
+        }))
+        .filter(
+          (c) =>
+            !bracketActive ||
+            (c.fee !== null &&
+              inBracket(c.fee, input.tuitionMin ?? null, input.tuitionMax ?? null)),
+        );
+      const byName = (a: (typeof ranked)[number], b: (typeof ranked)[number]) =>
+        a.uni.localeCompare(b.uni) || a.name.localeCompare(b.name);
+      if (input.sortBy === "tuition-asc") {
+        ranked.sort((a, b) => (a.fee ?? Infinity) - (b.fee ?? Infinity) || byName(a, b));
+      } else if (input.sortBy === "tuition-desc") {
+        ranked.sort((a, b) => (b.fee ?? -Infinity) - (a.fee ?? -Infinity) || byName(a, b));
+      } else {
+        ranked.sort(byName);
+      }
+      const ids = ranked.slice(0, LIST_CAP).map((c) => c.id);
+      const rows = await ctx.db.course.findMany({
+        where: { id: { in: ids } },
+        include,
+      });
+      const pos = new Map(ids.map((id, i) => [id, i]));
+      rows.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
       return rows.map(toCourseApi);
+    }),
+
+  // Exchange rates + tuition brackets for Uni Assist's currency picker,
+  // bracket dropdown and "≈" amounts. Admin and partner variants.
+  uniAssistMoney: protectedAdminProcedure.query(async () => {
+    const [fx, brackets] = await Promise.all([loadInrRates(), loadBracketConfig()]);
+    return { ...fx, brackets };
+  }),
+  partnerUniAssistMoney: protectedPartnerProcedure.query(async () => {
+    const [fx, brackets] = await Promise.all([loadInrRates(), loadBracketConfig()]);
+    return { ...fx, brackets };
+  }),
+
+  // Settings → Uni Assist Brackets: ascending breakpoints per currency.
+  saveTuitionBrackets: superAdminProcedure
+    .input(
+      z.record(
+        z.string().regex(/^[A-Z]{3}$/),
+        z.array(z.number().positive().max(1e10)).max(12),
+      ),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const clean: BracketConfig = {};
+      for (const [ccy, points] of Object.entries(input)) {
+        clean[ccy] = [...new Set(points)].sort((a, b) => a - b);
+      }
+      await saveBracketConfig(clean);
+      await ctx.db.audit_log.create({
+        data: {
+          action: "settings.tuition_brackets_updated",
+          entity_type: "system_config",
+          metadata: { byCpUserId: ctx.cpUser.id, currencies: Object.keys(clean) },
+        },
+      });
+      return { ok: true as const };
+    }),
+
+  // Counsellor Choice options for one application: the vendor master (Direct
+  // + active vendors), flagging the university's default contract from
+  // Commission Rates.
+  vendorOptions: protectedAdminProcedure
+    .input(z.object({ applicationId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const app = await ctx.db.application.findUnique({
+        where: { id: input.applicationId },
+        select: { course: { select: { university_id: true } } },
+      });
+      if (!app) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      }
+      const [vendors, contracts] = await Promise.all([
+        ctx.db.vendor.findMany({
+          where: { is_active: 1 },
+          select: { id: true, name: true, type: true },
+          orderBy: { name: "asc" },
+        }),
+        ctx.db.commission_contract.findMany({
+          where: { university_id: app.course.university_id },
+          select: { vendor_id: true, is_default: true },
+        }),
+      ]);
+      const contractFor = new Map(contracts.map((c) => [c.vendor_id, c]));
+      return [
+        {
+          name: DIRECT_VENDOR,
+          type: "direct" as const,
+          isDefault: contractFor.get(null)?.is_default === 1,
+        },
+        ...vendors.map((v) => ({
+          name: v.name,
+          type:
+            v.type === VendorType.DIRECT ? ("direct" as const) : ("third-party" as const),
+          isDefault: contractFor.get(v.id)?.is_default === 1,
+        })),
+      ];
     }),
 
   // List of distinct ISO2 countries that currently have universities — used

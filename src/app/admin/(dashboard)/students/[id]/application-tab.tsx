@@ -182,15 +182,17 @@ const STAGE_OPTIONS: Record<number, StageOption[]> = {
 // Negative terminals get the red X treatment; deferred/closed stay neutral.
 const NEGATIVE_TERMINALS = new Set<number>(NEGATIVE_CLOSED_STAGES);
 
-// Counsellor Choice options. Static until the commissions module gives
-// vendors a table; "Recommended" stays Not Set for the same reason.
-const VENDORS: Array<{ name: string; type: "direct" | "third-party" }> = [
-  { name: "Direct", type: "direct" },
-  { name: "KC Overseas", type: "third-party" },
-  { name: "SiUK", type: "third-party" },
-  { name: "Kaplan", type: "third-party" },
-  { name: "IDP Education", type: "third-party" },
-];
+// Counsellor Choice options: the vendor master (Direct + active vendors),
+// marking the university's default from Commission Rates. A new application
+// starts on that default (set server-side); a saved name no longer in the
+// master still shows so it isn't silently lost.
+function useVendors(applicationId: number, current: string | null) {
+  const q = api.universities.vendorOptions.useQuery({ applicationId });
+  const list = q.data ?? [];
+  return current && !list.some((v) => v.name === current)
+    ? [...list, { name: current, type: "third-party" as const, isDefault: false }]
+    : list;
+}
 
 const CONDITIONAL_DOC_OPTIONS = [
   "Current Year Transcript",
@@ -1094,9 +1096,10 @@ function VendorRow({
           }`}
         >
           <option value="">-- Select Vendor --</option>
-          {VENDORS.map((v) => (
+          {useVendors(a.id, a.counsellorVendor).map((v) => (
             <option key={v.name} value={v.name}>
               {v.name} {v.type === "direct" ? "(Direct)" : "(Third Party)"}
+              {v.isDefault ? " · University default" : ""}
             </option>
           ))}
         </select>

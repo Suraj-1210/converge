@@ -6,10 +6,12 @@ import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Modal } from "~/components/ui/modal";
+import { type InrRates } from "~/lib/fx-convert";
 import {
   COUNTRIES,
-  DOWNLOAD_FIELDS,
   INTAKE_MONTHS,
+  MAX_DOWNLOAD_PROGRAMS,
+  downloadFields,
   templateToFilters,
   type Program,
   type SearchTemplate,
@@ -19,24 +21,47 @@ import {
 
 type DownloadFormat = "csv" | "excel";
 
+// Downloads a student's shortlist: the caller passes only that student's
+// shortlisted programs, and at most MAX_DOWNLOAD_PROGRAMS go in one sheet.
+// Shared with the partner Uni Assist (side = "partner" for the audit log).
 export function DownloadDialog({
   open,
   onClose,
   programs,
+  studentName,
+  displayCurrency,
+  rates,
+  side = "admin",
   onDone,
 }: {
   open: boolean;
   onClose: () => void;
   programs: Program[];
+  studentName: string;
+  displayCurrency: string;
+  rates: InrRates;
+  side?: "admin" | "partner";
   onDone: (message: string) => void;
 }) {
+  const fieldsAll = downloadFields(displayCurrency, rates);
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(DOWNLOAD_FIELDS.map((f) => f.key)),
+    () => new Set(fieldsAll.map((f) => f.key)),
   );
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const [format, setFormat] = useState<DownloadFormat>("csv");
-  const logExport = useExportLog();
+  const logExport = useExportLog(side);
 
-  const allSelected = selected.size === DOWNLOAD_FIELDS.length;
+  // Fresh pick each time it opens: the first ten shortlisted programs.
+  const programKey = programs.map((p) => p.id).join(",");
+  useEffect(() => {
+    if (open) {
+      setPicked(new Set(programs.slice(0, MAX_DOWNLOAD_PROGRAMS).map((p) => p.id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, programKey]);
+
+  const allSelected = selected.size === fieldsAll.length;
+  const overLimit = programs.length > MAX_DOWNLOAD_PROGRAMS;
 
   const toggleField = (key: string) => {
     setSelected((prev) => {
@@ -49,8 +74,21 @@ export function DownloadDialog({
 
   const toggleAll = () => {
     setSelected(
-      allSelected ? new Set() : new Set(DOWNLOAD_FIELDS.map((f) => f.key)),
+      allSelected ? new Set() : new Set(fieldsAll.map((f) => f.key)),
     );
+  };
+
+  const toggleProgram = (id: number) => {
+    if (!picked.has(id) && picked.size >= MAX_DOWNLOAD_PROGRAMS) {
+      onDone(`At most ${MAX_DOWNLOAD_PROGRAMS} programs per sheet`);
+      return;
+    }
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const execute = async () => {
@@ -58,9 +96,16 @@ export function DownloadDialog({
       onDone("Please select at least one field");
       return;
     }
-    const fields = DOWNLOAD_FIELDS.filter((f) => selected.has(f.key));
+    const chosen = programs.filter((p) => picked.has(p.id)).slice(0, MAX_DOWNLOAD_PROGRAMS);
+    if (chosen.length === 0) {
+      onDone("Please select at least one program");
+      return;
+    }
+    const fields = fieldsAll.filter((f) => selected.has(f.key));
     const header = fields.map((f) => f.label);
-    const rows = programs.map((p) => fields.map((f) => f.value(p)));
+    const rows = chosen.map((p) => fields.map((f) => f.value(p)));
+    const slug = studentName.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "student";
+    const fileBase = `uni-assist-shortlist-${slug}`;
 
     if (format === "excel") {
       // xlsx is already a dependency (bulk import uses it server-side).
@@ -69,41 +114,46 @@ export function DownloadDialog({
       const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
       ws["!cols"] = header.map((h) => ({ wch: h.length > 12 ? 22 : 15 }));
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Uni Assist Results");
-      XLSX.writeFile(wb, "uni-assist-results.xlsx");
-      logExport("Uni Assist results XLSX", rows.length);
+      // Sheet names: max 31 chars, no []:*?/\
+      XLSX.utils.book_append_sheet(
+        wb,
+        ws,
+        studentName.replace(/[[\]:*?/\\]/g, " ").slice(0, 31) || "Shortlist",
+      );
+      XLSX.writeFile(wb, `${fileBase}.xlsx`);
+      logExport(`Uni Assist shortlist XLSX (${studentName})`, rows.length);
     } else {
       const escape = (v: string) =>
         /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
       const csv = [header, ...rows]
         .map((r) => r.map(escape).join(","))
         .join("\n");
-      // BOM so Excel opens UTF-8 correctly.
-      const blob = new Blob(["\uFEFF" + csv], {
+      // BOM so Excel opens UTF-8 correctly (€, ₹ symbols).
+      const blob = new Blob(["﻿" + csv], {
         type: "text/csv;charset=utf-8;",
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "uni-assist-results.csv";
+      a.download = `${fileBase}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      logExport("Uni Assist results CSV", rows.length);
+      logExport(`Uni Assist shortlist CSV (${studentName})`, rows.length);
     }
     onClose();
     onDone(
-      `Downloaded ${programs.length} result${programs.length === 1 ? "" : "s"} as ${format === "excel" ? "Excel" : "CSV"}`,
+      `Downloaded ${chosen.length} shortlisted program${chosen.length === 1 ? "" : "s"} for ${studentName} as ${format === "excel" ? "Excel" : "CSV"}`,
     );
   };
 
   return (
     <Modal
       open={open}
-      title="Download Results"
+      title={`Download Shortlist · ${studentName}`}
       onClose={onClose}
-      width="w-[460px]"
+      width="w-[520px]"
       footer={
         <div className="flex justify-end gap-2">
           <button
@@ -119,6 +169,39 @@ export function DownloadDialog({
         </div>
       }
     >
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-[#101828]">
+          Programs ({picked.size}/{Math.min(programs.length, MAX_DOWNLOAD_PROGRAMS)})
+        </span>
+        {overLimit && (
+          <span className="text-xs text-[#B54708]">
+            {programs.length} shortlisted · up to {MAX_DOWNLOAD_PROGRAMS} per sheet
+          </span>
+        )}
+      </div>
+      <div className="mb-5 flex max-h-[200px] flex-col gap-1.5 overflow-y-auto">
+        {programs.map((p) => {
+          const on = picked.has(p.id);
+          return (
+            <button
+              type="button"
+              key={p.id}
+              onClick={() => toggleProgram(p.id)}
+              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[13px] transition-colors ${
+                on
+                  ? "border-[#1570EF] bg-[#F0F7FF] text-[#1570EF]"
+                  : "border-[#E4E7EC] text-[#344054] hover:border-[#1570EF]"
+              }`}
+            >
+              <Checkbox checked={on} />
+              <span className="min-w-0 flex-1 truncate">
+                {p.name}
+                <span className="text-[#98A2B3]"> · {p.university?.name ?? ""}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
       <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-semibold text-[#101828]">
           Select Fields
@@ -132,7 +215,7 @@ export function DownloadDialog({
         </button>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        {DOWNLOAD_FIELDS.map((f) => {
+        {fieldsAll.map((f) => {
           const isSelected = selected.has(f.key);
           return (
             <button
@@ -151,6 +234,10 @@ export function DownloadDialog({
           );
         })}
       </div>
+      <p className="mt-2 text-[11px] text-[#667085] italic">
+        Tuition and application fees are in each course&apos;s own currency.
+        The approximate column converts at mid-market exchange rates.
+      </p>
       <div className="mt-5">
         <span className="text-sm font-semibold text-[#101828]">Format</span>
         <div className="mt-2 flex overflow-hidden rounded-lg border border-[#D0D5DD]">

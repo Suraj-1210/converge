@@ -3,6 +3,7 @@ import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { db } from "~/server/db";
 import { saveBuffer } from "~/server/storage";
+import { fasterTatLabel, parseFasterTat } from "~/lib/faster-tat";
 
 // Sheet names in the Master_B2B template. Anything else is ignored.
 const SHEET_UNIVERSITY = "University";
@@ -52,6 +53,9 @@ const COURSE_HEADERS = {
   scholarship_amount: "scholarship_amount",
   min_entry_requirements: "min_entry_requirements",
   min_entry_requirements_scale: "min_entry_requirements_scale",
+  // "Same day" / "1-3 days" / "Within 7 days"; blank = standard.
+  faster_tat: "faster_tat",
+  // Legacy yes/no column from older templates (yes → Within 7 days).
   has_faster_tat: "has_faster_tat",
 } as const;
 
@@ -128,7 +132,8 @@ export interface PreviewCourseRow {
     scholarshipAmount: number | null;
     minEntryRequirements: string | null;
     minEntryRequirementsScale: string | null;
-    hasFasterTat: boolean;
+    /** src/lib/faster-tat.ts code; null = standard. */
+    fasterTat: number | null;
   };
   matchedDbId: number | null;
   status: RowStatus;
@@ -510,6 +515,13 @@ export async function parseAndValidate(
       const deadline = asDate(r[COURSE_HEADERS.application_deadline]);
       if (deadline.invalid)
         errors.push("application_deadline must be a date such as 2027-06-30, or left blank");
+      // faster_tat wins; an old file's has_faster_tat=yes maps like the
+      // migration did (Within 7 days).
+      const fasterTat = parseFasterTat(r[COURSE_HEADERS.faster_tat]);
+      if (fasterTat.invalid)
+        errors.push('faster_tat must be "Same day", "1-3 days", "Within 7 days", or left blank');
+      const fasterTatCode =
+        fasterTat.code ?? (asBool(r[COURSE_HEADERS.has_faster_tat]) ? 3 : null);
 
       if (code) {
         const codeKey = code.toLowerCase();
@@ -566,7 +578,7 @@ export async function parseAndValidate(
             r[COURSE_HEADERS.min_entry_requirements_scale],
             20,
           ),
-          hasFasterTat: asBool(r[COURSE_HEADERS.has_faster_tat]),
+          fasterTat: fasterTatCode,
         },
         matchedDbId,
         status,
@@ -701,6 +713,8 @@ export async function commitImport(
       });
       continue;
     }
+    // The preview round-trips through the browser; only keep a known code.
+    const fasterTatCode = fasterTatLabel(row.data.fasterTat) ? row.data.fasterTat : null;
     const data = {
       university_id: universityId,
       name: row.data.name,
@@ -732,7 +746,8 @@ export async function commitImport(
       scholarship_amount: row.data.scholarshipAmount,
       min_entry_requirements: row.data.minEntryRequirements,
       min_entry_requirements_scale: row.data.minEntryRequirementsScale,
-      has_faster_tat: row.data.hasFasterTat ? 1 : 0,
+      faster_tat: fasterTatCode,
+      has_faster_tat: fasterTatCode === null ? 0 : 1,
     };
     try {
       if (row.matchedDbId !== null) {

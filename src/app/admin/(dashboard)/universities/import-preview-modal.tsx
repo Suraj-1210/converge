@@ -1,5 +1,6 @@
 "use client";
 
+import { fasterTatLabel } from "~/lib/faster-tat";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Modal } from "~/components/ui/modal";
@@ -64,7 +65,7 @@ interface PreviewCourseRow {
     scholarshipAmount: number | null;
     minEntryRequirements: string | null;
     minEntryRequirementsScale: string | null;
-    hasFasterTat: boolean;
+    fasterTat: number | null;
   };
   matchedDbId: number | null;
   status: RowStatus;
@@ -454,6 +455,7 @@ function CoursesTable({
           <Th width="140px">Code</Th>
           <Th>Name</Th>
           <Th width="80px">Uni xlsxId</Th>
+          <Th width="110px">Faster TAT</Th>
           <Th width="100px">Status</Th>
           <Th width="50px" />
         </tr>
@@ -473,6 +475,9 @@ function CoursesTable({
             <Td className="font-semibold text-[#101828]">{r.data.name || "—"}</Td>
             <Td className="font-mono text-xs text-[#667085]">
               {r.xlsxUniversityId ?? "—"}
+            </Td>
+            <Td className="text-xs text-[#475467]">
+              {fasterTatLabel(r.data.fasterTat) ?? "Standard"}
             </Td>
             <Td>
               <StatusPill row={r} />

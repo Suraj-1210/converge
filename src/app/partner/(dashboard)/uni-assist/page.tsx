@@ -6,7 +6,16 @@ import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { UniLogo } from "~/components/ui/uni-logo";
-import { formatAppFee } from "~/app/admin/(dashboard)/uni-assist/uni-assist-lib";
+import { DownloadDialog } from "~/app/admin/(dashboard)/uni-assist/dialogs";
+import {
+  DISPLAY_CURRENCIES,
+  FASTER_TAT_FILTER,
+  appFeeOnly,
+  approxIn,
+  bracketKey,
+  fasterTatTag,
+} from "~/app/admin/(dashboard)/uni-assist/uni-assist-lib";
+import { HOME_CURRENCY, bracketsFor, formatMoney } from "~/lib/fx-convert";
 import { ShortlistApproval } from "~/server/db/enums";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -79,6 +88,12 @@ interface SearchFormState {
   intakeYear: string;
   degreeLevel: string;
   country: string;
+  fasterTat: string; // "" = any, else the slowest faster-TAT code allowed
+  // Fees show (≈), sort and bracket in this currency.
+  currency: string;
+  // Picked tuition bracket's bounds in `currency` ("" = open end).
+  tuitionMin: string;
+  tuitionMax: string;
 }
 
 const emptyForm = (): SearchFormState => ({
@@ -87,6 +102,10 @@ const emptyForm = (): SearchFormState => ({
   intakeYear: "",
   degreeLevel: "",
   country: "",
+  fasterTat: "",
+  currency: HOME_CURRENCY,
+  tuitionMin: "",
+  tuitionMax: "",
 });
 
 // ----- Page ---------------------------------------------------------------
@@ -127,6 +146,15 @@ export default function PartnerUniAssistPage() {
   };
 
   const filtersMeta = api.universities.listSearchFilters.useQuery();
+  // Live exchange rates (fx_rate) + the tuition brackets from Settings.
+  const money = api.universities.partnerUniAssistMoney.useQuery();
+  const rates = useMemo(() => money.data?.rates ?? {}, [money.data]);
+  const brackets = useMemo(
+    () => bracketsFor(money.data?.brackets ?? {}, form.currency),
+    [money.data, form.currency],
+  );
+  // The server converts each course's fee to `currency` before bracketing
+  // and sorting, so mixed-currency results compare correctly.
   const programs = api.universities.searchPrograms.useQuery({
     query: applied.query.trim() || undefined,
     country: applied.country || undefined,
@@ -134,6 +162,10 @@ export default function PartnerUniAssistPage() {
     intakeMonth: applied.intakeMonth || undefined,
     degreeLevel:
       applied.degreeLevel === "" ? undefined : Number(applied.degreeLevel),
+    fasterTat: applied.fasterTat ? Number(applied.fasterTat) : undefined,
+    currency: applied.currency,
+    tuitionMin: applied.tuitionMin ? Number(applied.tuitionMin) : undefined,
+    tuitionMax: applied.tuitionMax ? Number(applied.tuitionMax) : undefined,
     sortBy,
   });
 
@@ -146,13 +178,9 @@ export default function PartnerUniAssistPage() {
 
   // Filter dropdowns auto-apply on change (search input is the only one that
   // needs an explicit Search click).
-  const setFilter = <K extends keyof SearchFormState>(
-    key: K,
-    value: SearchFormState[K],
-  ) => {
-    const nextForm = { ...form, [key]: value };
-    setForm(nextForm);
-    setApplied({ ...applied, [key]: value });
+  const setFilter = (patch: Partial<SearchFormState>) => {
+    setForm({ ...form, ...patch });
+    setApplied({ ...applied, ...patch });
   };
 
   // Students this partner can see (owner: the agency's; counsellor: assigned
@@ -191,6 +219,39 @@ export default function PartnerUniAssistPage() {
     onError: (e) => showToast(e.message),
   });
   const shortlistBusy = addShortlist.isPending || removeShortlist.isPending;
+
+  // Download: only the selected student's shortlist, up to 10 per sheet.
+  const [downloadOpen, setDownloadOpen] = useState(false);
+  const [downloadPrograms, setDownloadPrograms] = useState<Program[]>([]);
+  const openDownload = async () => {
+    if (studentId === null) {
+      showToast(
+        "Select a student first. Only programs on the student's shortlist can be downloaded.",
+      );
+      return;
+    }
+    // Rejected picks stay on the shortlist (re-propose) but aren't options.
+    const ids = (shortlistQ.data ?? [])
+      .filter((r) => r.approvalStatus !== ShortlistApproval.REJECTED)
+      .map((r) => r.courseId);
+    if (ids.length === 0) {
+      showToast(
+        `Nothing is shortlisted for ${selectedStudent ? studentName(selectedStudent) : "this student"} yet. Shortlist programs first, then download.`,
+      );
+      return;
+    }
+    try {
+      const rows = await utils.universities.searchPrograms.fetch({
+        courseIds: ids,
+        currency: applied.currency,
+        sortBy: "relevance",
+      });
+      setDownloadPrograms(rows);
+      setDownloadOpen(true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't load the shortlist");
+    }
+  };
 
   const toggleShortlist = (courseId: number) => {
     if (studentId === null) {
@@ -329,27 +390,45 @@ export default function PartnerUniAssistPage() {
         <div className="flex flex-wrap items-center gap-2.5">
           <FilterPill
             value={form.intakeMonth}
-            onChange={(v) => setFilter("intakeMonth", v)}
+            onChange={(v) => setFilter({ intakeMonth: v })}
             options={intakeOptions}
             placeholder="Intake"
           />
           <FilterPill
             value={form.intakeYear}
-            onChange={(v) => setFilter("intakeYear", v)}
+            onChange={(v) => setFilter({ intakeYear: v })}
             options={yearOptions}
             placeholder="Year"
           />
           <FilterPill
             value={form.degreeLevel}
-            onChange={(v) => setFilter("degreeLevel", v)}
+            onChange={(v) => setFilter({ degreeLevel: v })}
             options={levelOptions}
             placeholder="Study Level"
           />
           <FilterPill
             value={form.country}
-            onChange={(v) => setFilter("country", v)}
+            onChange={(v) => setFilter({ country: v })}
             options={countryOptions}
             placeholder="Country"
+          />
+          <FilterPill
+            value={form.fasterTat}
+            onChange={(v) => setFilter({ fasterTat: v })}
+            options={FASTER_TAT_FILTER}
+            placeholder="Faster TAT"
+          />
+          <FilterPill
+            value={bracketKey(form.tuitionMin, form.tuitionMax)}
+            onChange={(v) => {
+              const b = brackets.find((x) => bracketKey(x.min, x.max) === v);
+              setFilter({ tuitionMin: b?.min ?? "", tuitionMax: b?.max ?? "" });
+            }}
+            options={brackets.map((b) => ({
+              value: bracketKey(b.min, b.max),
+              label: b.label,
+            }))}
+            placeholder={`Tuition (${form.currency})`}
           />
           {/* Discipline filter is on the mock but we don't have a discipline
               column yet — wire up once we add taxonomy. */}
@@ -383,6 +462,35 @@ export default function PartnerUniAssistPage() {
             : `Showing ${rows.length} program${rows.length === 1 ? "" : "s"}`}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void openDownload()}
+            title="Download the selected student's shortlisted programs (up to 10)"
+            className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-[#D0D5DD] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF]"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              className="h-3.5 w-3.5"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download
+          </button>
+          <span className="text-xs font-medium text-[#667085]">Fees in:</span>
+          <FormSelect
+            options={DISPLAY_CURRENCIES.map((c) => ({ value: c, label: c }))}
+            value={form.currency}
+            // A bracket belongs to one currency, so switching clears it.
+            onChange={(e) =>
+              setFilter({ currency: e.target.value, tuitionMin: "", tuitionMax: "" })
+            }
+            className="!h-[36px] !text-xs"
+          />
           <span className="text-xs font-medium text-[#667085]">Sort by:</span>
           <FormSelect
             options={SORT_OPTIONS}
@@ -419,11 +527,23 @@ export default function PartnerUniAssistPage() {
               program={p}
               shortlistState={partnerShortlistState(shortlist.get(p.id))}
               onToggleShortlist={() => toggleShortlist(p.id)}
+              displayCurrency={applied.currency}
+              rates={rates}
             />
           ))}
         </div>
       )}
 
+      <DownloadDialog
+        open={downloadOpen}
+        onClose={() => setDownloadOpen(false)}
+        programs={downloadPrograms}
+        studentName={selectedStudent ? studentName(selectedStudent) : ""}
+        displayCurrency={applied.currency}
+        rates={rates}
+        side="partner"
+        onDone={showToast}
+      />
       <Toast message={toastMsg} open={toastOpen} onClose={() => setToastOpen(false)} />
     </>
   );
@@ -534,17 +654,23 @@ function ProgramCard({
   program,
   shortlistState,
   onToggleShortlist,
+  displayCurrency,
+  rates,
 }: {
   program: Program;
   shortlistState: ShortlistState;
   onToggleShortlist: () => void;
+  displayCurrency: string;
+  rates: Record<string, number>;
 }) {
   const uni = program.university;
   const tags = collectTags(program);
   const shortlisted = shortlistState !== "none";
   const button = shortlistState === "none" ? null : SHORTLIST_BUTTON[shortlistState];
-  const tuition = formatTuition(program.tuitionFee, program.currency);
-  const appFee = formatAppFee(program.appFee, program.currency, program.hasAppFeeWaiver);
+  const tuition =
+    program.tuitionFee === null ? null : formatMoney(program.tuitionFee, program.currency);
+  const tuitionApprox = approxIn(program.tuitionFee, program.currency, displayCurrency, rates);
+  const appFee = appFeeOnly(program.appFee, program.currency);
   const intake = formatIntake(program.intakeMonth, program.intakeYear);
   const duration = program.durationMonths
     ? formatDuration(program.durationMonths)
@@ -600,16 +726,18 @@ function ProgramCard({
           )}
           {tuition && (
             <MetaItem strong>
-              <MoneyIcon />
-              {tuition}
+              Tuition Fee: {tuition}
+              {tuitionApprox && (
+                <span
+                  className="font-normal text-[#667085]"
+                  title={`Approximate, converted to ${displayCurrency} at mid-market rates`}
+                >
+                  ({tuitionApprox})
+                </span>
+              )}
             </MetaItem>
           )}
-          {appFee && (
-            <MetaItem>
-              <MoneyIcon />
-              {appFee}
-            </MetaItem>
-          )}
+          {appFee && <MetaItem>Application Fee: {appFee}</MetaItem>}
         </div>
       </div>
 
@@ -660,7 +788,8 @@ function collectTags(p: Program): Array<{ label: string; tone: TagTone }> {
   if (p.isStem) out.push({ label: "STEM", tone: "stem" });
   if (p.hasAppFeeWaiver) out.push({ label: "Fee Waiver", tone: "feewaiver" });
   if (p.isCoopAvailable) out.push({ label: "Co-op", tone: "coop" });
-  if (p.hasFasterTat) out.push({ label: "Faster TAT", tone: "tat" });
+  const tat = fasterTatTag(p.fasterTat);
+  if (tat) out.push({ label: tat, tone: "tat" });
   if (p.isOpen) out.push({ label: "Open", tone: "open" });
   return out;
 }
@@ -685,13 +814,6 @@ function Tag({ tone, children }: { tone: TagTone; children: React.ReactNode }) {
 }
 
 // ----- Format helpers -----------------------------------------------------
-
-function formatTuition(fee: number | null, currency: string | null): string | null {
-  if (fee === null) return null;
-  const ccy = currency ?? "";
-  const formatted = fee.toLocaleString("en-US");
-  return `${ccy} ${formatted}/yr`.trim();
-}
 
 function formatIntake(month: string | null, year: number | null): string | null {
   if (!month && !year) return null;
@@ -774,21 +896,6 @@ function CalendarIcon() {
       <line x1="16" y1="2" x2="16" y2="6" />
       <line x1="8" y1="2" x2="8" y2="6" />
       <line x1="3" y1="10" x2="21" y2="10" />
-    </svg>
-  );
-}
-
-function MoneyIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#98A2B3"
-      strokeWidth={2}
-      className="h-3.5 w-3.5"
-    >
-      <line x1="12" y1="1" x2="12" y2="23" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
     </svg>
   );
 }

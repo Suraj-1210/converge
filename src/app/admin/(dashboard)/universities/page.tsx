@@ -11,6 +11,7 @@ import { StatusBadge } from "~/components/ui/status-badge";
 import { Toast } from "~/components/ui/toast";
 import { UniLogo } from "~/components/ui/uni-logo";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { FASTER_TAT_OPTIONS } from "~/lib/faster-tat";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import {
@@ -162,7 +163,7 @@ interface CourseFormState {
   scholarshipAmount: string;
   minEntryRequirements: string;
   minEntryRequirementsScale: string;
-  hasFasterTat: boolean;
+  fasterTat: string; // src/lib/faster-tat.ts code, "" = standard
 }
 
 const emptyCourseForm = (): CourseFormState => ({
@@ -194,7 +195,7 @@ const emptyCourseForm = (): CourseFormState => ({
   scholarshipAmount: "",
   minEntryRequirements: "",
   minEntryRequirementsScale: "",
-  hasFasterTat: false,
+  fasterTat: "",
 });
 
 const numOrNull = (s: string): number | null => {
@@ -510,7 +511,7 @@ export default function AdminUniversitiesPage() {
       minEntryRequirements: courseForm.minEntryRequirements.trim() || null,
       minEntryRequirementsScale:
         courseForm.minEntryRequirementsScale.trim() || null,
-      hasFasterTat: courseForm.hasFasterTat,
+      fasterTat: courseForm.fasterTat ? Number(courseForm.fasterTat) : null,
     };
     if (editingCourseId != null) {
       updateCourse.mutate({ ...payload, id: editingCourseId });
@@ -552,7 +553,7 @@ export default function AdminUniversitiesPage() {
       scholarshipAmount: c.scholarshipAmount == null ? "" : String(c.scholarshipAmount),
       minEntryRequirements: c.minEntryRequirements ?? "",
       minEntryRequirementsScale: c.minEntryRequirementsScale ?? "",
-      hasFasterTat: c.hasFasterTat,
+      fasterTat: c.fasterTat == null ? "" : String(c.fasterTat),
     });
     setCourseModalOpen(true);
   }
@@ -1196,12 +1197,17 @@ export default function AdminUniversitiesPage() {
             checked={courseForm.hasScholarship}
             onChange={(v) => setCourseForm({ ...courseForm, hasScholarship: v })}
           />
-          <Toggle
-            label="Faster TAT"
-            checked={courseForm.hasFasterTat}
-            onChange={(v) => setCourseForm({ ...courseForm, hasFasterTat: v })}
-          />
         </div>
+        <FormSelect
+          label="Faster TAT"
+          placeholder="Standard"
+          options={FASTER_TAT_OPTIONS.map((o) => ({
+            value: String(o.code),
+            label: o.label,
+          }))}
+          value={courseForm.fasterTat}
+          onChange={(e) => setCourseForm({ ...courseForm, fasterTat: e.target.value })}
+        />
         {courseErrors.form && <ErrorBanner message={courseErrors.form} />}
       </Modal>
 

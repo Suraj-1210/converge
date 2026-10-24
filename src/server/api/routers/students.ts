@@ -43,6 +43,10 @@ import {
   type StaffUser,
 } from "~/server/staff-access";
 import { decryptSecret, encryptSecret } from "~/server/crypto";
+import {
+  contractForVendor,
+  defaultVendorFor,
+} from "~/server/universities/default-vendor";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
 import {
@@ -1843,6 +1847,13 @@ export const studentsRouter = createTRPCRouter({
         });
       }
 
+      // Counsellor Choice starts as the university's default vendor
+      // (Commission Rates); the counsellor can change it on the card.
+      const course = await db.course.findUnique({
+        where: { id: input.courseId },
+        select: { university_id: true },
+      });
+      const vendor = course ? await defaultVendorFor(course.university_id) : null;
       const app = await db.application.create({
         data: {
           student_id: input.studentId,
@@ -1850,6 +1861,8 @@ export const studentsRouter = createTRPCRouter({
           // NULL for an independent counsellor's student; billing pays the
           // independent who created the student (src/server/payee.ts).
           org_id: student.org_id,
+          counsellor_vendor: vendor?.name ?? null,
+          commission_contract_id: vendor?.contractId ?? null,
           status: UniApplicationStatus.BEGIN_APPLICATION,
           stage_history: {
             create: { stage: UniApplicationStatus.BEGIN_APPLICATION },
@@ -1955,9 +1968,18 @@ export const studentsRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await requireStaffApplication(ctx.cpUser, input.applicationId);
+      const current = await db.application.findUnique({
+        where: { id: input.applicationId },
+        select: { course: { select: { university_id: true } } },
+      });
+      // Link the university × vendor contract behind the choice, if any.
+      const contractId =
+        input.vendor && current
+          ? await contractForVendor(current.course.university_id, input.vendor)
+          : null;
       await db.application.update({
         where: { id: input.applicationId },
-        data: { counsellor_vendor: input.vendor },
+        data: { counsellor_vendor: input.vendor, commission_contract_id: contractId },
       });
       await db.audit_log.create({
         data: {

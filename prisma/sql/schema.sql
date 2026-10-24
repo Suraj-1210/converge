@@ -470,7 +470,8 @@ CREATE TABLE IF NOT EXISTS `course` (
   `scholarship_amount`            DECIMAL(12,2) UNSIGNED NULL DEFAULT NULL,
   `min_entry_req`                 VARCHAR(2000) NULL DEFAULT NULL,  -- renamed from min_entry_requirements; full requirement text
   `min_entry_requirements_scale`  VARCHAR(20)   NULL DEFAULT NULL,
-  `has_faster_tat`                TINYINT(1) NULL DEFAULT NULL,
+  `has_faster_tat`                TINYINT(1) NULL DEFAULT NULL,  -- legacy flag, kept in step with faster_tat
+  `faster_tat`                    TINYINT UNSIGNED NULL DEFAULT NULL,  -- 1=Same day, 2=1-3 days, 3=Within 7 days, NULL=standard (src/lib/faster-tat.ts)
   PRIMARY KEY (`id`),
   INDEX `fk_course_university1_idx` (`university_id` ASC) VISIBLE,
   UNIQUE INDEX `code_UNIQUE`        (`code` ASC) VISIBLE,

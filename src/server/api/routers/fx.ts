@@ -4,7 +4,8 @@ import { createTRPCRouter, protectedAdminProcedure, financeManagerProcedure } fr
 import { db } from "~/server/db";
 
 // Currencies we convert to INR for estimates (INR is the base, never stored here).
-export const FX_CURRENCIES = ["USD", "GBP", "EUR", "AUD", "CAD", "NZD", "SGD"];
+// CHF/HKD/JPY: course currencies Uni Assist converts tuition from.
+export const FX_CURRENCIES = ["USD", "GBP", "EUR", "AUD", "CAD", "NZD", "SGD", "CHF", "HKD", "JPY"];
 // Free, no-key, daily mid-market feed (USD base; rates[X] = X per 1 USD).
 const FEED_URL = "https://open.er-api.com/v6/latest/USD";
 const FEED_SOURCE = "open.er-api.com";
