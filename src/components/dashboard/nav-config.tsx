@@ -130,7 +130,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       // TAT Management: real data for Chat Response (partner chat); the other
       // actions are still dev-only samples. Super Admin, Operations Lead,
-      // Counsellor Lead.
+      // Counsellor Lead, Counsellor.
       {
         label: "TAT Management",
         href: "/admin/tat-management",
@@ -179,7 +179,7 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Commission Ledger",
         href: "/admin/commissions",
         icon: <AuditLogIcon />,
-        section: "finance",
+        section: "commissions",
       },
       {
         label: "Invoices & Payouts",

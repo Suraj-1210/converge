@@ -25,7 +25,7 @@ import {
 // chat) is the first measured action. See src/server/tat.ts.
 
 // Who may open TAT Management: the "tat" section in ~/lib/admin-sections
-// (Super Admin, Counsellor Lead, Operations Lead). Its rows follow the admin
+// (Super Admin, Counsellor Lead, Operations Lead, Counsellor). Its rows follow the admin
 // Students list's visibility (staff-access.ts), so a lead sees their team's.
 const tatViewProcedure = adminSectionProcedure("tat");
 

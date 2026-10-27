@@ -1,16 +1,23 @@
 import { AdminRole } from "~/server/db/enums";
 
 // Which admin roles may use each section of the admin portal (decided with
-// Suraj, 24 Oct 2026). One table drives the sidebar, the page gate in
+// Suraj, 24 Oct 2026; BDM and Counsellor TAT revised 27 Oct). One table drives the sidebar, the page gate in
 // DashboardShell and the server (adminSectionProcedure in ~/server/api/trpc),
 // so hiding a page and refusing its data can't drift apart.
 //
 //   Counsellor / Ops Executive (4, 6) → Dashboard, Students, Applications,
-//                                       Uni Assist, Events (+ Partner Chat: 4)
+//                                       Uni Assist, Events (+ Partner Chat
+//                                       and TAT: 4)
 //   Counsellor Lead / Ops Lead (3, 5) → that, plus Partners, Student
 //                                       Placements, Counselor Approvals,
 //                                       Universities, TAT, Partner Chat
-//   Finance, BDM, Content (1, 2, 8, 7) → what they had before
+//   BDM (8)                           → Partners, Student Placements,
+//                                       Universities, BDM Performance, plus
+//                                       Counselor Approvals and the Commission
+//                                       Ledger view-only; no Partner Chat/TAT.
+//                                       Its data is scoped to the partners it
+//                                       is BDM of (~/server/staff-access).
+//   Finance, Content (1, 2, 7)        → what they had before
 //   Users, Settings, Audit Logs        → Super Admin only
 //
 // Partner Chat follows the chat module's own participant rule
@@ -25,6 +32,7 @@ export type AdminSection =
   | "partnerChat"
   | "tat"
   | "bdm"
+  | "commissions"
   | "finance"
   | "system";
 
@@ -57,14 +65,27 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   universities: ABOVE_COUNSELLOR,
   notes: ABOVE_COUNSELLOR,
   partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
-  tat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD],
+  tat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
   bdm: [SUPER_ADMIN, BDM],
+  commissions: [SUPER_ADMIN, FINANCE_MANAGER, FINANCE_EXECUTIVE, BDM],
   finance: [SUPER_ADMIN, FINANCE_MANAGER, FINANCE_EXECUTIVE],
   system: [SUPER_ADMIN],
 };
 
+// Roles that may open a section but not change anything in it. The server
+// refuses their writes (requireSectionEdit in ~/server/staff-access); pages
+// hide the action buttons via canEditSection.
+export const ADMIN_SECTION_READ_ONLY: Partial<Record<AdminSection, number[]>> = {
+  counsellorApprovals: [BDM],
+  commissions: [BDM],
+};
+
 export function canUseSection(role: number, section: AdminSection): boolean {
   return ADMIN_SECTION_ROLES[section].includes(role);
+}
+
+export function canEditSection(role: number, section: AdminSection): boolean {
+  return canUseSection(role, section) && !ADMIN_SECTION_READ_ONLY[section]?.includes(role);
 }
 
 // Admin pages by path prefix. Anything not listed (Dashboard, Students,
@@ -80,7 +101,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/bdm-performance", "bdm"],
   ["/admin/commission-rates", "finance"],
   ["/admin/university-billing", "finance"],
-  ["/admin/commissions", "finance"],
+  ["/admin/commissions", "commissions"],
   ["/admin/invoices", "finance"],
   ["/admin/reconciliation", "finance"],
   ["/admin/bank-verifications", "finance"],
