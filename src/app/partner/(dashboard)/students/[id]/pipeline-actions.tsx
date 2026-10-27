@@ -438,13 +438,15 @@ export function DeferralReportAction({
 const REVIEW_TEXT = {
   pending: { text: "Awaiting Collegepond verification", cls: "text-[#B54708]" },
   verified: { text: "Verified by Collegepond", cls: "text-[#067647]" },
-  rejected: { text: "Not accepted — please upload again", cls: "text-[#B42318]" },
+  rejected: { text: "Not accepted", cls: "text-[#B42318]" },
 } as const;
 
-// From Deposit Paid on, the partner uploads the deposit slip, then the visa
-// application documents, then the visa approved copy (Day 5 testing). Each is
-// saved to the student's documents, tied to this application, and verified
-// by Collegepond.
+// From Deposit Paid on, the partner uploads the deposit slip and TT copy,
+// then the visa application documents, then the visa approved copy (Day 5
+// testing). Each is saved to the student's documents, tied to this
+// application, and verified by Collegepond. Every upload stays listed with
+// its own status, so a rejected one keeps its reason after it is replaced
+// (27 Oct testing).
 export function ApplicationUploads({
   app: a,
   studentId,
@@ -462,18 +464,25 @@ export function ApplicationUploads({
   const kinds = applicationUploadKinds(a.status);
   if (kinds.length === 0) return null;
 
-  const upload = async (file: File) => {
+  const upload = async (files: File[]) => {
     const kind = kinds.find((k) => k.docType === target);
     if (!kind) return;
     setBusy(kind.docType);
     try {
-      const fd = new FormData();
-      fd.append("studentId", String(studentId));
-      fd.append("docType", kind.docType);
-      fd.append("applicationId", String(a.id));
-      fd.append("file", file);
-      await postForm("/api/partner/student-doc", fd);
-      onToast(`${kind.label} uploaded — Collegepond will verify it`);
+      // One request per file, in order, so each gets its own row and status.
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("studentId", String(studentId));
+        fd.append("docType", kind.docType);
+        fd.append("applicationId", String(a.id));
+        fd.append("file", file);
+        await postForm("/api/partner/student-doc", fd);
+      }
+      onToast(
+        files.length > 1
+          ? `${files.length} files uploaded to ${kind.label} — Collegepond will verify them`
+          : `${kind.label} uploaded — Collegepond will verify it`,
+      );
       onChanged();
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Upload failed");
@@ -489,14 +498,22 @@ export function ApplicationUploads({
       <ul className="mt-2 space-y-2.5">
         {kinds.map((k) => {
           const files = a.applicationDocs.filter((d) => d.docType === k.docType);
-          const ok = files.some((d) => d.review !== "rejected");
+          const live = files.filter((d) => d.current);
+          const ok = live.some((d) => d.review !== "rejected");
+          // A verified single document is final: Collegepond replaces it if needed.
+          const locked = !k.manyFiles && live.some((d) => d.review === "verified");
+          const needsRedo = !ok && live.some((d) => d.review === "rejected");
           return (
             <li key={k.docType} className="text-[13px]">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[#344054]">
                   <span className="font-medium">{k.label}</span>
                   {k.required && !ok && <span className="ml-1.5 text-[11px] font-semibold text-[#B42318]">Required</span>}
+                  {needsRedo && (
+                    <span className="ml-1.5 text-[11px] font-semibold text-[#B42318]">Please upload a new one</span>
+                  )}
                 </span>
+                {!locked && (
                 <button
                   type="button"
                   disabled={busy !== null}
@@ -508,22 +525,29 @@ export function ApplicationUploads({
                 >
                   {busy === k.docType ? "Uploading…" : files.length ? "Upload another" : "Upload"}
                 </button>
+                )}
               </div>
               {files.length === 0 ? (
                 <div className="text-[12px] text-[#98A2B3]">{k.hint}</div>
               ) : (
                 <ul className="mt-1 space-y-0.5">
-                  {files.map((d) => (
-                    <li key={d.id} className="text-[12px]">
-                      <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
-                        {d.fileName}
-                      </a>
-                      <span className={`ml-2 font-medium ${REVIEW_TEXT[d.review].cls}`}>{REVIEW_TEXT[d.review].text}</span>
-                      {d.review === "rejected" && d.reviewNote && (
-                        <span className="text-[#B42318]">: {d.reviewNote}</span>
-                      )}
-                    </li>
-                  ))}
+                  {files.map((d) => {
+                    const replaced = !d.current && d.review !== "rejected";
+                    return (
+                      <li key={d.id} className={`text-[12px] ${replaced ? "opacity-60" : ""}`}>
+                        <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
+                          {d.fileName}
+                        </a>
+                        <span className="ml-2 text-[#98A2B3]">{fmtShort(d.createdAt)}</span>
+                        <span className={`ml-2 font-medium ${replaced ? "text-[#667085]" : REVIEW_TEXT[d.review].cls}`}>
+                          {replaced ? "Replaced by a newer upload" : REVIEW_TEXT[d.review].text}
+                        </span>
+                        {d.review === "rejected" && d.reviewNote && (
+                          <span className="text-[#B42318]">: {d.reviewNote}</span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </li>
@@ -534,14 +558,19 @@ export function ApplicationUploads({
         ref={input}
         type="file"
         accept={ALLOWED}
+        multiple={kinds.find((k) => k.docType === target)?.manyFiles ?? false}
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const picked = Array.from(e.target.files ?? []);
           e.target.value = "";
-          if (file) void upload(file);
+          if (picked.length) void upload(picked);
           else setTarget(null);
         }}
       />
     </div>
   );
+}
+
+function fmtShort(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }

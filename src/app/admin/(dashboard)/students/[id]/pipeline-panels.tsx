@@ -556,6 +556,7 @@ const REVIEW_CHIP = {
   pending: { text: "Awaiting verification", cls: "bg-[#FFFAEB] text-[#B54708]" },
   verified: { text: "Verified", cls: "bg-[#ECFDF3] text-[#067647]" },
   rejected: { text: "Not accepted", cls: "bg-[#FEF3F2] text-[#B42318]" },
+  replaced: { text: "Replaced", cls: "bg-[#F2F4F7] text-[#667085]" },
 } as const;
 
 // The deposit slip, visa documents and visa approved copy the partner
@@ -593,11 +594,10 @@ export function ApplicationDocsPanel({
     a.stage === UniApplicationStatus.VISA_FILED ||
     a.stage === UniApplicationStatus.VISA_SECURED ||
     a.stage === UniApplicationStatus.ENROLLED
-      ? !docs.some((d) => d.docType === "deposit_receipt" && d.review !== "rejected")
+      ? !docs.some((d) => d.docType === "deposit_receipt" && d.current && d.review !== "rejected")
       : false;
   const kinds = applicationUploadKinds(a.status);
   if (docs.length === 0 && kinds.length === 0) return null;
-  const labelOf = (t: string) => APPLICATION_UPLOAD_KINDS.find((k) => k.docType === t)?.label ?? t;
   const upload = async (file: File) => {
     const kind = kinds.find((k) => k.docType === target);
     if (!kind) return;
@@ -661,74 +661,90 @@ export function ApplicationDocsPanel({
           else setTarget(null);
         }}
       />
-      <ul className="space-y-2">
-        {docs.map((d) => {
-          const chip = REVIEW_CHIP[d.review];
+      <div className="space-y-3">
+        {APPLICATION_UPLOAD_KINDS.map((k) => {
+          const versions = docs.filter((d) => d.docType === k.docType);
+          if (versions.length === 0) return null;
           return (
-            <li key={d.id} className="text-[13px]">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold text-[#344054]">{labelOf(d.docType)}</span>
-                <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
-                  {d.fileName}
-                </a>
-                <span className="text-[12px] text-[#98A2B3]">{fmtDate(d.createdAt)}</span>
-                <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>{chip.text}</span>
-                {d.review !== "verified" && rejectingId !== d.id && (
-                  <span className="ml-auto flex gap-2">
-                    {d.review === "pending" && (
-                      <button
-                        type="button"
-                        disabled={reviewMut.isPending}
-                        onClick={() => setRejectingId(d.id)}
-                        className="cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#B42318] hover:bg-[#FEF3F2] disabled:opacity-50"
-                      >
-                        Reject
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={reviewMut.isPending}
-                      onClick={() => reviewMut.mutate({ documentId: d.id, approve: true })}
-                      className="cursor-pointer rounded-md bg-[#1570EF] px-2.5 py-1 text-[12px] font-semibold text-white hover:bg-[#175CD3] disabled:opacity-50"
-                    >
-                      Verify
-                    </button>
-                  </span>
-                )}
-              </div>
-              {d.review === "rejected" && d.reviewNote && (
-                <div className="mt-0.5 text-[12px] text-[#B42318]">{d.reviewNote}</div>
-              )}
-              {rejectingId === d.id && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <input
-                    value={reason}
-                    onChange={(e) => setReason(e.target.value)}
-                    maxLength={255}
-                    placeholder="Why isn't it acceptable? (sent to the partner)"
-                    className="h-8 min-w-[240px] flex-1 rounded-lg border border-[#D0D5DD] px-3 text-[13px] outline-none focus:border-[#1570EF]"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setRejectingId(null)}
-                    className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={reviewMut.isPending || !reason.trim()}
-                    onClick={() => reviewMut.mutate({ documentId: d.id, approve: false, note: reason.trim() })}
-                    className="cursor-pointer rounded-lg bg-[#D92D20] px-3 text-[12px] font-semibold text-white hover:bg-[#B42318] disabled:opacity-50"
-                  >
-                    Reject document
-                  </button>
-                </div>
-              )}
-            </li>
+            <div key={k.docType}>
+              <div className="text-[12px] font-semibold tracking-wide text-[#475467] uppercase">{k.label}</div>
+              <ul className="mt-1 space-y-1.5">
+                {versions.map((d) => {
+                  const replaced = !d.current && d.review !== "rejected";
+                  const chip = replaced ? REVIEW_CHIP.replaced : REVIEW_CHIP[d.review];
+                  const canReview = d.review === "pending" && d.current;
+                  return (
+                    <li key={d.id} className={`text-[13px] ${replaced ? "opacity-60" : ""}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <a href={d.fileUrl} target="_blank" rel="noreferrer" className="text-[#1570EF] underline">
+                          {d.fileName}
+                        </a>
+                        <span className="text-[12px] text-[#98A2B3]">{fmtDate(d.createdAt)}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>
+                          {chip.text}
+                        </span>
+                        {canReview && rejectingId !== d.id && (
+                          <span className="ml-auto flex gap-2">
+                            <button
+                              type="button"
+                              disabled={reviewMut.isPending}
+                              onClick={() => setRejectingId(d.id)}
+                              className="cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#B42318] hover:bg-[#FEF3F2] disabled:opacity-50"
+                            >
+                              Reject
+                            </button>
+                            <button
+                              type="button"
+                              disabled={reviewMut.isPending}
+                              onClick={() => reviewMut.mutate({ documentId: d.id, approve: true })}
+                              className="cursor-pointer rounded-md bg-[#1570EF] px-2.5 py-1 text-[12px] font-semibold text-white hover:bg-[#175CD3] disabled:opacity-50"
+                            >
+                              Verify
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      {d.review !== "pending" && d.reviewedAt && (
+                        <div className={`mt-0.5 text-[12px] ${d.review === "rejected" ? "text-[#B42318]" : "text-[#667085]"}`}>
+                          {d.review === "rejected" ? "Rejected" : "Verified"} by {d.reviewedBy ?? "Collegepond"} ·{" "}
+                          {fmtDate(d.reviewedAt)}
+                          {d.review === "rejected" && d.reviewNote ? `: ${d.reviewNote}` : ""}
+                        </div>
+                      )}
+                      {rejectingId === d.id && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <input
+                            value={reason}
+                            onChange={(e) => setReason(e.target.value)}
+                            maxLength={255}
+                            placeholder="Why isn't it acceptable? (sent to the partner)"
+                            className="h-8 min-w-[240px] flex-1 rounded-lg border border-[#D0D5DD] px-3 text-[13px] outline-none focus:border-[#1570EF]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setRejectingId(null)}
+                            className="cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={reviewMut.isPending || !reason.trim()}
+                            onClick={() => reviewMut.mutate({ documentId: d.id, approve: false, note: reason.trim() })}
+                            className="cursor-pointer rounded-lg bg-[#D92D20] px-3 text-[12px] font-semibold text-white hover:bg-[#B42318] disabled:opacity-50"
+                          >
+                            Reject document
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           );
         })}
-      </ul>
+      </div>
     </div>
   );
 }

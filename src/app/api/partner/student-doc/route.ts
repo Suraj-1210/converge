@@ -7,7 +7,7 @@ import {
   resolvePartnerSession,
 } from "~/server/auth/jwt";
 import { db } from "~/server/db";
-import { UserStatus } from "~/server/db/enums";
+import { DocumentStatus, UserStatus } from "~/server/db/enums";
 import { findVisibleStudent } from "~/server/partner-access";
 import { applicationUploadKind } from "~/lib/application-uploads";
 import { notifyApplicationUpload } from "~/server/application-docs";
@@ -69,6 +69,25 @@ export async function POST(req: Request) {
         { error: "That document can't be uploaded for this application at its current stage" },
         { status: 409 },
       );
+    }
+    // A verified single document (deposit slip, TT copy, visa copy) is final
+    // for the partner; Collegepond replaces it if it ever needs to.
+    if (!kind.manyFiles) {
+      const verified = await db.document.findFirst({
+        where: {
+          application_id: app.id,
+          doc_type: kind.docType,
+          is_most_recent: 1,
+          status: DocumentStatus.APPROVED,
+        },
+        select: { id: true },
+      });
+      if (verified) {
+        return NextResponse.json(
+          { error: `The ${kind.label.toLowerCase()} is already verified. Ask your Collegepond counsellor to replace it.` },
+          { status: 409 },
+        );
+      }
     }
     forApplication = { id: app.id, label: kind.label };
   }

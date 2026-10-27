@@ -970,6 +970,19 @@ async function loadStudentFull(id: number) {
         orderBy: { created_at: "desc" },
       }),
     ]);
+  // Who verified or rejected each application document (admin view only).
+  const reviewerIds = [
+    ...new Set(
+      documents.flatMap((d) => (d.application_id && d.reviewed_by_cp_user_id ? [d.reviewed_by_cp_user_id] : [])),
+    ),
+  ];
+  const reviewers = reviewerIds.length
+    ? await db.collegepond_user.findMany({
+        where: { id: { in: reviewerIds } },
+        select: { id: true, first_name: true, last_name: true },
+      })
+    : [];
+  const reviewerName = new Map(reviewers.map((r) => [r.id, fullName(r)]));
   return {
     ...toApi(s),
     notes: notes.map((n) => ({
@@ -1071,16 +1084,20 @@ async function loadStudentFull(id: number) {
             }
           : null,
       // What the partner uploaded for this application after Deposit Paid
-      // (deposit slip, visa documents, visa approved copy), with Collegepond's
-      // verification.
+      // (deposit slip, TT copy, visa documents, visa approved copy), with
+      // Collegepond's verification. Every version, newest first: `current`
+      // is false once a newer upload replaced a single-slot document.
       applicationDocs: documents
-        .filter((d) => d.application_id === a.id && (d.is_most_recent === 1 || isMultiDocType(d.doc_type)))
+        .filter((d) => d.application_id === a.id)
         .map((d) => ({
           id: d.id,
           docType: d.doc_type,
           fileName: d.file_name,
           fileUrl: resolveStorageUrl(d.file_url),
           createdAt: d.created_at.toISOString(),
+          current: d.is_most_recent === 1 || isMultiDocType(d.doc_type),
+          reviewedAt: d.reviewed_at?.toISOString() ?? null,
+          reviewedBy: d.reviewed_by_cp_user_id ? (reviewerName.get(d.reviewed_by_cp_user_id) ?? null) : null,
           review:
             d.status === DocumentStatus.APPROVED
               ? ("verified" as const)
@@ -1162,6 +1179,7 @@ function toPartnerFull(full: Awaited<ReturnType<typeof loadStudentFull>>) {
       ...a,
       counsellorVendor: null,
       portalCredentialUsername: null,
+      applicationDocs: a.applicationDocs.map((d) => ({ ...d, reviewedBy: null })),
     })),
     // Partners see "Collegepond", never which staff member proposed/decided.
     shortlists: full.shortlists.map((s) => ({

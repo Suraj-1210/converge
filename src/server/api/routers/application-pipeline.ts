@@ -13,6 +13,7 @@ import {
   InactiveReason,
   InactiveReasonLabel,
   PartnerReportStatus,
+  STUDENT_DOC_TYPES,
   UniApplicationStatus,
   UniApplicationStatusLabel,
   partnerReportOption,
@@ -288,10 +289,26 @@ export const applicationPipelineRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const doc = await db.document.findUnique({
         where: { id: input.documentId },
-        select: { id: true, application_id: true, doc_type: true, file_name: true },
+        select: {
+          id: true,
+          application_id: true,
+          doc_type: true,
+          file_name: true,
+          status: true,
+          is_most_recent: true,
+        },
       });
       if (!doc?.application_id) throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
       await requireStaffApplication(ctx.cpUser, doc.application_id);
+      // Verified and rejected are final, so the document history stays true:
+      // a rejected upload is replaced by a new one, never flipped.
+      if (doc.status !== DocumentStatus.PENDING) {
+        throw new TRPCError({ code: "CONFLICT", message: "This document has already been reviewed" });
+      }
+      const multi = STUDENT_DOC_TYPES.find((t) => t.key === doc.doc_type)?.multiple ?? true;
+      if (!multi && doc.is_most_recent !== 1) {
+        throw new TRPCError({ code: "CONFLICT", message: "A newer upload has replaced this document" });
+      }
       await db.document.update({
         where: { id: doc.id },
         data: {

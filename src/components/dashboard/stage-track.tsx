@@ -121,7 +121,7 @@ export function StageTrack({
               />
             )}
             <li
-              className="flex w-[52px] shrink-0 flex-col items-center gap-1 sm:w-[60px]"
+              className="flex w-[60px] shrink-0 flex-col items-center gap-1 sm:w-[68px]"
               title={titleFor?.(stage)}
               aria-current={state === "current" ? "step" : undefined}
             >
@@ -132,7 +132,7 @@ export function StageTrack({
                 <StageMark state={state} status={app.status} className="h-3 w-3" />
               </span>
               <span
-                className="w-full truncate text-center text-[10px] leading-tight"
+                className="w-full text-center text-[10px] leading-tight break-words"
                 style={stageLabelStyle(state, app.status)}
               >
                 {stageShortLabel(stage)}

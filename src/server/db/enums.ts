@@ -291,6 +291,7 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
   { key: "visa", label: "Visa Approved Copy", multiple: false, section: "enrollment", expected: false },
   { key: "visa_refusal", label: "Visa Refusal Letter", multiple: false, section: "enrollment", expected: false },
   { key: "deposit_receipt", label: "Deposit Receipt", multiple: false, section: "enrollment", expected: false },
+  { key: "tt_copy", label: "TT Copy (Deposit Transfer)", multiple: false, section: "enrollment", expected: false },
   { key: "tuition_receipt", label: "Tuition Payment Receipts", multiple: true, section: "enrollment", expected: false },
 ];
 

@@ -113,15 +113,16 @@ export function stageTone(code: number): { color: string; bg: string } {
   return STAGE_TONE[code] ?? NEUTRAL_TONE;
 }
 
-// One-word labels for compact stage tracks.
+// Short labels for compact stage tracks. The offer stages keep their full
+// names so both portals tell Conditional and Unconditional apart.
 const SHORT: Record<number, string> = {
   [UniApplicationStatus.BEGIN_APPLICATION]: "Started",
   [UniApplicationStatus.DOCUMENTS_PENDING]: "Documents",
   [UniApplicationStatus.APPLICATION_SUBMITTED]: "Submitted",
   [UniApplicationStatus.APPLICATION_UNDER_REVIEW]: "Review",
-  [UniApplicationStatus.CONDITIONAL_OFFER]: "Conditional",
-  [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Offer",
-  [UniApplicationStatus.DEPOSIT_PAID]: "Deposit",
+  [UniApplicationStatus.CONDITIONAL_OFFER]: "Conditional Offer",
+  [UniApplicationStatus.UNCONDITIONAL_OFFER]: "Unconditional Offer",
+  [UniApplicationStatus.DEPOSIT_PAID]: "Deposit Paid",
   [UniApplicationStatus.VISA_FILED]: "Visa Filed",
   [UniApplicationStatus.VISA_SECURED]: "Visa Approved",
   [UniApplicationStatus.ENROLLED]: "Enrolled",

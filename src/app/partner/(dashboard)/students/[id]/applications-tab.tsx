@@ -335,8 +335,7 @@ function ApplicationCard({
       <ReportStatus app={a} />
       <DeferralBanner app={a} />
       <PendingDocsChecklist app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
-      <ApplicationUploads app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
-
+      {/* Offer details first, so they stay in view while documents are uploaded. */}
       {facts.some(([, v]) => v) && (
         <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-[13px] sm:grid-cols-3">
           {facts
@@ -360,6 +359,8 @@ function ApplicationCard({
           </ul>
         </div>
       )}
+      <ApplicationUploads app={a} studentId={studentId} onChanged={onChanged} onToast={onToast} />
+
     </li>
   );
 }

@@ -1013,9 +1013,13 @@ export default function CommissionRatesPage() {
     const list = byVendor.get(v.id) ?? [];
     const open = vendorOpen.has(v.id);
     const uniN = new Set(list.map((c) => c.universityId)).size;
-    const rateVals = list
-      .map((c) => headlineRate(c)?.rate)
-      .filter((r): r is number => r != null);
+    // Average the percentage rates only; a flat fee (e.g. 2500) is an amount,
+    // not a percent, so it is counted separately.
+    const heads = list.map((c) => headlineRate(c)).filter((r) => r?.rate != null);
+    const rateVals = heads
+      .filter((r) => r?.commissionType !== CommissionType.FLAT)
+      .map((r) => r!.rate!);
+    const flatN = heads.length - rateVals.length;
     const avg =
       rateVals.length > 0
         ? (rateVals.reduce((a, b) => a + b, 0) / rateVals.length).toFixed(1)
@@ -1041,6 +1045,7 @@ export default function CommissionRatesPage() {
             {uniN} {uniN === 1 ? "university" : "universities"} · {list.length}{" "}
             {list.length === 1 ? "source" : "sources"}
             {avg != null ? ` · Avg: ${avg}%` : ""}
+            {flatN > 0 ? ` · ${flatN} flat` : ""}
           </span>
         </button>
 
