@@ -1612,3 +1612,36 @@ model cp_notification {
   @@index([cp_user_id, created_at], map: "idx_cp_notification_user_created")
   @@index([cp_user_id, read_at], map: "idx_cp_notification_user_read")
 }
+
+// Tab on/off switches (src/server/tab-access.ts). A type's saved default,
+// only where it differs from the built-in one. portal "admin" → user_type is
+// the AdminRole code; "partner" → the partner user.type.
+model cp_tab_default {
+  id                    Int      @id @default(autoincrement())
+  portal                String   @db.VarChar(10)
+  user_type             Int      @db.UnsignedTinyInt
+  tab                   String   @db.VarChar(40)
+  enabled               Int      @db.TinyInt
+  updated_by_cp_user_id Int?
+  created_at            DateTime @default(now()) @db.Timestamp(0)
+  updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@unique([portal, user_type, tab], map: "uq_cp_tab_default")
+}
+
+// A single user's tab override, only where it differs from their type's
+// default. Exactly one of cp_user_id (staff) / user_id (partner) is set; both
+// cascade on delete (FKs in schema.sql, no Prisma relation needed).
+model cp_tab_override {
+  id                    Int      @id @default(autoincrement())
+  cp_user_id            Int?
+  user_id               Int?
+  tab                   String   @db.VarChar(40)
+  enabled               Int      @db.TinyInt
+  updated_by_cp_user_id Int?
+  created_at            DateTime @default(now()) @db.Timestamp(0)
+  updated_at            DateTime @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@unique([cp_user_id, tab], map: "uq_cp_tab_override_cp_user")
+  @@unique([user_id, tab], map: "uq_cp_tab_override_user")
+}

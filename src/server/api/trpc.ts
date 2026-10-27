@@ -24,7 +24,9 @@ import {
 import { runWithImpersonation } from "~/server/auth/impersonation-context";
 import { readCookie } from "~/server/auth/cookies";
 import { AdminRole, UserStatus, UserType } from "~/server/db/enums";
-import { type AdminSection, canUseSection } from "~/lib/admin-sections";
+import { type AdminSection, sectionForProcedure } from "~/lib/admin-sections";
+import { partnerTabForProcedure } from "~/lib/partner-tabs";
+import { type TabAccessCache, cachedAdminSections, cachedPartnerTabs } from "~/server/tab-access";
 import { assertActiveStaffImpersonator } from "~/server/auth/impersonation";
 
 // `id`/`role` are the EFFECTIVE user: while a Super Admin impersonates a staff
@@ -57,6 +59,8 @@ export const createTRPCContext = async (opts: {
     db,
     cpUser,
     cpPartner,
+    // Effective tab access, looked up once per user per request (~/server/tab-access).
+    tabAccess: new Map() as TabAccessCache,
     ...opts,
   };
 };
@@ -100,7 +104,7 @@ const timingMiddleware = t.middleware(async ({ next, path }) => {
 export const publicProcedure = t.procedure.use(timingMiddleware);
 
 // Requires a valid admin (collegepond_user) session cookie.
-export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next }) => {
+export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next, path }) => {
   if (!ctx.cpUser) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not signed in" });
   }
@@ -117,6 +121,12 @@ export const protectedAdminProcedure = publicProcedure.use(async ({ ctx, next })
     });
   }
   const cpUser = ctx.cpUser;
+  // A procedure that serves one tab's pages is refused while that tab is
+  // switched off for this user (API_SECTIONS in ~/lib/admin-sections).
+  const section = sectionForProcedure(path);
+  if (section && !(await cachedAdminSections(ctx.tabAccess, cpUser)).includes(section)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You don't have access to this section." });
+  }
   if (!cpUser.realId) return next({ ctx: { ...ctx, cpUser } });
 
   // Impersonating: the real admin must still be an active Super Admin, or a
@@ -160,11 +170,11 @@ export const superAdminProcedure = protectedAdminProcedure.use(({ ctx, next }) =
   return next();
 });
 
-// Access to one section of the admin portal, by the shared role table in
-// ~/lib/admin-sections (the same one that hides the page in the sidebar).
+// Access to one section of the admin portal: the user's effective tabs
+// (~/server/tab-access, the same set that hides the page in the sidebar).
 export const adminSectionProcedure = (section: AdminSection) =>
-  protectedAdminProcedure.use(({ ctx, next }) => {
-    if (!canUseSection(ctx.cpUser.role, section)) {
+  protectedAdminProcedure.use(async ({ ctx, next }) => {
+    if (!(await cachedAdminSections(ctx.tabAccess, ctx.cpUser)).includes(section)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "You don't have access to this section.",
@@ -181,6 +191,9 @@ const FINANCE_ROLES: number[] = [
   AdminRole.FINANCE_MANAGER,
   AdminRole.FINANCE_EXECUTIVE,
 ];
+// A finance page is also refused while its tab is switched off for the user
+// (checked in protectedAdminProcedure); it can't be switched on for anyone
+// outside these roles (GRANTABLE_ROLES in ~/lib/admin-sections).
 export const financeProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
   if (!FINANCE_ROLES.includes(ctx.cpUser.role)) {
     throw new TRPCError({
@@ -230,7 +243,8 @@ export const operationsProcedure = protectedAdminProcedure.use(({ ctx, next }) =
 // BDM Performance access: the page's portfolio data (bdm.overview) and the
 // CRM (prospects, activities, tasks). Super Admin and BDM only; Finance,
 // Operations, Counsellors and Content are refused (business decision). A BDM
-// is further limited to their own data inside each router, not here.
+// is further limited to their own data inside each router, not here. The
+// BDM Performance tab can switch it off, never on for another role.
 const BDM_PERFORMANCE_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.BDM];
 export const bdmPerformanceProcedure = protectedAdminProcedure.use(({ ctx, next }) => {
   if (!BDM_PERFORMANCE_ROLES.includes(ctx.cpUser.role)) {
@@ -389,6 +403,12 @@ export const protectedPartnerProcedure = publicProcedure.use(async ({ ctx, next,
       code: "UNAUTHORIZED",
       message: "This account is no longer active.",
     });
+  }
+  // A procedure that serves one partner tab is refused while that tab is
+  // switched off for this partner (API_TABS in ~/lib/partner-tabs).
+  const tab = partnerTabForProcedure(path);
+  if (tab && !(await cachedPartnerTabs(ctx.tabAccess, { id: ctx.cpPartner.id, type: row.type })).includes(tab)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You don't have access to this section." });
   }
   const cpPartner = ctx.cpPartner;
   return runAsPartner(ctx.db, cpPartner, row, { type, path, getRawInput }, () =>

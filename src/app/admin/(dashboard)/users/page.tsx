@@ -15,6 +15,7 @@ import { AdminRole, AdminRoleLabel } from "~/server/db/enums";
 import { api } from "~/trpc/react";
 import { Skeleton } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
+import { TabOverridesModal } from "~/components/admin/tab-overrides-modal";
 
 const SUPER_ADMIN: number = AdminRole.SUPER_ADMIN;
 
@@ -104,6 +105,8 @@ export default function UsersPage() {
     setToastMsg(msg);
     setToastOpen(true);
   };
+  // The user whose tabs are being edited (Super Admins always have every tab).
+  const [tabsFor, setTabsFor] = useState<number | null>(null);
 
   const createMut = api.users.create.useMutation({
     onSuccess: () => {
@@ -437,6 +440,14 @@ export default function UsersPage() {
                           >
                             Edit
                           </button>
+                          {u.role !== SUPER_ADMIN && (
+                            <button
+                              onClick={() => setTabsFor(u.id)}
+                              className="ml-1 cursor-pointer rounded px-2 py-1 text-xs font-semibold text-[#1570EF] hover:bg-[#F0F7FF]"
+                            >
+                              Tabs
+                            </button>
+                          )}
                           {u.status === "active" ? (
                             <button
                               onClick={() => setStatusMut.mutate({ id: u.id, active: false })}
@@ -571,6 +582,13 @@ export default function UsersPage() {
           </div>
         )}
       </Modal>
+
+      <TabOverridesModal
+        portal="admin"
+        userId={tabsFor}
+        onClose={() => setTabsFor(null)}
+        toast={showToast}
+      />
 
       <Toast message={toastMsg} open={toastOpen} onClose={() => setToastOpen(false)} />
     </>

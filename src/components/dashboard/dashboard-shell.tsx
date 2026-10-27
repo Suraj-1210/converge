@@ -11,7 +11,7 @@ import { AdminRoleLabel, isAdminRole } from "~/server/db/enums";
 import { SHOW_DEMO_DATA } from "~/lib/demo";
 import { api } from "~/trpc/react";
 import { AdminRole } from "~/server/db/enums";
-import { canUseSection, sectionForPath } from "~/lib/admin-sections";
+import { hasSection, sectionForPath } from "~/lib/admin-sections";
 import {
   ImpersonateMenu,
   ImpersonationBanner,
@@ -78,11 +78,14 @@ export function DashboardShell({
   // Non-null while a Super Admin is impersonating a staff user; `me` is then
   // the impersonated user.
   const impersonating = useImpersonation("admin");
-  // Sections are role-gated (~/lib/admin-sections). A page outside the
-  // signed-in role's sections renders a not-authorised state instead of
-  // mounting (so none of its queries run); the server refuses them anyway.
+  // Sections (tabs) are gated by the user's effective tabs: their type's
+  // default, a Super Admin's switches and any per-user override
+  // (~/server/tab-access). A page outside them renders a not-authorised state
+  // instead of mounting (so none of its queries run); the server refuses its
+  // data from the same set anyway.
   const pathname = usePathname();
   const pageSection = sectionForPath(pathname);
+  const sections = api.tabAccess.mine.useQuery().data?.sections;
 
   // Live admin signals (pending approvals, payouts ready, invoices awaiting
   // review, new students). Drives both the bell and the sidebar approvals badge.
@@ -145,8 +148,8 @@ export function DashboardShell({
       <Sidebar
         sections={NAV_SECTIONS.map((sec) => ({
           ...sec,
-          // Gated items appear once the role is known, never before.
-          items: sec.items.filter((i) => !i.section || (me && canUseSection(me.role, i.section))),
+          // Gated items appear once the tabs are known, never before.
+          items: sec.items.filter((i) => !i.section || hasSection(sections, i.section)),
         }))}
         logoSubtitle="Admin Portal"
         badges={effectiveBadges}
@@ -190,7 +193,7 @@ export function DashboardShell({
         <div className="p-6">
           {!pageSection ? (
             children
-          ) : !me ? null : canUseSection(me.role, pageSection) ? (
+          ) : !sections ? null : hasSection(sections, pageSection) ? (
             children
           ) : (
             <NotAuthorised />

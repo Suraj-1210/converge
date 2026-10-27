@@ -146,13 +146,24 @@ session swap with `imp` = the lead. `protectedAdminProcedure` re-checks team
 membership on every request, and one level only: an impersonated session can
 never start another.
 
-## Admin sections by role
+## Admin sections by role (and Tab Access)
 
-`src/lib/admin-sections.ts` is the one table of which admin roles may use which
-portal section. The sidebar, the page gate in `DashboardShell` (a hidden page
-shows "You don't have access", and its queries never run) and the server
-(`adminSectionProcedure(section)` in trpc.ts) all read it. Gate a new admin
-page by adding it there, not with ad-hoc role checks.
+`src/lib/admin-sections.ts` (admin) and `src/lib/partner-tabs.ts` (partner
+portal) hold each portal's tabs and their **built-in** default per user type.
+A Super Admin can change them per user type (Settings → Tab Access) and per
+user (Users → Tabs, Partners / Counselor Approvals → Tabs). Effective access,
+per tab, is `user override ?? saved type default ?? built-in`, resolved per
+request in `src/server/tab-access.ts` (tables `cp_tab_default`,
+`cp_tab_override`; new users inherit at read time).
+
+The sidebar, the page gates (`DashboardShell`, `PartnerDashboardShell`) and
+the server all read that one set: `adminSectionProcedure(section)`, plus the
+`API_SECTIONS` / `API_TABS` maps enforced in `protectedAdminProcedure` /
+`protectedPartnerProcedure`. Gate a new page by adding its path (and its
+page-only procedures) there, not with ad-hoc role checks. Tabs whose data
+isn't scoped for other roles (finance pages, BDM Performance, Partner Chat,
+partner Counsellors/Commission) can only be switched off beyond their
+`GRANTABLE_*` roles; Users/Settings/Audit Logs stay Super Admin only.
 
 ## Repo conventions
 

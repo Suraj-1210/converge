@@ -1,12 +1,15 @@
 "use client";
 
 import { type ReactNode } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 import { MobileGate } from "./mobile-gate";
 import { PARTNER_NAV_SECTIONS } from "./partner-nav-config";
 import { api } from "~/trpc/react";
 import { PartnerKindLabel } from "~/server/db/enums";
+import { partnerTabForPath } from "~/lib/partner-tabs";
 import { ImpersonationBanner, bannerOffsetStyle, useImpersonation } from "./impersonation";
 
 export function PartnerDashboardShell({ children }: { children: ReactNode }) {
@@ -16,6 +19,16 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   // Non-null while a Super Admin is impersonating this partner, or the agency
   // owner is viewing as this counsellor.
   const impersonating = useImpersonation("partner");
+  // Tabs are gated by the partner's effective tabs: their type's default, a
+  // Super Admin's switches and any per-user override (~/lib/partner-tabs).
+  // The server refuses a switched-off tab's data from the same set.
+  const tabs = api.tabAccess.partnerMine.useQuery(undefined, { retry: false }).data?.tabs;
+  const hasTab = (href: string) => {
+    const tab = partnerTabForPath(href);
+    return tab === null || !!tabs?.includes(tab);
+  };
+  const pathname = usePathname();
+  const pageTab = partnerTabForPath(pathname);
 
   // Persistent partner notification feed (counsellor decisions, etc.).
   const feed = api.partnerNotifications.list.useQuery(undefined, {
@@ -26,6 +39,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
   const chatUnread = api.partnerChat.partnerUnreadCount.useQuery(undefined, {
     refetchInterval: 30_000,
     retry: false,
+    enabled: !!tabs?.includes("chat"),
   }).data;
   const markAllRead = api.partnerNotifications.markAllRead.useMutation({
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
@@ -34,17 +48,13 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
 
-  // Managing the team is the agency owner's job; counsellors and independents
-  // don't get the Counsellors page. Commission is the agency's money, so
-  // agency counsellors don't get it either (the server refuses both anyway).
+  // Managing the team (Counsellors) stays the agency owner's and Commission
+  // the payee's: built into the tab defaults, which can't grant them to
+  // anyone else. Gated items appear once the tabs are known, never before.
   const kind = me.data?.kind;
   const sections = PARTNER_NAV_SECTIONS.map((sec) => ({
     ...sec,
-    items: sec.items.filter(
-      (i) =>
-        (i.href !== "/partner/counsellors" || kind === "agency") &&
-        (i.href !== "/partner/commission" || (kind !== undefined && kind !== "counsellor")),
-    ),
+    items: sec.items.filter((i) => hasTab(i.href)),
   })).filter((sec) => sec.items.length > 0);
 
   const userName =
@@ -91,7 +101,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         userAvatarUrl={me.data?.avatarUrl}
         roleLabel={kind ? PartnerKindLabel[kind] : "Partner"}
         searchPlaceholder="Search students, applications…"
-        accountHref="/partner/account"
+        accountHref={tabs?.includes("account") ? "/partner/account" : undefined}
         notifications={feed.data?.notifications ?? []}
         onMarkAllRead={() => {
           if ((feed.data?.unread ?? 0) > 0) markAllRead.mutate();
@@ -103,9 +113,28 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         onLogout={handleLogout}
       />
       <main className="ml-16 min-h-screen pt-[calc(60px+var(--banner-h,0px))]">
-        <div className="p-6">{children}</div>
+        <div className="p-6">
+          {!pageTab ? children : !tabs ? null : tabs.includes(pageTab) ? children : <NotAuthorised />}
+        </div>
       </main>
     </div>
     </MobileGate>
+  );
+}
+
+function NotAuthorised() {
+  return (
+    <div className="mx-auto mt-16 max-w-md rounded-xl border border-[#E4E7EC] bg-white px-6 py-10 text-center">
+      <h1 className="text-lg font-semibold text-[#101828]">You don&apos;t have access to this page</h1>
+      <p className="mt-2 text-sm text-[#667085]">
+        This section isn&apos;t turned on for your account. If you need it, contact Collegepond.
+      </p>
+      <Link
+        href="/partner/dashboard"
+        className="mt-5 inline-block rounded-lg bg-[#1570EF] px-4 py-2 text-sm font-medium text-white hover:bg-[#175CD3]"
+      >
+        Go to Dashboard
+      </Link>
+    </div>
   );
 }

@@ -40,9 +40,9 @@ export interface NavItem {
    *  re-enable later (the route/page still exists). Filtered out in Sidebar. */
   hidden?: boolean;
   roles?: AdminRole[];
-  /** Portal section the item belongs to: only the roles allowed that section
-   *  in ~/lib/admin-sections see it (the server and the page gate in
-   *  DashboardShell use the same table). Unset = every admin role. */
+  /** Portal section (tab) the item belongs to: shown only to users whose
+   *  effective tabs include it (~/lib/admin-sections; the server and the page
+   *  gate in DashboardShell read the same set). Unset = every admin. */
   section?: AdminSection;
 }
 
@@ -105,8 +105,13 @@ export const NAV_SECTIONS: NavSection[] = [
         badgeKey: "partners",
         section: "partners",
       },
-      { label: "Students", href: "/admin/students", icon: <StudentsIcon /> },
-      { label: "Applications", href: "/admin/applications", icon: <InvoiceIcon /> },
+      { label: "Students", href: "/admin/students", icon: <StudentsIcon />, section: "students" },
+      {
+        label: "Applications",
+        href: "/admin/applications",
+        icon: <InvoiceIcon />,
+        section: "applications",
+      },
       {
         label: "Student Placements",
         href: "/admin/student-placements",
@@ -146,7 +151,7 @@ export const NAV_SECTIONS: NavSection[] = [
         hidden: true,
         section: "notes",
       },
-      { label: "Uni Assist", href: "/admin/uni-assist", icon: <SearchIcon /> },
+      { label: "Uni Assist", href: "/admin/uni-assist", icon: <SearchIcon />, section: "uniAssist" },
     ],
   },
   {
@@ -167,13 +172,13 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Commission Rates",
         href: "/admin/commission-rates",
         icon: <CommissionIcon />,
-        section: "finance",
+        section: "commissionRates",
       },
       {
         label: "University Billing",
         href: "/admin/university-billing",
         icon: <BillingIcon />,
-        section: "finance",
+        section: "universityBilling",
       },
       {
         label: "Commission Ledger",
@@ -185,20 +190,20 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Invoices & Payouts",
         href: "/admin/invoices",
         icon: <InvoiceIcon />,
-        section: "finance",
+        section: "invoices",
       },
       {
         label: "Reconciliation",
         href: "/admin/reconciliation",
         icon: <ReconciliationIcon />,
-        section: "finance",
+        section: "reconciliation",
       },
       {
         label: "Bank Verifications",
         href: "/admin/bank-verifications",
         icon: <BankIcon />,
         badgeKey: "bankVerifications",
-        section: "finance",
+        section: "bankVerifications",
       },
     ],
   },
@@ -211,7 +216,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: <StudentsIcon />,
         section: "universities",
       },
-      { label: "Events", href: "/admin/events", icon: <CalendarIcon /> },
+      { label: "Events", href: "/admin/events", icon: <CalendarIcon />, section: "events" },
     ],
   },
   {

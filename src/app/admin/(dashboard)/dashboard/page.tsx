@@ -3,7 +3,7 @@
 import { type ReactNode } from "react";
 import Link from "next/link";
 import { api } from "~/trpc/react";
-import { canAccessAdminPath } from "~/lib/admin-sections";
+import { type AdminSection, canAccessAdminPath } from "~/lib/admin-sections";
 import {
   greeting,
   formatLongDate,
@@ -82,7 +82,13 @@ function activityStyle(action: string): { icon: string; bg: string } {
   return { icon: "•", bg: "#F2F4F7" };
 }
 
-function QuickActions({ pending, role }: { pending: number; role: number }) {
+function QuickActions({
+  pending,
+  sections,
+}: {
+  pending: number;
+  sections: readonly AdminSection[] | undefined;
+}) {
   const all: { label: string; href: string; badge?: number }[] = [
     // The count is partner signups under review, so it goes to Partners (which
     // opens on its Pending tab), not counsellor approvals.
@@ -91,7 +97,7 @@ function QuickActions({ pending, role }: { pending: number; role: number }) {
     { label: "Add University", href: "/admin/universities" },
     { label: "View Students", href: "/admin/students" },
   ];
-  const items = all.filter((it) => canAccessAdminPath(role, it.href));
+  const items = all.filter((it) => canAccessAdminPath(sections, it.href));
   return (
     <details className="relative">
       <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg bg-[#1570EF] px-4 text-[13px] font-semibold text-white hover:bg-[#1260d4] [&::-webkit-details-marker]:hidden">
@@ -124,8 +130,9 @@ export default function DashboardPage() {
   const { data, isLoading } = api.dashboard.adminStats.useQuery();
   const firstName = me?.firstName ?? "";
   const k = data?.kpis;
-  // Partners is a lead-and-above section; counsellors get no links to it.
-  const seesPartners = !!me && canAccessAdminPath(me.role, "/admin/partners");
+  // Only users with the Partners tab get links to it.
+  const sections = api.tabAccess.mine.useQuery().data?.sections;
+  const seesPartners = !!sections && canAccessAdminPath(sections, "/admin/partners");
 
   const queueMap = new Map(
     (data?.applicationQueue ?? []).map((q) => [q.status, q.count]),
@@ -195,7 +202,7 @@ export default function DashboardPage() {
             <Icon name="calendar" size={15} className="text-[#667085]" />
             {formatLongDate(new Date())}
           </span>
-          {me && <QuickActions pending={k?.pendingApprovals ?? 0} role={me.role} />}
+          {me && <QuickActions pending={k?.pendingApprovals ?? 0} sections={sections} />}
         </div>
       </div>
 

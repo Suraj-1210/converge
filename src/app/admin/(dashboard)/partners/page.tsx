@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import { TabOverridesButton } from "~/components/admin/tab-overrides-modal";
 import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
@@ -1436,6 +1437,15 @@ function PartnerDetailSlideOver({
             <div className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
                 <PartnerTierPanel userId={p.userId} tier={p.tier} onToast={onToast} />
+              </div>
+              {/* Super Admin: this partner's portal tabs (Settings → Tab Access). */}
+              <div className="col-span-2 -mt-2">
+                <TabOverridesButton
+                  portal="partner"
+                  userId={p.userId}
+                  toast={onToast}
+                  label="Portal tabs…"
+                />
               </div>
               <div>
                 <FormSelect

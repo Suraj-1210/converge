@@ -1930,6 +1930,45 @@ CREATE TABLE IF NOT EXISTS `cp_notification` (
 ) ENGINE = InnoDB;
 
 
+-- -----------------------------------------------------
+-- cp_tab_default / cp_tab_override: tab on/off switches per user type and
+-- per user (src/server/tab-access.ts). Rows exist only where a Super Admin
+-- saved something different from the built-in default.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `cp_tab_default` (
+  `id`                    INT                 NOT NULL AUTO_INCREMENT,
+  `portal`                VARCHAR(10)         NOT NULL,
+  `user_type`             TINYINT(3) UNSIGNED NOT NULL,
+  `tab`                   VARCHAR(40)         NOT NULL,
+  `enabled`               TINYINT(1)          NOT NULL,
+  `updated_by_cp_user_id` INT                 NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`            TIMESTAMP           NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_cp_tab_default` (`portal` ASC, `user_type` ASC, `tab` ASC) VISIBLE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `cp_tab_override` (
+  `id`                    INT         NOT NULL AUTO_INCREMENT,
+  `cp_user_id`            INT         NULL DEFAULT NULL,
+  `user_id`               INT         NULL DEFAULT NULL,
+  `tab`                   VARCHAR(40) NOT NULL,
+  `enabled`               TINYINT(1)  NOT NULL,
+  `updated_by_cp_user_id` INT         NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`            TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_cp_tab_override_cp_user` (`cp_user_id` ASC, `tab` ASC) VISIBLE,
+  UNIQUE INDEX `uq_cp_tab_override_user` (`user_id` ASC, `tab` ASC) VISIBLE,
+  CONSTRAINT `fk_cp_tab_override_cp_user`
+    FOREIGN KEY (`cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_cp_tab_override_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE
+) ENGINE = InnoDB;
+
+
 SET SQL_MODE            = @OLD_SQL_MODE;
 SET FOREIGN_KEY_CHECKS  = @OLD_FOREIGN_KEY_CHECKS;
 SET UNIQUE_CHECKS       = @OLD_UNIQUE_CHECKS;

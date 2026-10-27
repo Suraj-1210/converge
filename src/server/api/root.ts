@@ -38,6 +38,7 @@ import { applicationsRouter } from "~/server/api/routers/applications";
 import { applicationPipelineRouter } from "~/server/api/routers/application-pipeline";
 import { notesRouter } from "~/server/api/routers/notes";
 import { impersonationRouter } from "~/server/api/routers/impersonation";
+import { tabAccessRouter } from "~/server/api/routers/tab-access";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
 export const appRouter = createTRPCRouter({
@@ -81,6 +82,7 @@ export const appRouter = createTRPCRouter({
   applicationPipeline: applicationPipelineRouter,
   notes: notesRouter,
   dashboard: dashboardRouter,
+  tabAccess: tabAccessRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -11,6 +11,8 @@ import {
   AVATAR_GRADIENTS,
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
+import { Toast } from "~/components/ui/toast";
+import { TabOverridesButton } from "~/components/admin/tab-overrides-modal";
 
 type Counsellor = RouterOutputs["counsellors"]["list"][number];
 type Tab = "pending" | "approved" | "rejected" | "inactive";
@@ -190,6 +192,7 @@ export default function CounselorApprovalsPage() {
   const [search, setSearch] = useState("");
   const [partner, setPartner] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [toastMsg, setToastMsg] = useState("");
 
   // Selection only applies to the pending tab; clear it whenever the tab flips.
   const setTab = (t: Tab) => {
@@ -447,6 +450,9 @@ export default function CounselorApprovalsPage() {
                           <div className="flex items-center gap-2.5">
                             <Avatar name={c.name} i={i} />
                             <div className="font-semibold text-[#101828]">{c.name}</div>
+                            {tab === "approved" && (
+                              <TabOverridesButton portal="partner" userId={c.id} toast={setToastMsg} />
+                            )}
                           </div>
                         </td>
                         <PartnerCell c={c} countByOrg={countByOrg} />
@@ -466,6 +472,7 @@ export default function CounselorApprovalsPage() {
           </div>
         )}
       </div>
+      <Toast message={toastMsg} open={!!toastMsg} onClose={() => setToastMsg("")} />
     </>
   );
 }

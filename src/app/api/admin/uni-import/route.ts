@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, verifySessionJwt } from "~/server/auth/jwt";
-import { canUseSection } from "~/lib/admin-sections";
+import { adminSectionsFor } from "~/server/tab-access";
 import { parseAndValidate } from "~/server/universities/import";
 
 export const runtime = "nodejs";
@@ -29,8 +29,8 @@ export async function POST(req: Request) {
   if (!claims) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  // Universities is a lead-and-above section (~/lib/admin-sections).
-  if (!canUseSection(claims.role, "universities")) {
+  // The Universities tab (~/lib/admin-sections, as switched by a Super Admin).
+  if (!(await adminSectionsFor(claims.id, claims.role)).includes("universities")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
