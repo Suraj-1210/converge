@@ -1,6 +1,7 @@
 "use client";
 
 import { fasterTatLabel } from "~/lib/faster-tat";
+import { moiYesNo } from "~/lib/moi";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Modal } from "~/components/ui/modal";
@@ -66,6 +67,8 @@ interface PreviewCourseRow {
     minEntryRequirements: string | null;
     minEntryRequirementsScale: string | null;
     fasterTat: number | null;
+    moiAccepted: boolean | null;
+    moiProvided: boolean;
   };
   matchedDbId: number | null;
   status: RowStatus;
@@ -456,6 +459,7 @@ function CoursesTable({
           <Th>Name</Th>
           <Th width="80px">Uni xlsxId</Th>
           <Th width="110px">Faster TAT</Th>
+          <Th width="90px">MOI</Th>
           <Th width="100px">Status</Th>
           <Th width="50px" />
         </tr>
@@ -472,12 +476,27 @@ function CoursesTable({
             <Td className="font-mono text-xs text-[#475467]">
               {r.data.code ?? "—"}
             </Td>
-            <Td className="font-semibold text-[#101828]">{r.data.name || "—"}</Td>
+            <Td className="font-semibold text-[#101828]">
+              {r.data.name || "—"}
+              {r.errors.length > 0 && (
+                <ul className="mt-1 list-disc pl-4 text-xs font-normal text-[#B42318]">
+                  {r.errors.map((e) => (
+                    <li key={e}>{e}</li>
+                  ))}
+                </ul>
+              )}
+            </Td>
             <Td className="font-mono text-xs text-[#667085]">
               {r.xlsxUniversityId ?? "—"}
             </Td>
             <Td className="text-xs text-[#475467]">
               {fasterTatLabel(r.data.fasterTat) ?? "Standard"}
+            </Td>
+            <Td
+              className="text-xs text-[#475467]"
+              title={r.data.moiProvided ? undefined : "No MOI column in the file: left as it is"}
+            >
+              {r.data.moiProvided ? moiYesNo(r.data.moiAccepted) || "—" : "Unchanged"}
             </Td>
             <Td>
               <StatusPill row={r} />
@@ -624,12 +643,16 @@ function Th({ children, width }: { children?: React.ReactNode; width?: string })
 function Td({
   children,
   className,
+  title,
 }: {
   children: React.ReactNode;
   className?: string;
+  title?: string;
 }) {
   return (
-    <td className={`px-3 py-2 align-middle ${className ?? ""}`}>{children}</td>
+    <td className={`px-3 py-2 align-middle ${className ?? ""}`} title={title}>
+      {children}
+    </td>
   );
 }
 

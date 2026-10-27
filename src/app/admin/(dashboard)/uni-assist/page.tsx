@@ -30,8 +30,10 @@ import {
   ENG_TESTS,
   FASTER_TAT_FILTER,
   INTAKE_MONTHS,
+  MOI_FILTER,
   applyFilters,
   appFeeOnly,
+  asMoiFilter,
   approxIn,
   bracketKey,
   degreeLabel,
@@ -257,6 +259,7 @@ export default function AdminUniAssistPage() {
       filters.duration ||
       filters.engTest ||
       filters.fasterTat ||
+      filters.moi ||
       filters.tuitionMin ||
       filters.tuitionMax ||
       filters.stem.yes ||
@@ -705,6 +708,15 @@ export default function AdminUniAssistPage() {
                   className="!h-[38px] !text-[13px]"
                 />
               </AdvField>
+              <AdvField label="MOI (Medium of Instruction)">
+                <FormSelect
+                  options={MOI_FILTER}
+                  placeholder="Any"
+                  value={form.moi}
+                  onChange={(e) => setFilter({ moi: asMoiFilter(e.target.value) })}
+                  className="!h-[38px] !text-[13px]"
+                />
+              </AdvField>
               {/* Tuition range: brackets from Settings, in the Fees-in currency */}
               <AdvField label={`Tuition Range (${form.tuitionCurrency})`}>
                 <FormSelect
@@ -1035,6 +1047,13 @@ function buildChips(f: FilterState, brackets: TuitionBracket[]): FilterChip[] {
       key: "fasterTat",
       label: `Faster TAT: ${opt?.label ?? f.fasterTat}`,
       clear: (s) => ({ ...s, fasterTat: "" }),
+    });
+  }
+  if (f.moi) {
+    chips.push({
+      key: "moi",
+      label: f.moi === "yes" ? "MOI accepted" : "MOI not accepted",
+      clear: (s) => ({ ...s, moi: "" }),
     });
   }
   if (f.tuitionMin || f.tuitionMax) {
@@ -1656,6 +1675,7 @@ type TagTone =
   | "coop"
   | "open"
   | "tat"
+  | "moi"
   | "closed";
 
 function collectTags(p: Program): Array<{ label: string; tone: TagTone }> {
@@ -1666,6 +1686,7 @@ function collectTags(p: Program): Array<{ label: string; tone: TagTone }> {
   if (p.isCoopAvailable) out.push({ label: "Co-op", tone: "coop" });
   const tat = fasterTatTag(p.fasterTat);
   if (tat) out.push({ label: tat, tone: "tat" });
+  if (p.moiAccepted) out.push({ label: "MOI accepted", tone: "moi" });
   // Admins manage the catalogue, so closed programs surface too (the partner
   // side only flags open ones).
   if (p.isOpen) out.push({ label: "Open", tone: "open" });
@@ -1681,6 +1702,7 @@ function Tag({ tone, children }: { tone: TagTone; children: ReactNode }) {
     coop: "bg-[#F9F5FF] text-[#7F56D9]",
     open: "bg-[#ECFDF3] text-[#027A48]",
     tat: "bg-[#FFFAEB] text-[#DC6803]",
+    moi: "bg-[#F4F3FF] text-[#5925DC]",
     closed: "bg-[#F2F4F7] text-[#667085]",
   };
   return (

@@ -12,6 +12,7 @@ import { Toast } from "~/components/ui/toast";
 import { UniLogo } from "~/components/ui/uni-logo";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { FASTER_TAT_OPTIONS } from "~/lib/faster-tat";
+import { moiLabel } from "~/lib/moi";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import {
@@ -164,6 +165,7 @@ interface CourseFormState {
   minEntryRequirements: string;
   minEntryRequirementsScale: string;
   fasterTat: string; // src/lib/faster-tat.ts code, "" = standard
+  moi: "" | "yes" | "no"; // MOI letter accepted; "" = unknown
 }
 
 const emptyCourseForm = (): CourseFormState => ({
@@ -196,6 +198,7 @@ const emptyCourseForm = (): CourseFormState => ({
   minEntryRequirements: "",
   minEntryRequirementsScale: "",
   fasterTat: "",
+  moi: "",
 });
 
 const numOrNull = (s: string): number | null => {
@@ -512,6 +515,7 @@ export default function AdminUniversitiesPage() {
       minEntryRequirementsScale:
         courseForm.minEntryRequirementsScale.trim() || null,
       fasterTat: courseForm.fasterTat ? Number(courseForm.fasterTat) : null,
+      moiAccepted: courseForm.moi === "" ? null : courseForm.moi === "yes",
     };
     if (editingCourseId != null) {
       updateCourse.mutate({ ...payload, id: editingCourseId });
@@ -554,6 +558,7 @@ export default function AdminUniversitiesPage() {
       minEntryRequirements: c.minEntryRequirements ?? "",
       minEntryRequirementsScale: c.minEntryRequirementsScale ?? "",
       fasterTat: c.fasterTat == null ? "" : String(c.fasterTat),
+      moi: c.moiAccepted == null ? "" : c.moiAccepted ? "yes" : "no",
     });
     setCourseModalOpen(true);
   }
@@ -1208,6 +1213,21 @@ export default function AdminUniversitiesPage() {
           value={courseForm.fasterTat}
           onChange={(e) => setCourseForm({ ...courseForm, fasterTat: e.target.value })}
         />
+        <FormSelect
+          label="MOI (Medium of Instruction)"
+          placeholder="Unknown"
+          options={[
+            { value: "yes", label: "Accepted: MOI letter instead of an English test" },
+            { value: "no", label: "Not accepted" },
+          ]}
+          value={courseForm.moi}
+          onChange={(e) =>
+            setCourseForm({
+              ...courseForm,
+              moi: e.target.value === "yes" || e.target.value === "no" ? e.target.value : "",
+            })
+          }
+        />
         {courseErrors.form && <ErrorBanner message={courseErrors.form} />}
       </Modal>
 
@@ -1610,6 +1630,11 @@ function ProgramsCard({
                     {c.isStem && (
                       <span className="rounded-md bg-[#ECFDF3] px-1.5 py-0.5 text-[10px] font-bold text-[#067647]">
                         STEM
+                      </span>
+                    )}
+                    {c.moiAccepted && (
+                      <span className="rounded-md bg-[#F4F3FF] px-1.5 py-0.5 text-[10px] font-bold text-[#5925DC]">
+                        {moiLabel(c.moiAccepted)}
                       </span>
                     )}
                   </div>

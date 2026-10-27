@@ -225,6 +225,8 @@ model course {
   min_entry_requirements_scale String?           @db.VarChar(20)
   has_faster_tat               Int?              @db.TinyInt
   faster_tat                   Int?              @db.UnsignedTinyInt
+  // MOI letter accepted instead of an English test: 1 / 0 / NULL = unknown.
+  moi_accepted                 Int?              @db.TinyInt
   application                  application[]
   shortlist                    shortlist[]
   commission_rate              commission_rate[]

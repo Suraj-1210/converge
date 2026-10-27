@@ -1,5 +1,6 @@
 import { type RouterOutputs } from "~/trpc/react";
 import { fasterTatLabel } from "~/lib/faster-tat";
+import { moiYesNo } from "~/lib/moi";
 import {
   HOME_CURRENCY,
   convertAmount,
@@ -114,6 +115,17 @@ export const FASTER_TAT_FILTER: Array<{ value: string; label: string }> = [
   { value: "1", label: "Same day" },
 ];
 
+// MOI filter. Courses with MOI unknown match neither option.
+export type MoiFilter = "" | "yes" | "no";
+export const MOI_FILTER: Array<{ value: MoiFilter; label: string }> = [
+  { value: "yes", label: "MOI accepted" },
+  { value: "no", label: "MOI not accepted" },
+];
+
+export function asMoiFilter(v: string): MoiFilter {
+  return v === "yes" || v === "no" ? v : "";
+}
+
 // ----- Filter state -------------------------------------------------------
 
 // Yes / No are independently toggleable (mock behaviour); both on or both off
@@ -137,6 +149,7 @@ export interface FilterState {
   scholarship: TriState;
   open: TriState;
   fasterTat: string; // "" = any, else the slowest faster-TAT code allowed
+  moi: MoiFilter; // "" = any
   // Currency fees are shown (≈), sorted and bracketed in.
   tuitionCurrency: string;
   // The picked bracket's bounds in tuitionCurrency, digits ("" = open end).
@@ -160,6 +173,7 @@ export const emptyFilters = (): FilterState => ({
   scholarship: emptyTri(),
   open: emptyTri(),
   fasterTat: "",
+  moi: "",
   tuitionCurrency: HOME_CURRENCY,
   tuitionMin: "",
   tuitionMax: "",
@@ -220,6 +234,7 @@ export function applyFilters(
     if (fasterTat !== null && (p.fasterTat === null || p.fasterTat > fasterTat)) {
       return false;
     }
+    if (f.moi && p.moiAccepted !== (f.moi === "yes")) return false;
     if (engScore !== null && !Number.isNaN(engScore)) {
       // Pass when the program states no requirement, or the student's score
       // meets it. TOEFL is compared on the scale the student's score is on:
@@ -420,6 +435,7 @@ export function templateToFilters(t: SearchTemplate): FilterState {
   return {
     ...merged,
     tuitionCurrency: merged.tuitionCurrency || HOME_CURRENCY,
+    moi: asMoiFilter(merged.moi),
     tuitionMin: merged.tuitionMin.replace(/[^0-9]/g, ""),
     tuitionMax: merged.tuitionMax.replace(/[^0-9]/g, ""),
   };
@@ -496,6 +512,11 @@ const DOWNLOAD_FIELDS: DownloadField[] = [
   },
   { key: "city", label: "City", value: (p) => p.university?.city ?? "" },
   { key: "stem", label: "STEM", value: (p) => yesNo(p.isStem) },
+  {
+    key: "moi",
+    label: "MOI Accepted",
+    value: (p) => moiYesNo(p.moiAccepted) || "Unknown",
+  },
   { key: "scholarship", label: "Scholarship", value: (p) => yesNo(p.hasScholarship) },
   { key: "open", label: "Open Program", value: (p) => yesNo(p.isOpen) },
 ];

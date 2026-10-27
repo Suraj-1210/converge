@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import { db } from "~/server/db";
 import { saveBuffer } from "~/server/storage";
 import { fasterTatLabel, parseFasterTat } from "~/lib/faster-tat";
+import { parseMoi } from "~/lib/moi";
 
 // Sheet names in the Master_B2B template. Anything else is ignored.
 const SHEET_UNIVERSITY = "University";
@@ -57,6 +58,10 @@ const COURSE_HEADERS = {
   faster_tat: "faster_tat",
   // Legacy yes/no column from older templates (yes → Within 7 days).
   has_faster_tat: "has_faster_tat",
+  // Optional. Yes / No / blank (unknown); "moi" is accepted as the header too.
+  // Files without the column leave existing courses' MOI as it is.
+  moi_accepted: "moi_accepted",
+  moi: "moi",
 } as const;
 
 // =============================================================================
@@ -134,6 +139,10 @@ export interface PreviewCourseRow {
     minEntryRequirementsScale: string | null;
     /** src/lib/faster-tat.ts code; null = standard. */
     fasterTat: number | null;
+    /** MOI letter accepted (src/lib/moi.ts); null = unknown. */
+    moiAccepted: boolean | null;
+    /** False when the sheet has no MOI column: the import leaves MOI untouched. */
+    moiProvided: boolean;
   };
   matchedDbId: number | null;
   status: RowStatus;
@@ -522,6 +531,15 @@ export async function parseAndValidate(
         errors.push('faster_tat must be "Same day", "1-3 days", "Within 7 days", or left blank');
       const fasterTatCode =
         fasterTat.code ?? (asBool(r[COURSE_HEADERS.has_faster_tat]) ? 3 : null);
+      const moiHeader =
+        COURSE_HEADERS.moi_accepted in r
+          ? COURSE_HEADERS.moi_accepted
+          : COURSE_HEADERS.moi in r
+            ? COURSE_HEADERS.moi
+            : null;
+      const moi = moiHeader ? parseMoi(r[moiHeader]) : { value: null, invalid: false };
+      if (moi.invalid)
+        errors.push(`${moiHeader} must be Yes, No, or left blank (got "${String(r[moiHeader!])}")`);
 
       if (code) {
         const codeKey = code.toLowerCase();
@@ -579,6 +597,8 @@ export async function parseAndValidate(
             20,
           ),
           fasterTat: fasterTatCode,
+          moiAccepted: moi.value,
+          moiProvided: moiHeader !== null,
         },
         matchedDbId,
         status,
@@ -748,6 +768,12 @@ export async function commitImport(
       min_entry_requirements_scale: row.data.minEntryRequirementsScale,
       faster_tat: fasterTatCode,
       has_faster_tat: fasterTatCode === null ? 0 : 1,
+      // No MOI column in the file → leave it alone (undefined skips the field).
+      moi_accepted: row.data.moiProvided
+        ? typeof row.data.moiAccepted === "boolean"
+          ? Number(row.data.moiAccepted)
+          : null
+        : undefined,
     };
     try {
       if (row.matchedDbId !== null) {

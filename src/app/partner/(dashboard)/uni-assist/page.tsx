@@ -10,10 +10,13 @@ import { DownloadDialog } from "~/app/admin/(dashboard)/uni-assist/dialogs";
 import {
   DISPLAY_CURRENCIES,
   FASTER_TAT_FILTER,
+  MOI_FILTER,
   appFeeOnly,
   approxIn,
+  asMoiFilter,
   bracketKey,
   fasterTatTag,
+  type MoiFilter,
 } from "~/app/admin/(dashboard)/uni-assist/uni-assist-lib";
 import { HOME_CURRENCY, bracketsFor, formatMoney } from "~/lib/fx-convert";
 import { ShortlistApproval } from "~/server/db/enums";
@@ -89,6 +92,7 @@ interface SearchFormState {
   degreeLevel: string;
   country: string;
   fasterTat: string; // "" = any, else the slowest faster-TAT code allowed
+  moi: MoiFilter; // "" = any
   // Fees show (≈), sort and bracket in this currency.
   currency: string;
   // Picked tuition bracket's bounds in `currency` ("" = open end).
@@ -103,6 +107,7 @@ const emptyForm = (): SearchFormState => ({
   degreeLevel: "",
   country: "",
   fasterTat: "",
+  moi: "",
   currency: HOME_CURRENCY,
   tuitionMin: "",
   tuitionMax: "",
@@ -163,6 +168,7 @@ export default function PartnerUniAssistPage() {
     degreeLevel:
       applied.degreeLevel === "" ? undefined : Number(applied.degreeLevel),
     fasterTat: applied.fasterTat ? Number(applied.fasterTat) : undefined,
+    moi: applied.moi || undefined,
     currency: applied.currency,
     tuitionMin: applied.tuitionMin ? Number(applied.tuitionMin) : undefined,
     tuitionMax: applied.tuitionMax ? Number(applied.tuitionMax) : undefined,
@@ -417,6 +423,12 @@ export default function PartnerUniAssistPage() {
             onChange={(v) => setFilter({ fasterTat: v })}
             options={FASTER_TAT_FILTER}
             placeholder="Faster TAT"
+          />
+          <FilterPill
+            value={form.moi}
+            onChange={(v) => setFilter({ moi: asMoiFilter(v) })}
+            options={MOI_FILTER}
+            placeholder="MOI"
           />
           <FilterPill
             value={bracketKey(form.tuitionMin, form.tuitionMax)}
@@ -780,7 +792,15 @@ function ProgramCard({
 
 // ----- Tag mapping --------------------------------------------------------
 
-type TagTone = "scholarship" | "stem" | "feewaiver" | "coop" | "open" | "tat" | "deposit";
+type TagTone =
+  | "scholarship"
+  | "stem"
+  | "feewaiver"
+  | "coop"
+  | "open"
+  | "tat"
+  | "moi"
+  | "deposit";
 
 function collectTags(p: Program): Array<{ label: string; tone: TagTone }> {
   const out: Array<{ label: string; tone: TagTone }> = [];
@@ -790,6 +810,7 @@ function collectTags(p: Program): Array<{ label: string; tone: TagTone }> {
   if (p.isCoopAvailable) out.push({ label: "Co-op", tone: "coop" });
   const tat = fasterTatTag(p.fasterTat);
   if (tat) out.push({ label: tat, tone: "tat" });
+  if (p.moiAccepted) out.push({ label: "MOI accepted", tone: "moi" });
   if (p.isOpen) out.push({ label: "Open", tone: "open" });
   return out;
 }
@@ -802,6 +823,7 @@ function Tag({ tone, children }: { tone: TagTone; children: React.ReactNode }) {
     coop: "bg-[#F9F5FF] text-[#7F56D9]",
     open: "bg-[#ECFDF3] text-[#027A48]",
     tat: "bg-[#FFFAEB] text-[#DC6803]",
+    moi: "bg-[#F4F3FF] text-[#5925DC]",
     deposit: "bg-[#F0F9FF] text-[#0EA5E9]",
   };
   return (

@@ -487,6 +487,7 @@ CREATE TABLE IF NOT EXISTS `course` (
   `min_entry_requirements_scale`  VARCHAR(20)   NULL DEFAULT NULL,
   `has_faster_tat`                TINYINT(1) NULL DEFAULT NULL,  -- legacy flag, kept in step with faster_tat
   `faster_tat`                    TINYINT UNSIGNED NULL DEFAULT NULL,  -- 1=Same day, 2=1-3 days, 3=Within 7 days, NULL=standard (src/lib/faster-tat.ts)
+  `moi_accepted`                  TINYINT(1) NULL DEFAULT NULL,  -- MOI letter accepted instead of an English test: 1=yes, 0=no, NULL=unknown (src/lib/moi.ts)
   PRIMARY KEY (`id`),
   INDEX `fk_course_university1_idx` (`university_id` ASC) VISIBLE,
   UNIQUE INDEX `code_UNIQUE`        (`code` ASC) VISIBLE,

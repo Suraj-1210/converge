@@ -22,6 +22,7 @@ import {
   saveBracketConfig,
 } from "~/server/universities/uni-assist-config";
 import { resolveStorageUrl } from "~/server/storage";
+import { moiFromDb, moiToDb } from "~/lib/moi";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
 // Generous (won't bite at test-data scale); documented in the README notes.
@@ -87,6 +88,8 @@ const courseInput = z.object({
   minEntryRequirementsScale: z.string().trim().max(20).nullable().optional(),
   // src/lib/faster-tat.ts codes; null = standard.
   fasterTat: z.number().int().min(1).max(3).nullable().default(null),
+  // MOI letter accepted (src/lib/moi.ts); null = unknown.
+  moiAccepted: z.boolean().nullable().default(null),
 });
 
 // Shape of a saved Uni Assist filter set (mirrors the page's FilterState).
@@ -110,6 +113,7 @@ const templateFilters = z.object({
   tuitionMin: z.string().max(20),
   tuitionMax: z.string().max(20),
   fasterTat: z.string().max(2).optional(),
+  moi: z.string().max(3).optional(),
 });
 
 function bool(v: boolean): number {
@@ -197,6 +201,7 @@ function toCourseApi(c: {
   min_entry_requirements_scale: string | null;
   has_faster_tat: number | null;
   faster_tat: number | null;
+  moi_accepted: number | null;
   university?: {
     id: number;
     name: string;
@@ -239,6 +244,7 @@ function toCourseApi(c: {
     minEntryRequirementsScale: c.min_entry_requirements_scale,
     // A row flagged before faster_tat existed reads as the migration's mapping.
     fasterTat: c.faster_tat ?? (c.has_faster_tat === 1 ? 3 : null),
+    moiAccepted: moiFromDb(c.moi_accepted),
     university: c.university
       ? {
           id: c.university.id,
@@ -418,6 +424,7 @@ export const universitiesRouter = createTRPCRouter({
           min_entry_requirements: input.minEntryRequirements ?? null,
           min_entry_requirements_scale: input.minEntryRequirementsScale ?? null,
           ...fasterTatColumns(input.fasterTat),
+          moi_accepted: moiToDb(input.moiAccepted),
         },
         include: {
           university: {
@@ -476,6 +483,7 @@ export const universitiesRouter = createTRPCRouter({
           min_entry_requirements: input.minEntryRequirements ?? null,
           min_entry_requirements_scale: input.minEntryRequirementsScale ?? null,
           ...fasterTatColumns(input.fasterTat),
+          moi_accepted: moiToDb(input.moiAccepted),
         },
         include: {
           university: {
@@ -502,6 +510,9 @@ export const universitiesRouter = createTRPCRouter({
           degreeLevel: z.number().int().min(0).max(255).optional(),
           // Faster TAT code: programs at least this fast (1 = Same day only).
           fasterTat: z.number().int().min(1).max(3).optional(),
+          // MOI: "yes" = MOI letter accepted, "no" = explicitly not accepted.
+          // Unknown (NULL) courses match neither.
+          moi: z.enum(["yes", "no"]).optional(),
           // Currency the tuition bracket is in and tuition sorts compare in.
           // Each course's fee is converted to it via fx_rate first.
           currency: z.string().trim().length(3).default(HOME_CURRENCY),
@@ -534,6 +545,7 @@ export const universitiesRouter = createTRPCRouter({
       }
       if (input.degreeLevel !== undefined) where.degree_level = input.degreeLevel;
       if (input.fasterTat !== undefined) where.faster_tat = { lte: input.fasterTat };
+      if (input.moi) where.moi_accepted = input.moi === "yes" ? 1 : 0;
       if (input.courseIds) where.id = { in: input.courseIds };
 
       const include = { university: { select: courseUniversitySelect } };
