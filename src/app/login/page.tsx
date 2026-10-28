@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { safeReturnPath } from "~/lib/url-state";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthLayout } from "~/components/ui/auth-layout";
@@ -179,8 +180,11 @@ export default function LoginPage() {
         onSuccess: (data) => {
           setUserName(data.name);
           setScreen("success");
+          // An approved partner goes back to the page they were on when the
+          // session ran out; anyone else follows their state (MOU, review).
+          const next = safeReturnPath(new URLSearchParams(window.location.search).get("next"), "/partner/");
           setTimeout(() => {
-            router.push(data.redirectUrl);
+            router.push(data.redirectUrl === "/partner/dashboard" && next ? next : data.redirectUrl);
           }, 2200);
         },
         onError: () => {

@@ -39,6 +39,7 @@ import {
 import {
   autoAssignStudents,
   bdmOrgScope,
+  bdmUserScope,
   canSeeStudent,
   isCounsellingRole,
   requireAssignableCounsellor,
@@ -46,6 +47,7 @@ import {
   requireStaffNote,
   requireStaffStudent,
   requireStaffOrg,
+  requireStaffPartnerUser,
   requireStaffStudents,
   staffStudentScope,
   type StaffUser,
@@ -65,6 +67,7 @@ import { parsePendingDocs } from "~/server/pending-docs";
 import { intakeLabel as deferralIntakeLabel } from "~/server/application-deferral";
 import { currentStage } from "~/lib/application-stages";
 import { leadPipelineStep, overallStudentStatus } from "~/lib/student-pipeline";
+import { partnerLabel, partnerName } from "~/lib/partner-display";
 
 // M6: defensive cap on unbounded list queries until cursor pagination lands.
 const LIST_CAP = 500;
@@ -106,6 +109,7 @@ const studentInclude = {
     select: {
       id: true,
       name: true,
+      type: true,
       // Org owner carries the BDM linkage; surfaced as the student's BDM.
       user: {
         where: { is_owner: 1 },
@@ -119,6 +123,8 @@ const studentInclude = {
     },
   },
   user: { select: { id: true, first_name: true, last_name: true } },
+  // An independent counsellor's student has no org: they're its partner.
+  created_by: { select: { first_name: true, last_name: true } },
   cp_counsellor: { select: { id: true, first_name: true, last_name: true } },
   application: {
     select: {
@@ -204,7 +210,10 @@ function toApi(s: DbStudent) {
     educationLoan: s.education_loan === null ? null : s.education_loan === 1,
     applyThroughCp: s.apply_through_cp === null ? null : s.apply_through_cp === 1,
     orgId: s.org_id,
-    orgName: s.organization?.name ?? "Independent",
+    // The org's name, or the independent counsellor's (partner filters).
+    orgName: partnerName(s.organization, s.created_by),
+    // "EduBridge · Agency" / "Aishwarya Rai" (~/lib/partner-display).
+    partnerLabel: partnerLabel(s.organization, s.created_by),
     counsellorId: s.counsellor_id,
     counsellorName: s.user ? fullName(s.user) : null,
     cpCounsellorId: s.cp_counsellor_id,
@@ -440,7 +449,8 @@ async function findDuplicate(
       last_name: true,
       email: true,
       phone: true,
-      organization: { select: { name: true } },
+      organization: { select: { name: true, type: true } },
+      created_by: { select: { first_name: true, last_name: true } },
     },
   });
   const targetDigits = phoneDigits(normalizePhone(countryCode, phone));
@@ -455,7 +465,7 @@ async function findDuplicate(
     name: fullName(match),
     email: match.email,
     phone: match.phone,
-    orgName: match.organization?.name ?? "Independent",
+    orgName: partnerLabel(match.organization, match.created_by),
     matchedOn:
       match.email?.toLowerCase() === email.toLowerCase()
         ? ("email" as const)
@@ -1219,6 +1229,42 @@ async function partnerEdit<T>(
   return result;
 }
 
+// Whose a student added on the admin side is: an agency (orgId), or an
+// independent counsellor (independentUserId), stored the way a partner-created
+// independent student is (no org, created_by_user_id = them). Exactly one.
+const partnerPick = {
+  orgId: z.number().int().positive().optional(),
+  independentUserId: z.number().int().positive().optional(),
+  cpCounsellorId: z.number().int().positive().nullable().optional(),
+};
+const onePartner = (v: { orgId?: number; independentUserId?: number }) =>
+  (v.orgId === undefined) !== (v.independentUserId === undefined);
+const ONE_PARTNER_MESSAGE = { message: "Choose one partner: an agency or an independent counsellor." };
+
+async function studentOwnerFields(input: {
+  orgId?: number;
+  independentUserId?: number;
+}): Promise<{ org_id: number | null; created_by_user_id?: number }> {
+  if (input.orgId !== undefined) return { org_id: input.orgId };
+  const u = await db.user.findFirst({
+    where: {
+      id: input.independentUserId,
+      type: UserType.INDEPENDENT_COUNSELLOR,
+      status: UserStatus.APPROVED,
+      deleted_at: null,
+      org_id: null,
+    },
+    select: { id: true },
+  });
+  if (!u) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "That independent counsellor isn't an approved, active partner.",
+    });
+  }
+  return { org_id: null, created_by_user_id: u.id };
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -1234,14 +1280,15 @@ export const studentsRouter = createTRPCRouter({
         id: true,
         first_name: true,
         last_name: true,
-        organization: { select: { name: true } },
+        organization: { select: { name: true, type: true } },
+        created_by: { select: { first_name: true, last_name: true } },
       },
     });
     return rows.map((s) => ({
       id: s.id,
       firstName: s.first_name,
       lastName: s.last_name,
-      orgName: s.organization?.name ?? "Independent",
+      orgName: partnerLabel(s.organization, s.created_by),
     }));
   }),
 
@@ -1267,25 +1314,43 @@ export const studentsRouter = createTRPCRouter({
     return rows.map((s) => ({ ...toApi(s), partnerEditCount: updates.get(s.id) ?? 0 }));
   }),
 
-  // Org options for the admin Add Student "Partner" picker (a BDM: their own).
+  // Partner picker (Add Student, Bulk Import): every agency, plus every
+  // approved independent counsellor, who has no organization (27 Oct: they
+  // were missing). A BDM gets only their own partners. `key` is the option
+  // value: "org-<id>" or "ind-<user id>".
   listOrgs: protectedAdminProcedure.query(async ({ ctx }) => {
-    const rows = await db.organization.findMany({
-      where: await bdmOrgScope(ctx.cpUser),
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
-    return rows;
+    const [orgs, independents] = await Promise.all([
+      db.organization.findMany({
+        where: await bdmOrgScope(ctx.cpUser),
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, type: true },
+      }),
+      db.user.findMany({
+        where: {
+          AND: [
+            { type: UserType.INDEPENDENT_COUNSELLOR, status: UserStatus.APPROVED, deleted_at: null, org_id: null },
+            await bdmUserScope(ctx.cpUser),
+          ],
+        },
+        orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
+        select: { id: true, first_name: true, last_name: true },
+      }),
+    ]);
+    return [
+      ...orgs.map((o) => ({ key: `org-${o.id}`, kind: "agency" as const, id: o.id, name: partnerLabel(o, null) })),
+      ...independents.map((u) => ({ key: `ind-${u.id}`, kind: "independent" as const, id: u.id, name: partnerLabel(null, u) })),
+    ].sort((a, b) => a.name.localeCompare(b.name));
   }),
 
   adminCreate: protectedAdminProcedure
     .input(
-      createFields.extend({
-        orgId: z.number().int().positive(),
-        cpCounsellorId: z.number().int().positive().nullable().optional(),
-      }),
+      createFields.extend(partnerPick).refine(onePartner, ONE_PARTNER_MESSAGE),
     )
     .mutation(async ({ ctx, input }) => {
-      await requireStaffOrg(ctx.cpUser, input.orgId);
+      // A BDM may add students only for their own partners.
+      if (input.orgId !== undefined) await requireStaffOrg(ctx.cpUser, input.orgId);
+      else await requireStaffPartnerUser(ctx.cpUser, input.independentUserId!);
+      const owner = await studentOwnerFields(input);
       const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
       const duplicate = await staffDuplicate(
         ctx.cpUser,
@@ -1307,7 +1372,7 @@ export const studentsRouter = createTRPCRouter({
           interested_program: input.interestedProgram,
           education_loan: input.educationLoan ? 1 : 0,
           apply_through_cp: input.applyThroughCp === false ? 0 : 1,
-          org_id: input.orgId,
+          ...owner,
           cp_counsellor_id: cpCounsellorId,
         },
         select: { id: true },
@@ -1335,14 +1400,15 @@ export const studentsRouter = createTRPCRouter({
   // exists (or repeats earlier in the same file) and createMany's the rest.
   bulkImport: protectedAdminProcedure
     .input(
-      z.object({
-        orgId: z.number().int().positive(),
-        cpCounsellorId: z.number().int().positive().nullable().optional(),
-        rows: z.array(createFields).min(1).max(500),
-      }),
+      z
+        .object({ ...partnerPick, rows: z.array(createFields).min(1).max(500) })
+        .refine(onePartner, ONE_PARTNER_MESSAGE),
     )
     .mutation(async ({ ctx, input }) => {
-      await requireStaffOrg(ctx.cpUser, input.orgId);
+      // A BDM may add students only for their own partners.
+      if (input.orgId !== undefined) await requireStaffOrg(ctx.cpUser, input.orgId);
+      else await requireStaffPartnerUser(ctx.cpUser, input.independentUserId!);
+      const owner = await studentOwnerFields(input);
       const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
       // One pass over existing students to detect duplicates by email or by
       // phone digits, instead of a full scan per row.
@@ -1370,7 +1436,8 @@ export const studentsRouter = createTRPCRouter({
         interested_program: string;
         education_loan: number;
         apply_through_cp: number;
-        org_id: number;
+        org_id: number | null;
+        created_by_user_id?: number;
         cp_counsellor_id: number | null;
       }[] = [];
       const skipped: { row: number; email: string; reason: string }[] = [];
@@ -1402,7 +1469,7 @@ export const studentsRouter = createTRPCRouter({
           interested_program: r.interestedProgram,
           education_loan: r.educationLoan ? 1 : 0,
           apply_through_cp: r.applyThroughCp === false ? 0 : 1,
-          org_id: input.orgId,
+          ...owner,
           cp_counsellor_id: cpCounsellorId,
         });
       });

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useUrlState } from "~/lib/url-state";
 import { AnimatePresence, motion } from "motion/react";
 import { OverallStatusBadge, StudentStatusBadge } from "~/components/students/status";
 import { InactiveControl } from "./pipeline-panels";
@@ -56,7 +57,14 @@ export default function StudentProfilePage() {
   );
   const utils = api.useUtils();
 
-  const [tab, setTab] = useState<TabId>("profile");
+  // The open tab lives in the URL (?tab=partner-chat), so a refresh or a
+  // shared link stays on it.
+  const [view, setView] = useUrlState({ tab: "profile" });
+  const tab: TabId =
+    TABS.some((x) => x.id === view.tab) && (view.tab !== "chat" || SHOW_WHATSAPP_TAB)
+      ? (view.tab as TabId)
+      : "profile";
+  const setTab = (t: TabId) => setView({ tab: t });
   const role = api.authSession.me.useQuery().data?.role;
   const chatRoles: number[] = [AdminRole.SUPER_ADMIN, AdminRole.COUNSELLOR_LEAD, AdminRole.COUNSELLOR];
   const tabs = TABS.filter(
@@ -64,11 +72,6 @@ export default function StudentProfilePage() {
       (t.id !== "partner-chat" || (role !== undefined && chatRoles.includes(role))) &&
       (t.id !== "chat" || SHOW_WHATSAPP_TAB),
   );
-  // Deep link, e.g. /admin/students/12?tab=partner-chat.
-  useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t && TABS.some((x) => x.id === t) && (t !== "chat" || SHOW_WHATSAPP_TAB)) setTab(t as TabId);
-  }, []);
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
   const showToast = (msg: string) => {

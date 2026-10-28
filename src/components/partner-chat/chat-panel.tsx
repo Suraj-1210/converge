@@ -69,9 +69,11 @@ export function PartnerChatPanel({
     if (isPartner) {
       await utils.partnerChat.partnerThread.invalidate({ studentId });
       void utils.partnerChat.partnerInbox.invalidate();
+      void utils.partnerChat.partnerInboxCounts.invalidate();
     } else {
       await utils.partnerChat.staffThread.invalidate({ studentId });
       void utils.partnerChat.staffInbox.invalidate();
+      void utils.partnerChat.staffInboxCounts.invalidate();
     }
   };
   const onError = (e: { message: string }) => onToast(e.message);
@@ -85,9 +87,11 @@ export function PartnerChatPanel({
     if (isPartner) {
       void utils.partnerChat.partnerUnreadCount.invalidate();
       void utils.partnerChat.partnerInbox.invalidate();
+      void utils.partnerChat.partnerInboxCounts.invalidate();
       void utils.partnerNotifications.list.invalidate();
     } else {
       void utils.partnerChat.staffInbox.invalidate();
+      void utils.partnerChat.staffInboxCounts.invalidate();
       void utils.notifications.list.invalidate();
     }
   };

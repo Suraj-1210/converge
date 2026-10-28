@@ -1,4 +1,5 @@
 import "server-only";
+import { partnerLabel } from "~/lib/partner-display";
 import { TRPCError } from "@trpc/server";
 import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
@@ -641,7 +642,7 @@ export async function inbox(
         select: {
           first_name: true,
           last_name: true,
-          organization: { select: { name: true } },
+          organization: { select: { name: true, type: true } },
           user: { select: { first_name: true, last_name: true } },
           cp_counsellor: { select: { id: true, first_name: true, last_name: true } },
           created_by: { select: { first_name: true, last_name: true } },
@@ -683,13 +684,16 @@ export async function inbox(
     return {
       studentId: t.student_id,
       studentName: fullName(s),
-      partnerName: s.organization?.name ?? (s.created_by ? fullName(s.created_by) : "—"),
+      partnerName: partnerLabel(s.organization, s.created_by),
       partnerCounsellor: s.user ? fullName(s.user) : null,
       cpCounsellor: counsellorLabel(s.cp_counsellor),
       lastAt: t.last_message_at?.toISOString() ?? null,
       lastPreview: t.last_preview ?? "",
       lastSide: t.last_sender_side,
       unread: unread.get(t.id) ?? 0,
+      // A partner message is waiting for a Collegepond reply (both sides see
+      // this; only the Collegepond side gets the clock below).
+      awaitingReply: t.awaiting_since !== null,
       awaiting: clock
         ? {
             since: t.awaiting_since!.toISOString(),
@@ -703,6 +707,33 @@ export async function inbox(
   if (opts.filter === "unread") return rows.filter((r) => r.unread > 0);
   if (opts.filter === "overdue") return rows.filter((r) => r.awaiting?.status === "Breached");
   return rows;
+}
+
+// Badge numbers for the inbox filters: the same rules as inbox() above
+// (awaiting = the reply clock is running, which already leaves out system
+// lines, acknowledgements and "No reply needed"), over every thread in scope.
+export async function inboxCounts(actor: ChatActor, scope: Prisma.studentWhereInput) {
+  const threads = await db.partner_chat_thread.findMany({
+    where: { student: scope, last_message_id: { not: null } },
+    select: { id: true, awaiting_since: true },
+  });
+  const unread = await unreadByThread(actor, threads.map((t) => t.id));
+  const waiting = threads.filter((t) => t.awaiting_since !== null);
+  let overdue = 0;
+  if (actor.side === "staff" && waiting.length > 0) {
+    const target = await getTatTarget(CHAT_RESPONSE);
+    const cfg = target ? await getTatConfig() : null;
+    const now = new Date();
+    if (target && cfg) {
+      overdue = waiting.filter((t) => tatClock(t.awaiting_since!, now, target, cfg).status === "Breached").length;
+    }
+  }
+  return {
+    all: threads.length,
+    unread: [...unread.values()].filter((n) => n > 0).length,
+    awaiting: waiting.length,
+    overdue,
+  };
 }
 
 // ---- Attachments -----------------------------------------------------------------

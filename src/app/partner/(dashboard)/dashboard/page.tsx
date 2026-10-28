@@ -17,6 +17,7 @@ import {
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { RELATIONSHIP_MANAGER_LABEL } from "~/lib/constants/partner-relationship";
 import { TierBadge, tierProgressText } from "~/components/partner/loyalty-tiers";
+import { CommissionIcon, SearchIcon, StudentsIcon } from "~/components/dashboard/nav-icons";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -27,6 +28,12 @@ const QUICK_LINKS = [
   { label: "Commission", href: "/partner/commission" },
   { label: "Resources", href: "/partner/resources" },
   { label: "My Account", href: "/partner/account" },
+];
+
+const QUICK_ACTIONS = [
+  { label: "All Students", sub: "Your students and their progress", href: "/partner/students", icon: <StudentsIcon /> },
+  { label: "Uni Assist", sub: "Find and shortlist programs", href: "/partner/uni-assist", icon: <SearchIcon /> },
+  { label: "Commission", sub: "Claims and payouts", href: "/partner/commission", icon: <CommissionIcon /> },
 ];
 
 export default function PartnerDashboardPage() {
@@ -107,6 +114,28 @@ export default function PartnerDashboardPage() {
             <TierBadge step={tier.effective} suffix="Partner" />
           </Link>
         )}
+      </div>
+
+      {/* Quick Actions (27 Oct testing). Commission is the agency's money:
+          hidden from agency counsellors, and until we know who's signed in. */}
+      <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {QUICK_ACTIONS.filter(
+          (a) => a.href !== "/partner/commission" || (mounted && !!me.data && me.data.kind !== "counsellor"),
+        ).map((a) => (
+          <Link
+            key={a.href}
+            href={a.href}
+            className="group flex items-center gap-3 rounded-xl border border-[#E4E7EC] bg-white px-4 py-3.5 transition-colors hover:border-[#1570EF]"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#EFF8FF] [&_svg]:h-5 [&_svg]:w-5 [&_svg]:stroke-[#1570EF]">
+              {a.icon}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-[#101828] group-hover:text-[#1570EF]">{a.label}</span>
+              <span className="block truncate text-[12px] text-[#667085]">{a.sub}</span>
+            </span>
+          </Link>
+        ))}
       </div>
 
       {/* Important Notices — owner only, live (MOU, commission, payouts). */}

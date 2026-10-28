@@ -24,6 +24,7 @@ import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { stageLabel } from "~/components/dashboard/format";
 import { furthestOpen } from "~/lib/application-stages";
 import { LeadPipelineCompact } from "~/components/students/lead-pipeline-bar";
+import { useUrlState } from "~/lib/url-state";
 import {
   AddStudentModal,
   COUNTRY_NAME,
@@ -96,13 +97,14 @@ function derivedApplication(s: PartnerStudent): {
 
 // ----- Filters ----------------------------------------------------------------
 
-interface Filters {
+// A type, not an interface: useUrlState needs a plain string record.
+type Filters = {
   search: string;
   intake: string;
   country: string;
   from: string;
   to: string;
-}
+};
 
 const emptyFilters = (): Filters => ({
   search: "",
@@ -157,10 +159,17 @@ function StudentsPage() {
   const students = api.students.partnerList.useQuery();
   const rows = useMemo(() => students.data ?? [], [students.data]);
 
-  const [filters, setFilters] = useState<Filters>(emptyFilters());
+  // Filters, the status pill and the sort live in the URL, so a refresh keeps
+  // them (27 Oct testing).
+  const [filters, setFilters] = useUrlState<Filters>(emptyFilters());
+  const [view, setView] = useUrlState({ pill: "", sort: "desc" });
   // null = "All". Reset whenever the filter bar changes (mock behaviour).
-  const [activePill, setActivePill] = useState<Pill>(null);
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const activePill: Pill =
+    view.pill === "" ? null : view.pill === "unassigned" ? "unassigned" : Number(view.pill);
+  const setActivePill = (p: Pill) => setView({ pill: p === null ? "" : String(p) });
+  const sortDir: "asc" | "desc" = view.sort === "asc" ? "asc" : "desc";
+  const setSortDir = (v: "asc" | "desc" | ((d: "asc" | "desc") => "asc" | "desc")) =>
+    setView({ sort: typeof v === "function" ? v(sortDir) : v });
   const [addOpen, setAddOpen] = useState(false);
 
   const [toastMsg, setToastMsg] = useState("");
@@ -178,7 +187,11 @@ function StudentsPage() {
   useEffect(() => {
     if (deepLinkId === null || !students.data) return;
     if (students.data.some((s) => s.id === deepLinkId)) setSlideOverId(deepLinkId);
-    router.replace("/partner/students", { scroll: false });
+    // Drop ?student= only; the filters in the URL stay.
+    const rest = new URLSearchParams(window.location.search);
+    rest.delete("student");
+    const qs = rest.toString();
+    router.replace(`/partner/students${qs ? `?${qs}` : ""}`, { scroll: false });
   }, [deepLinkId, students.data, router]);
 
   // Native View Transition: morph the clicked row's avatar into the slide-over.
@@ -222,7 +235,7 @@ function StudentsPage() {
   }, []);
 
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
-    setFilters((f) => ({ ...f, [key]: value }));
+    setFilters({ [key]: value } as Partial<Filters>);
     setActivePill(null);
   };
 

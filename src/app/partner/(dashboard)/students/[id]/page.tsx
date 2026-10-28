@@ -28,6 +28,7 @@ import { DocumentsChecklist, expectedProgress } from "../upload-documents-modal"
 import { ApplicationsTab } from "./applications-tab";
 import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
 import { LeadPipelineBar } from "~/components/students/lead-pipeline-bar";
+import { useUrlState } from "~/lib/url-state";
 
 function usePartnerRefresh() {
   const utils = api.useUtils();
@@ -92,12 +93,13 @@ export default function PartnerStudentProfilePage() {
     [meId, meKind, hasCounsellors],
   );
 
-  const [tab, setTab] = useState<TabId>("profile");
-  // Deep link, e.g. /partner/students/12?tab=documents.
-  useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t && TABS.some((x) => x.id === t)) setTab(t as TabId);
-  }, []);
+  // The open tab lives in the URL (?tab=documents), so a refresh or a shared
+  // link stays on it. ?app=<id> (from the Applications page) focuses one
+  // application on the Applications tab.
+  const [view, setView] = useUrlState({ tab: "profile", app: "" });
+  const tab: TabId = TABS.some((x) => x.id === view.tab) ? (view.tab as TabId) : "profile";
+  const setTab = (t: TabId) => setView({ tab: t, app: "" });
+  const focusAppId = Number(view.app) || null;
   const [assignOpen, setAssignOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
@@ -260,6 +262,7 @@ export default function PartnerStudentProfilePage() {
           )}
           {tab === "applications" && (
             <ApplicationsTab
+              focusAppId={focusAppId}
               student={s}
               viewerKind={viewer?.kind}
               onChanged={() => {

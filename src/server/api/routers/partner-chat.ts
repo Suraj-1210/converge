@@ -12,6 +12,7 @@ import {
   editMessage,
   getThread,
   inbox,
+  inboxCounts,
   markRead,
   messageStudentId,
   saveAttachmentToDocuments,
@@ -62,9 +63,15 @@ export const partnerChatRouter = createTRPCRouter({
   // ---- Partner portal ----------------------------------------------------------
   partnerInbox: protectedPartnerProcedure.input(inboxInput).query(async ({ ctx, input }) => {
     const scope = await partnerChatScope(ctx.cpPartner.id);
-    // The TAT filters are Collegepond-side only.
-    const filter = input.filter === "unread" ? "unread" : "all";
+    // Overdue (the TAT target) is Collegepond-side only; a partner can see
+    // which of their messages are still waiting for a reply.
+    const filter = input.filter === "overdue" ? "awaiting" : input.filter;
     return inbox(partnerActor(ctx), scope, { filter, q: input.q });
+  }),
+
+  // Numbers on the inbox's Unread / Awaiting reply filters.
+  partnerInboxCounts: protectedPartnerProcedure.query(async ({ ctx }) => {
+    return inboxCounts(partnerActor(ctx), await partnerChatScope(ctx.cpPartner.id));
   }),
 
   partnerUnreadCount: protectedPartnerProcedure.query(async ({ ctx }) => {
@@ -102,6 +109,10 @@ export const partnerChatRouter = createTRPCRouter({
   staffInbox: protectedAdminProcedure.input(inboxInput).query(async ({ ctx, input }) => {
     const scope = await staffChatScope(ctx.cpUser);
     return inbox(staffActor(ctx), scope, { filter: input.filter, q: input.q });
+  }),
+
+  staffInboxCounts: protectedAdminProcedure.query(async ({ ctx }) => {
+    return inboxCounts(staffActor(ctx), await staffChatScope(ctx.cpUser));
   }),
 
   staffThread: protectedAdminProcedure.input(studentInput).query(async ({ ctx, input }) => {

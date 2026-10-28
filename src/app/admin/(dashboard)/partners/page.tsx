@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { TabOverridesButton } from "~/components/admin/tab-overrides-modal";
+import { useUrlState } from "~/lib/url-state";
 import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
@@ -12,6 +13,7 @@ import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import { type TierStatusView } from "~/lib/partner-tiers";
+import { partnerTypeLabel } from "~/lib/partner-display";
 import { PartnerTierBadge, PartnerTierPanel } from "./tier-panel";
 import {
   BankAccountDetails,
@@ -182,13 +184,13 @@ export default function PartnersPage() {
   const utils = api.useUtils();
   const partnersQuery = api.partners.list.useQuery();
 
-  const [tab, setTab] = useState<Tab>("pending");
-  // ?tab=all|pending|deactivated opens a tab directly (dashboard Quick Actions).
-  useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t === "all" || t === "pending" || t === "deactivated") setTab(t);
-  }, []);
-  const [search, setSearch] = useState("");
+  // Tab, search and the open partner (?partner=<tracking ID>) live in the URL,
+  // so a refresh keeps them (27 Oct testing).
+  const [view, setView] = useUrlState({ tab: "pending", q: "", partner: "" });
+  const tab: Tab = view.tab === "all" || view.tab === "deactivated" ? view.tab : "pending";
+  const setTab = (t: Tab) => setView({ tab: t });
+  const search = view.q;
+  const setSearch = (q: string) => setView({ q });
   const [rejectReasonByEmail, setRejectReasonByEmail] = useState<Record<string, string>>({});
   const [infoModal, setInfoModal] = useState<InfoModalState>(emptyInfoModal);
 
@@ -204,9 +206,15 @@ export default function PartnersPage() {
     name: string;
   } | null>(null);
 
-  // Detail slide-over is keyed by email so it re-reads the freshest partner row
-  // after any mutation invalidates the list.
-  const [detailEmail, setDetailEmail] = useState<string | null>(null);
+  // Detail slide-over is keyed by the partner's tracking ID in the URL (or by
+  // email for a row without one), so it re-reads the freshest partner row
+  // after any mutation invalidates the list, and survives a refresh.
+  const [detailEmailNoId, setDetailEmailNoId] = useState<string | null>(null);
+  const setDetailEmail = (email: string | null) => {
+    const id = email ? partners.find((p) => p.email === email)?.applicationId : "";
+    setDetailEmailNoId(email && !id ? email : null);
+    setView({ partner: id ?? "" });
+  };
   // Deactivation reason capture (separate from the reject-reason dropdown).
   const [deactivateFor, setDeactivateFor] = useState<Partner | null>(null);
 
@@ -297,9 +305,11 @@ export default function PartnersPage() {
     () => (partnersQuery.data ?? []) as Partner[],
     [partnersQuery.data],
   );
-  const detailPartner = detailEmail
-    ? (partners.find((p) => p.email === detailEmail) ?? null)
-    : null;
+  const detailPartner = detailEmailNoId
+    ? (partners.find((p) => p.email === detailEmailNoId) ?? null)
+    : view.partner
+      ? (partners.find((p) => p.applicationId === view.partner) ?? null)
+      : null;
 
   const counts = useMemo(() => {
     let all = 0,
@@ -1074,7 +1084,7 @@ function PendingCard({
               </span>
             </div>
             <div className="mt-0.5 text-xs text-[#667085]">
-              {p.applicationId || "—"} · {p.role === "agency" ? "Agency" : "Independent"}
+              {p.applicationId || "—"} · {partnerTypeLabel(p.role)}
               {p.city ? ` · ${p.city}` : ""}
             </div>
           </div>
@@ -1248,7 +1258,7 @@ function PartnerTable({
                   </div>
                 </td>
                 <td className="px-3.5 py-3 text-sm text-[#344054]">
-                  {p.role === "agency" ? "Agency" : "Independent"}
+                  {partnerTypeLabel(p.role)}
                 </td>
                 <td className="px-3.5 py-3">
                   <PartnerTierBadge tier={p.tier} />
@@ -1354,7 +1364,7 @@ function PartnerDetailSlideOver({
                 <StatusBadge status={p.status} />
               </div>
               <div className="text-xs text-[#98A2B3]">
-                {p.applicationId || "—"} · {p.role === "agency" ? "Agency" : "Independent"}
+                {p.applicationId || "—"} · {partnerTypeLabel(p.role)}
               </div>
             </div>
           </div>

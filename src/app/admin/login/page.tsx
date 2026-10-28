@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { safeReturnPath } from "~/lib/url-state";
 import { useRouter } from "next/navigation";
 import { AdminBrandPanel } from "~/components/ui/admin-brand-panel";
 import { StepDots } from "~/components/ui/step-dots";
@@ -201,8 +202,10 @@ export default function AdminLoginPage() {
           // Admin/staff (collegepond_user) have no pending-approval state — an
           // active login always lands on the dashboard. (The partner "pending"
           // review flow lives on /login → /pending-verification, not here.)
+          // Back to the page they were on when the session ran out, if any.
+          const next = safeReturnPath(new URLSearchParams(window.location.search).get("next"), "/admin/");
           setTimeout(() => {
-            router.push("/admin/dashboard");
+            router.push(next ?? "/admin/dashboard");
           }, 2200);
         },
         onError: () => {

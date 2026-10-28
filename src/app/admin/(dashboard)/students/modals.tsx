@@ -282,6 +282,13 @@ type DuplicateInfo = {
   matchedOn: "email" | "phone";
 };
 
+// Partner picker value (students.listOrgs `key`): "org-<id>" for an agency,
+// "ind-<user id>" for an independent counsellor.
+function partnerFromKey(key: string): { orgId: number } | { independentUserId: number } {
+  const id = Number(key.slice(4));
+  return key.startsWith("ind-") ? { independentUserId: id } : { orgId: id };
+}
+
 export function AddStudentModal({
   open,
   onClose,
@@ -363,7 +370,7 @@ export function AddStudentModal({
       courseLevel: Number(form.courseLevel),
       interestedProgram: form.program,
       educationLoan: form.educationLoan,
-      orgId: Number(form.orgId),
+      ...partnerFromKey(form.orgId),
       cpCounsellorId: form.cpCounsellorId ? Number(form.cpCounsellorId) : null,
     });
   };
@@ -504,7 +511,7 @@ export function AddStudentModal({
               required
               placeholder="Select partner..."
               options={orgs.map((o) => ({
-                value: String(o.id),
+                value: o.key,
                 label: o.name,
               }))}
               value={form.orgId}
@@ -951,7 +958,7 @@ export function BulkImportStudentsModal({
   function doImport() {
     if (!orgId || valid.length === 0) return;
     importMut.mutate({
-      orgId: Number(orgId),
+      ...partnerFromKey(orgId),
       cpCounsellorId: cpCounsellorId ? Number(cpCounsellorId) : null,
       rows: valid.map((r) => r.payload),
     });
@@ -1011,7 +1018,7 @@ export function BulkImportStudentsModal({
               label="Partner"
               required
               placeholder="Select partner..."
-              options={orgs.map((o) => ({ value: String(o.id), label: o.name }))}
+              options={orgs.map((o) => ({ value: o.key, label: o.name }))}
               value={orgId}
               onChange={(e) => setOrgId(e.target.value)}
             />

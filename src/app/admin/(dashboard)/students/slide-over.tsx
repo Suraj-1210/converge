@@ -97,7 +97,7 @@ export function StudentSlideOver({
           <div className="space-y-2.5">
             <ContactRow icon={<MailIcon />} value={student.email ?? "—"} />
             <ContactRow icon={<PhoneIcon />} value={student.phone ?? "—"} />
-            <ContactRow icon={<BuildingIcon />} value={student.orgName} />
+            <ContactRow icon={<BuildingIcon />} value={student.partnerLabel} />
           </div>
 
           {/* Academic Details */}

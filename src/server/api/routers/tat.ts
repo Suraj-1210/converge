@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { partnerLabel } from "~/lib/partner-display";
 import { adminSectionProcedure, createTRPCRouter, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { staffStudentScope } from "~/server/staff-access";
@@ -254,7 +255,7 @@ export const tatRouter = createTRPCRouter({
               last_name: true,
               cp_counsellor_id: true,
               cp_counsellor: { select: { first_name: true, last_name: true } },
-              organization: { select: { name: true } },
+              organization: { select: { name: true, type: true } },
               created_by: { select: { first_name: true, last_name: true } },
             },
           },
@@ -277,7 +278,7 @@ export const tatRouter = createTRPCRouter({
           return {
             studentId: w.student_id,
             studentName: fullName(s),
-            partnerName: s.organization?.name ?? (s.created_by ? fullName(s.created_by) : "—"),
+            partnerName: partnerLabel(s.organization, s.created_by),
             counsellorId: s.cp_counsellor_id,
             counsellor: s.cp_counsellor ? fullName(s.cp_counsellor) : null,
             since: w.awaiting_since!.toISOString(),

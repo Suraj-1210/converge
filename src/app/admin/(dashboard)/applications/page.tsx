@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useUrlState } from "~/lib/url-state";
 import Link from "next/link";
 import { keepPreviousData } from "@tanstack/react-query";
 import { api } from "~/trpc/react";
@@ -40,11 +41,17 @@ export default function ApplicationsPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const [scope, setScope] = useState<"active" | "closed" | "all">("all");
-  const [status, setStatus] = useState("");
-  const [orgId, setOrgId] = useState("");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  // Scope tab, filters and page live in the URL, so a refresh keeps them.
+  const [view, setView, ready] = useUrlState({ scope: "all", status: "", orgId: "", search: "", page: "1" });
+  const scope = SCOPES.some((s) => s.id === view.scope) ? (view.scope as "active" | "closed" | "all") : "all";
+  const { status, orgId, search } = view;
+  const page = Math.max(1, Number(view.page) || 1);
+  const setScope = (v: typeof scope) => setView({ scope: v });
+  const setStatus = (v: string) => setView({ status: v });
+  const setOrgId = (v: string) => setView({ orgId: v });
+  const setSearch = (v: string) => setView({ search: v });
+  const setPage = (v: number | ((p: number) => number)) =>
+    setView({ page: String(typeof v === "function" ? v(page) : v) });
 
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);
@@ -57,7 +64,7 @@ export default function ApplicationsPage() {
     () => ({ page, scope, status: status ? Number(status) : undefined, orgId: orgId ? Number(orgId) : undefined, search: search || undefined }),
     [page, scope, status, orgId, search],
   );
-  const listQ = api.applications.list.useQuery(queryInput, { placeholderData: keepPreviousData });
+  const listQ = api.applications.list.useQuery(queryInput, { placeholderData: keepPreviousData, enabled: ready });
 
   const data = listQ.data;
   const rows = data?.rows ?? [];

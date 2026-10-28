@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, protectedAdminProcedure } from "~/server/api/trpc";
+import { createTRPCRouter, protectedAdminProcedure, protectedPartnerProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { UniApplicationStatusLabel } from "~/server/db/enums";
 import { APPLICATION_STAGE_ORDER, CLOSED_STAGES } from "~/lib/application-stages";
 import { requireStaffApplication, staffApplicationScope } from "~/server/staff-access";
+import { partnerScope } from "~/server/partner-access";
+import { intakeLabel } from "~/server/application-deferral";
+import { partnerLabel } from "~/lib/partner-display";
 
 const PAGE_SIZE = 20;
 const MS_DAY = 86_400_000;
@@ -84,7 +87,7 @@ export const applicationsRouter = createTRPCRouter({
               },
             },
             course: { select: { name: true, intake_month: true, intake_year: true, university: { select: { name: true, country: true } } } },
-            organization: { select: { name: true } },
+            organization: { select: { name: true, type: true } },
           },
         }),
         db.application.groupBy({ by: ["status"], where: scope, _count: { id: true } }),
@@ -117,11 +120,8 @@ export const applicationsRouter = createTRPCRouter({
           id: r.id,
           studentId: r.student.id,
           student: `${r.student.first_name} ${r.student.last_name}`.trim(),
-          partner:
-            r.organization?.name ??
-            (r.student.created_by
-              ? `${r.student.created_by.first_name} ${r.student.created_by.last_name}`.trim()
-              : "—"),
+          // "EduBridge · Agency", or the independent counsellor's name.
+          partner: partnerLabel(r.organization, r.student.created_by),
           university: r.course.university.name,
           program: r.course.name,
           status: r.status,
@@ -202,4 +202,69 @@ export const applicationsRouter = createTRPCRouter({
         documents: docs.map((d) => ({ id: d.id, name: d.file_name, type: d.doc_type, status: d.status })),
       };
     }),
+  // ---- Partner portal: Applications page --------------------------------------
+  // Every application across the partner's students, scoped by the partner
+  // access rules (partner-access.ts): an owner or independent sees all of the
+  // partner's students, an agency counsellor only theirs. Filtering and search
+  // happen on the page (a partner's book is small); capped as a backstop.
+  partnerList: protectedPartnerProcedure.query(async ({ ctx }) => {
+    const { where } = await partnerScope(ctx.cpPartner.id);
+    const rows = await db.application.findMany({
+      where: { student: where },
+      orderBy: { created_at: "desc" },
+      take: 2000,
+      select: {
+        id: true,
+        status: true,
+        created_at: true,
+        deferred_at: true,
+        deferred_intake_month: true,
+        deferred_intake_year: true,
+        stage_history: { select: { stage: true, occurred_at: true } },
+        student: {
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true,
+            user: { select: { first_name: true, last_name: true } },
+          },
+        },
+        course: {
+          select: {
+            name: true,
+            intake_month: true,
+            intake_year: true,
+            university: { select: { name: true, country: true } },
+          },
+        },
+      },
+    });
+    const now = Date.now();
+    return rows.map((r) => {
+      // When it reached its current stage (newest history row for it).
+      const reached = r.stage_history
+        .filter((h) => h.stage === r.status)
+        .reduce<Date | null>((d, h) => (!d || h.occurred_at > d ? h.occurred_at : d), null);
+      const deferredTo =
+        r.deferred_at && r.deferred_intake_month && r.deferred_intake_year
+          ? intakeLabel(r.deferred_intake_month, r.deferred_intake_year)
+          : null;
+      return {
+        id: r.id,
+        studentId: r.student.id,
+        student: `${r.student.first_name} ${r.student.last_name}`.trim(),
+        // The agency counsellor working the student (owners see who).
+        counsellor: r.student.user ? `${r.student.user.first_name} ${r.student.user.last_name}`.trim() : null,
+        university: r.course.university.name,
+        country: r.course.university.country,
+        program: r.course.name,
+        intake: [r.course.intake_month, r.course.intake_year].filter(Boolean).join(" ") || null,
+        deferredTo,
+        status: r.status,
+        stage: UniApplicationStatusLabel[r.status as keyof typeof UniApplicationStatusLabel] ?? `Stage ${r.status}`,
+        days: Math.floor((now - r.created_at.getTime()) / MS_DAY),
+        daysInStage: reached ? Math.floor((now - reached.getTime()) / MS_DAY) : null,
+      };
+    });
+  }),
 });

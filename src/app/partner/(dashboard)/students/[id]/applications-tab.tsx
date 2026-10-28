@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   UniApplicationStatus,
   UniApplicationStatusLabel,
@@ -59,11 +59,14 @@ export function ApplicationsTab({
   viewerKind,
   onChanged,
   onToast,
+  focusAppId,
 }: {
   student: AdminStudentFull;
   viewerKind?: "agency" | "counsellor" | "independent";
   onChanged?: () => void;
   onToast?: (msg: string) => void;
+  /** From the Applications page: scroll to and highlight this application. */
+  focusAppId?: number | null;
 }) {
   const changed = onChanged ?? (() => undefined);
   const toast = onToast ?? (() => undefined);
@@ -133,7 +136,7 @@ export function ApplicationsTab({
         ) : (
           <ul className="space-y-4">
             {open.map((a) => (
-              <ApplicationCard key={a.id} a={a} {...cardProps} />
+              <ApplicationCard key={a.id} a={a} focused={a.id === focusAppId} {...cardProps} />
             ))}
             {closed.length > 0 && (
               <li className="flex items-center gap-3 pt-2" aria-hidden>
@@ -144,7 +147,7 @@ export function ApplicationsTab({
               </li>
             )}
             {closed.map((a) => (
-              <ApplicationCard key={a.id} a={a} {...cardProps} />
+              <ApplicationCard key={a.id} a={a} focused={a.id === focusAppId} {...cardProps} />
             ))}
           </ul>
         )}
@@ -260,12 +263,14 @@ function UniHead({ c }: { c: Card | Shortlist }) {
 
 function ApplicationCard({
   a,
+  focused,
   studentId,
   viewerKind,
   onChanged,
   onToast,
 }: {
   a: Card;
+  focused?: boolean;
   studentId: number;
   viewerKind?: "agency" | "counsellor" | "independent";
   onChanged: () => void;
@@ -282,8 +287,19 @@ function ApplicationCard({
     ["Deposit", money(a.depositAmount, a.depositCurrency)],
     ["Deposit due", fmtDate(a.depositDeadline)],
   ];
+  // Opened from the Applications page: bring this one into view, once.
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focused]);
   return (
-    <li className="rounded-xl border border-[#E4E7EC] p-4">
+    <li
+      ref={ref}
+      id={`application-${a.id}`}
+      className={`rounded-xl border p-4 transition-shadow ${
+        focused ? "border-[#1570EF] shadow-[0_0_0_3px_rgba(21,112,239,0.15)]" : "border-[#E4E7EC]"
+      }`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <UniHead c={a} />
         <div className="flex shrink-0 items-center gap-2">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useUrlState } from "~/lib/url-state";
 import Link from "next/link";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
@@ -142,13 +143,20 @@ export default function AdminCommissionsPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const [tab, setTab] = useState<"commissions" | "partners">("commissions");
-  const [statusF, setStatusF] = useState<number | null>(null);
-  const [partner, setPartner] = useState("");
-  const [intake, setIntake] = useState("");
-  const [country, setCountry] = useState("");
-  const [fy, setFy] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
+  // Tab and filters live in the URL, so a refresh keeps them (27 Oct testing).
+  const [view, setView] = useUrlState({ tab: "commissions", status: "", partner: "", intake: "", country: "", fy: "", q: "" });
+  const tab: "commissions" | "partners" = view.tab === "partners" ? "partners" : "commissions";
+  const setTab = (t: "commissions" | "partners") => setView({ tab: t });
+  const statusF = view.status === "" ? null : Number(view.status);
+  const setStatusF = (v: number | null | ((c: number | null) => number | null)) =>
+    setView({ status: String((typeof v === "function" ? v(statusF) : v) ?? "") });
+  const { partner, intake, country, q: search } = view;
+  const setPartner = (v: string) => setView({ partner: v });
+  const setIntake = (v: string) => setView({ intake: v });
+  const setCountry = (v: string) => setView({ country: v });
+  const fy = view.fy === "" ? null : Number(view.fy);
+  const setFy = (v: number | null) => setView({ fy: v === null ? "" : String(v) });
+  const setSearch = (v: string) => setView({ q: v });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [detailFor, setDetailFor] = useState<Row | null>(null);
 

@@ -9,11 +9,26 @@ import {
 
 const PARTNER_GATED_PATHS = ["/partner", "/mou-signing", "/pending-verification"];
 
-function redirectTo(req: NextRequest, path: string): NextResponse {
+// Sends a signed-out request to a login page. `?next=` carries the page they
+// were on, so signing in again (or refreshing after a session ran out) brings
+// them back to it instead of the dashboard. The login pages only honour a
+// same-portal path (safeReturnPath in ~/lib/url-state).
+function redirectTo(req: NextRequest, path: string, returnTo?: string): NextResponse {
   const url = req.nextUrl.clone();
   url.pathname = path;
   url.search = "";
+  if (returnTo) url.searchParams.set("next", returnTo);
   return NextResponse.redirect(url);
+}
+
+// The page being opened, without Next's internal ?_rsc cache key (a client
+// navigation's fetch carries one).
+function returnPathFor(req: NextRequest): string | undefined {
+  if (req.method !== "GET") return undefined;
+  const params = new URLSearchParams(req.nextUrl.search);
+  params.delete("_rsc");
+  const qs = params.toString();
+  return `${req.nextUrl.pathname}${qs ? `?${qs}` : ""}`;
 }
 
 export async function middleware(req: NextRequest) {
@@ -26,7 +41,7 @@ export async function middleware(req: NextRequest) {
     }
     const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
     const claims = token ? await verifySessionJwt(token) : null;
-    if (!claims) return redirectTo(req, "/admin/login");
+    if (!claims) return redirectTo(req, "/admin/login", returnPathFor(req));
     return NextResponse.next();
   }
 
@@ -43,7 +58,9 @@ export async function middleware(req: NextRequest) {
       req.cookies.get(SESSION_COOKIE_NAME)?.value,
       req.cookies.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,
     );
-    if (!claims) return redirectTo(req, "/login");
+    if (!claims) {
+      return redirectTo(req, "/login", pathname.startsWith("/partner/") ? returnPathFor(req) : undefined);
+    }
     return NextResponse.next();
   }
 

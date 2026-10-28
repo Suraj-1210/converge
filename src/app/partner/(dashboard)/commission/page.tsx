@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useUrlState } from "~/lib/url-state";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
@@ -194,6 +195,7 @@ function InvoiceStatusPill({ status }: { status: number }) {
 }
 
 type CardFilter = "all" | "not-invoiced" | "invoiced" | "available";
+const CARD_FILTERS: CardFilter[] = ["all", "not-invoiced", "invoiced", "available"];
 
 // =============================================================================
 // Commission, claims and payouts belong to the agency, so only its owner (or
@@ -219,12 +221,17 @@ function CommissionContent() {
   const [loyaltyOpen, setLoyaltyOpen] = useState(false);
 
   // filters
-  const [cardFilter, setCardFilter] = useState<CardFilter>("all");
-  const [intake, setIntake] = useState("");
-  const [country, setCountry] = useState("");
-  const [currency, setCurrency] = useState("");
-  const [statusF, setStatusF] = useState("");
-  const [search, setSearch] = useState("");
+  // Filters live in the URL, so a refresh keeps them (27 Oct testing).
+  const [view, setView] = useUrlState({ card: "all", intake: "", country: "", currency: "", status: "", q: "" });
+  const cardFilter: CardFilter = CARD_FILTERS.includes(view.card as CardFilter) ? (view.card as CardFilter) : "all";
+  const setCardFilter = (v: CardFilter | ((c: CardFilter) => CardFilter)) =>
+    setView({ card: typeof v === "function" ? v(cardFilter) : v });
+  const { intake, country, currency, status: statusF, q: search } = view;
+  const setIntake = (v: string) => setView({ intake: v });
+  const setCountry = (v: string) => setView({ country: v });
+  const setCurrency = (v: string) => setView({ currency: v });
+  const setStatusF = (v: string) => setView({ status: v });
+  const setSearch = (v: string) => setView({ q: v });
 
   const [toastMsg, setToastMsg] = useState("");
   const [toastOpen, setToastOpen] = useState(false);

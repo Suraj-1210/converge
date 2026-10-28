@@ -17,7 +17,7 @@ type Filter = "all" | "unread" | "awaiting" | "overdue";
 // Labels and tooltips come from one set of definitions
 // (src/lib/partner-chat-rules.ts), shared with the server's filters.
 const FILTER_IDS: Record<ChatSide, Filter[]> = {
-  partner: ["all", "unread"],
+  partner: ["all", "unread", "awaiting"],
   staff: ["all", "unread", "awaiting", "overdue"],
 };
 const FILTERS: Record<ChatSide, { id: Filter; label: string; help: string }[]> = {
@@ -83,6 +83,11 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
   const staffQ = api.partnerChat.staffInbox.useQuery(input, { ...opts, enabled: side === "staff" });
   const listQ = side === "partner" ? partnerQ : staffQ;
   const rows = listQ.data ?? [];
+  // Numbers on the filter tabs, over every conversation (not the search).
+  const countOpts = { refetchInterval: 15_000, retry: false } as const;
+  const partnerCounts = api.partnerChat.partnerInboxCounts.useQuery(undefined, { ...countOpts, enabled: side === "partner" });
+  const staffCounts = api.partnerChat.staffInboxCounts.useQuery(undefined, { ...countOpts, enabled: side === "staff" });
+  const counts = (side === "partner" ? partnerCounts : staffCounts).data;
   const profileHref = (id: number) =>
     side === "partner" ? `/partner/students/${id}?tab=chat` : `/admin/students/${id}?tab=partner-chat`;
 
@@ -123,6 +128,23 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
                     }`}
                   >
                     {f.label}
+                    {counts && f.id !== "all" && (
+                      <span
+                        className={`ml-1.5 inline-flex min-w-[18px] justify-center rounded-full px-1.5 text-[10px] leading-[16px] font-bold ${
+                          filter === f.id
+                            ? "bg-white text-[#1570EF]"
+                            : counts[f.id] > 0
+                              ? f.id === "overdue"
+                                ? "bg-[#F04438] text-white"
+                                : f.id === "awaiting"
+                                  ? "bg-[#F79009] text-white"
+                                  : "bg-[#1570EF] text-white"
+                              : "bg-[#E4E7EC] text-[#667085]"
+                        }`}
+                      >
+                        {counts[f.id]}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -168,9 +190,18 @@ export function PartnerChatInbox({ side }: { side: ChatSide }) {
                         {r.lastSide === "staff" ? "Collegepond: " : r.lastSide === "partner" ? "Partner: " : ""}
                         {r.lastPreview}
                       </span>
+                      {/* Partner side: their message is still waiting (no clock shown). */}
+                      {side === "partner" && r.awaitingReply && (
+                        <span
+                          className="shrink-0 rounded-full bg-[#FFFAEB] px-2 py-0.5 text-[10px] font-semibold text-[#B54708]"
+                          title={CHAT_FILTER_DEFINITIONS.awaiting.partner}
+                        >
+                          Awaiting reply
+                        </span>
+                      )}
                       {r.awaiting && (
                         <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${TAT_PILL[r.awaiting.status]}`} title={`${r.awaiting.status === "Breached" ? "Overdue" : "Awaiting reply"}: waiting ${r.awaiting.label} for a Collegepond reply (business hours)`}>
-                          {r.awaiting.label}
+                          {r.awaiting.status === "Breached" ? "Overdue" : "Awaiting"} · {r.awaiting.label}
                         </span>
                       )}
                       {r.unread > 0 && (

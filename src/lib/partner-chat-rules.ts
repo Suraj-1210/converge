@@ -110,7 +110,8 @@ export const CHAT_FILTER_DEFINITIONS: Record<ChatInboxFilter, { label: string; s
     label: "Awaiting reply",
     staff:
       "A partner message is waiting for a Collegepond reply, so the reply clock is running. The clock starts at the first unanswered partner message and stops at any Collegepond reply. Short acknowledgements (\"thanks\", \"ok\", 👍) don't start it, and messages marked \"No reply needed\" don't hold it. Read or not doesn't matter.",
-    partner: "",
+    partner:
+      "Conversations where your message is waiting for a Collegepond reply. It clears as soon as Collegepond replies. Short acknowledgements (\"thanks\", \"ok\", 👍) and system lines don't count.",
   },
   overdue: {
     label: "Overdue",

@@ -5,6 +5,7 @@ import { DeferredPanel } from "~/components/students/deferred-panel";
 import { Link as VTLink } from "next-view-transitions";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { useUrlState } from "~/lib/url-state";
 import { flushSync } from "react-dom";
 import { Button } from "~/components/ui/button";
 import { Toast } from "~/components/ui/toast";
@@ -129,7 +130,8 @@ function sortValue(s: AdminStudent, key: SortKey): string | number {
   }
 }
 
-interface Filters {
+// A type, not an interface: useUrlState needs a plain string record.
+type Filters = {
   search: string;
   partner: string;
   status: string;
@@ -140,7 +142,7 @@ interface Filters {
   level: string;
   dateFrom: string;
   dateTo: string;
-}
+};
 
 const emptyFilters: Filters = {
   search: "",
@@ -180,17 +182,15 @@ export default function StudentsPage() {
   );
   const counsellors = counsellorsQuery.data ?? [];
 
-  const [tab, setTab] = useState<TabId>("all");
+  // Tab, filters and the partner-edits toggle live in the URL, so a refresh
+  // keeps them (27 Oct testing).
+  const [view, setView] = useUrlState({ tab: "all", partnerEdits: "" });
+  const tab: TabId = TABS.some((t) => t.id === view.tab) ? (view.tab as TabId) : "all";
   // Students a partner edited that nobody has reviewed yet (the admin bell
   // links here with ?partnerEdits=1).
-  const [partnerEditsOnly, setPartnerEditsOnly] = useState(false);
-  useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("partnerEdits") === "1") {
-      setPartnerEditsOnly(true);
-    }
-  }, []);
+  const partnerEditsOnly = view.partnerEdits === "1";
   const partnerEditedCount = students.filter((s) => s.partnerEditCount > 0).length;
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [filters, setFilters] = useUrlState<Filters>(emptyFilters);
   const [sort, setSort] = useState<{ column: SortKey; direction: "asc" | "desc" }>(
     { column: "updatedAt", direction: "desc" },
   );
@@ -232,8 +232,7 @@ export default function StudentsPage() {
     setToastOpen(true);
   };
 
-  const setFilter = (patch: Partial<Filters>) =>
-    setFilters((prev) => ({ ...prev, ...patch }));
+  const setFilter = (patch: Partial<Filters>) => setFilters(patch);
 
   // ---- Mutations -----------------------------------------------------------
 
@@ -406,7 +405,7 @@ export default function StudentsPage() {
   };
 
   const switchTab = (id: TabId) => {
-    setTab(id);
+    setView({ tab: id });
     setSelectedIds(new Set());
   };
 
@@ -529,7 +528,7 @@ export default function StudentsPage() {
       {(partnerEditedCount > 0 || partnerEditsOnly) && (
         <button
           type="button"
-          onClick={() => setPartnerEditsOnly((v) => !v)}
+          onClick={() => setView({ partnerEdits: partnerEditsOnly ? "" : "1" })}
           aria-pressed={partnerEditsOnly}
           className={`mb-4 inline-flex h-[32px] cursor-pointer items-center gap-2 rounded-full border px-3.5 text-[13px] font-semibold transition-colors ${
             partnerEditsOnly
@@ -877,7 +876,7 @@ function StudentRow({
           </div>
         </div>
       </td>
-      <td className={`${td} whitespace-nowrap text-[#667085]`}>{s.orgName}</td>
+      <td className={`${td} whitespace-nowrap text-[#667085]`}>{s.partnerLabel}</td>
       <td className={`${td} whitespace-nowrap`}>
         <Link
           href={`/admin/students/${s.id}`}

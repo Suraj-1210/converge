@@ -117,6 +117,7 @@ export function partnerTabForPath(pathname: string): PartnerTab | null {
 // the payout bank account on Account…) follow the pages that use them and
 // aren't listed.
 const API_TABS: [path: string, tab: PartnerTab][] = [
+  ["applications.partnerList", "applications"],
   ["partnerChat.partner*", "chat"],
   ["universities.searchPrograms", "uniAssist"],
   ["universities.listSearchFilters", "uniAssist"],
