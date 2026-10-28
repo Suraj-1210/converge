@@ -38,11 +38,14 @@ import {
 } from "~/server/partner-access";
 import {
   autoAssignStudents,
+  bdmOrgScope,
+  canSeeStudent,
   isCounsellingRole,
   requireAssignableCounsellor,
   requireStaffApplication,
   requireStaffNote,
   requireStaffStudent,
+  requireStaffOrg,
   requireStaffStudents,
   staffStudentScope,
   type StaffUser,
@@ -458,6 +461,16 @@ async function findDuplicate(
         ? ("email" as const)
         : ("phone" as const),
   };
+}
+
+// A BDM checking for duplicates learns only that the student exists under
+// another partner, never who it is (BDM segregation, staff-access.ts).
+async function staffDuplicate(
+  user: StaffUser,
+  dup: Awaited<ReturnType<typeof findDuplicate>>,
+) {
+  if (!dup || user.role !== AdminRole.BDM || (await canSeeStudent(user, dup.id))) return dup;
+  return { ...dup, id: 0, name: "Another partner's student", email: "—", phone: "—", orgName: "—" };
 }
 
 // Partner-facing DTO: same as toApi minus CP-internal assignment fields.
@@ -1254,9 +1267,10 @@ export const studentsRouter = createTRPCRouter({
     return rows.map((s) => ({ ...toApi(s), partnerEditCount: updates.get(s.id) ?? 0 }));
   }),
 
-  // Org options for the admin Add Student "Partner" picker.
-  listOrgs: protectedAdminProcedure.query(async () => {
+  // Org options for the admin Add Student "Partner" picker (a BDM: their own).
+  listOrgs: protectedAdminProcedure.query(async ({ ctx }) => {
     const rows = await db.organization.findMany({
+      where: await bdmOrgScope(ctx.cpUser),
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     });
@@ -1271,12 +1285,11 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffOrg(ctx.cpUser, input.orgId);
       const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
-      const duplicate = await findDuplicate(
-        input.email,
-        input.countryCode,
-        input.phone,
-        {},
+      const duplicate = await staffDuplicate(
+        ctx.cpUser,
+        await findDuplicate(input.email, input.countryCode, input.phone, {}),
       );
       if (duplicate) return { ok: false as const, duplicate };
 
@@ -1329,6 +1342,7 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffOrg(ctx.cpUser, input.orgId);
       const cpCounsellorId = await initialCpCounsellor(ctx.cpUser, input.cpCounsellorId);
       // One pass over existing students to detect duplicates by email or by
       // phone digits, instead of a full scan per row.
@@ -1459,12 +1473,9 @@ export const studentsRouter = createTRPCRouter({
     .input(profileUpdateInput)
     .mutation(async ({ ctx, input }) => {
       await requireStaffStudent(ctx.cpUser, input.id);
-      const duplicate = await findDuplicate(
-        input.email,
-        input.countryCode,
-        input.phone,
-        {},
-        input.id,
+      const duplicate = await staffDuplicate(
+        ctx.cpUser,
+        await findDuplicate(input.email, input.countryCode, input.phone, {}, input.id),
       );
       if (duplicate) {
         return { ok: false as const, duplicate };

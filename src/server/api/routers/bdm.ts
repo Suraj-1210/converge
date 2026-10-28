@@ -106,10 +106,12 @@ async function independentPartnerRows() {
 
 export const bdmRouter = createTRPCRouter({
   // BDM selector — staff with the BDM role + their assigned-partner counts.
-  bdms: protectedAdminProcedure.query(async () => {
+  // A BDM gets only themselves: other BDMs' portfolios aren't theirs to see.
+  bdms: protectedAdminProcedure.query(async ({ ctx }) => {
+    const self = ctx.cpUser.role === AdminRole.BDM ? ctx.cpUser.id : null;
     const [staff, owners] = await Promise.all([
       db.collegepond_user.findMany({
-        where: { role: AdminRole.BDM, status: 1 },
+        where: { role: AdminRole.BDM, status: 1, ...(self != null ? { id: self } : {}) },
         orderBy: [{ first_name: "asc" }, { last_name: "asc" }],
         select: { id: true, first_name: true, last_name: true },
       }),
@@ -118,7 +120,7 @@ export const bdmRouter = createTRPCRouter({
       // only org owners left them out of every BDM's total.
       db.user.findMany({
         where: {
-          bdm_id: { not: null },
+          bdm_id: self ?? { not: null },
           deleted_at: null,
           OR: [
             { type: UserType.AGENCY_OWNER, is_owner: 1, org_id: { not: null } },

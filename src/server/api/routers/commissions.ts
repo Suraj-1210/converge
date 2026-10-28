@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  adminSectionProcedure,
   createTRPCRouter,
   financeManagerProcedure,
-  financeProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
@@ -16,6 +16,7 @@ import {
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
 import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
+import { bdmPartners } from "~/server/staff-access";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -55,13 +56,23 @@ function nextStep(
   }
 }
 
+// A BDM reads the ledger only: the step's label without the link into finance.
+const viewOnlyStep = (s: NextStep, viewOnly: boolean): NextStep =>
+  viewOnly && s ? { label: s.label, href: null } : s;
+
 export const commissionsRouter = createTRPCRouter({
   // Cross-org commission ledger — every commission with its derived 5-state
   // status, tranche progress, amounts, and the linked vendor-invoice /
   // partner-invoice / payout references. The page derives the pipeline stat
-  // cards + filters client-side from this list.
-  list: financeProcedure.query(async () => {
+  // cards + filters client-side from this list. Finance roles see every
+  // commission; a BDM (view-only) those payable to the partners they are BDM
+  // of: the agency (org_id) or the independent (payee_user_id).
+  list: adminSectionProcedure("commissions").query(async ({ ctx }) => {
+    const bdm = await bdmPartners(ctx.cpUser);
     const comms = await db.commission.findMany({
+      where: bdm
+        ? { OR: [{ org_id: { in: bdm.orgIds } }, { payee_user_id: { in: bdm.independentIds } }] }
+        : {},
       orderBy: { id: "desc" },
       include: {
         ...PAYEE_LABEL_SELECT,
@@ -277,7 +288,10 @@ export const commissionsRouter = createTRPCRouter({
             ? (approvers.get(c.approved_by_cp_user_id) ?? `Staff #${c.approved_by_cp_user_id}`)
             : null,
         approvedAt: c.approved_at,
-        next: nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null),
+        next: viewOnlyStep(
+          nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null),
+          !!bdm,
+        ),
       };
     });
   }),

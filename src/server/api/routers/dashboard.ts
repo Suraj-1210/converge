@@ -8,10 +8,18 @@ import {
 } from "~/server/api/trpc";
 import { partnerCommissionRouter } from "~/server/api/routers/partner-commission";
 import { type db as appDb } from "~/server/db";
-import { AdminRole, UniApplicationStatus, UserStatus, UserType } from "~/server/db/enums";
-import { stageIndex } from "~/lib/application-stages";
+import {
+  AdminRole,
+  StudentOverallStatus,
+  UniApplicationStatus,
+  UserStatus,
+  UserType,
+} from "~/server/db/enums";
+import { currentStage, isClosedStage, stageAtLeast, stageIndex } from "~/lib/application-stages";
+import { overallStudentStatus } from "~/lib/student-pipeline";
 import {
   isCounsellingRole,
+  isScopedStaffRole,
   staffApplicationScope,
   staffPartnerScope,
   staffStudentScope,
@@ -27,10 +35,14 @@ import {
 // Dashboard aggregations.
 //   adminStats   — admin dashboard. Portal-wide for Super Admin and the
 //                  non-counselling roles; a Counsellor / Counsellor Lead sees
-//                  only their own students, applications and partners
+//                  only their own students, applications and partners, and a
+//                  BDM only the partners they are BDM of
 //                  (src/server/staff-access.ts). Recent Activity is the
 //                  global feed for Super Admin and the user's own actions for
 //                  everyone else.
+//   counsellorStats — the Counsellor / Counsellor Lead dashboard (27 Oct):
+//                  student tiles and the student and application pipelines,
+//                  over the same students.
 //   partnerStats — scoped to the signed-in partner's org (or, for independent
 //                  counsellors with no org, the students they created).
 //
@@ -91,7 +103,7 @@ export const dashboardRouter = createTRPCRouter({
   adminStats: protectedAdminProcedure.query(async ({ ctx }) => {
     const { db } = ctx;
     const me = ctx.cpUser;
-    const scoped = isCounsellingRole(me.role);
+    const scoped = isScopedStaffRole(me.role);
     // One visibility rule for every figure below ({} = everything).
     const [studentScope, appScope, partnerScope] = await Promise.all([
       staffStudentScope(me),
@@ -363,6 +375,89 @@ export const dashboardRouter = createTRPCRouter({
       topUniversities,
       applicationsByCountry,
       recentActivity,
+    };
+  }),
+
+  // ===== Counsellor overview =====
+  // Tiles: Total Students, Active Students (overall status Active), Active
+  // Applicants (an open application), Visa Approved (an application at Visa
+  // Approved or Enrolled). Student Pipeline = the overall student status
+  // (~/lib/student-pipeline). Application Pipeline = open applications by
+  // stage, each counted once: a deferred one (deferred_intake_* set) under
+  // Deferred to Next Intake, Under Review with Submitted, Enrolled with Visa
+  // Approved; earlier stages aren't part of it.
+  counsellorStats: protectedAdminProcedure.query(async ({ ctx }) => {
+    if (!isCounsellingRole(ctx.cpUser.role)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "For counsellors only." });
+    }
+    const students = await ctx.db.student.findMany({
+      where: await staffStudentScope(ctx.cpUser),
+      select: {
+        inactive_at: true,
+        application: {
+          select: {
+            status: true,
+            deferred_intake_month: true,
+            stage_history: { select: { stage: true } },
+          },
+        },
+        document: { where: { is_most_recent: 1 }, select: { doc_type: true } },
+      },
+    });
+
+    const S = UniApplicationStatus;
+    const pipelineKey: Partial<Record<number, number>> = {
+      [S.APPLICATION_SUBMITTED]: S.APPLICATION_SUBMITTED,
+      [S.APPLICATION_UNDER_REVIEW]: S.APPLICATION_SUBMITTED,
+      [S.CONDITIONAL_OFFER]: S.CONDITIONAL_OFFER,
+      [S.UNCONDITIONAL_OFFER]: S.UNCONDITIONAL_OFFER,
+      [S.DEPOSIT_PAID]: S.DEPOSIT_PAID,
+      [S.VISA_FILED]: S.VISA_FILED,
+      [S.VISA_SECURED]: S.VISA_SECURED,
+      [S.ENROLLED]: S.VISA_SECURED,
+    };
+    const appCounts = new Map<number, number>();
+    const bump = (k: number) => appCounts.set(k, (appCounts.get(k) ?? 0) + 1);
+    const studentCounts = { active: 0, inactive: 0, docsPending: 0 };
+    let activeApplicants = 0;
+    let visaApproved = 0;
+
+    for (const s of students) {
+      const overall = overallStudentStatus({
+        inactiveAt: s.inactive_at,
+        apps: s.application.map((a) => ({ status: a.status, stage: currentStage(a.status, a.stage_history) })),
+        docTypes: s.document.map((d) => d.doc_type),
+      });
+      if (overall === StudentOverallStatus.ACTIVE) studentCounts.active++;
+      else if (overall === StudentOverallStatus.INACTIVE) studentCounts.inactive++;
+      else studentCounts.docsPending++;
+
+      const open = s.application.filter((a) => !isClosedStage(a.status));
+      if (open.length > 0) activeApplicants++;
+      if (s.application.some((a) => stageAtLeast(a.status, S.VISA_SECURED))) visaApproved++;
+      for (const a of open) {
+        if (a.deferred_intake_month != null) bump(S.DEFERRED_TO_NEXT_INTAKE);
+        else if (pipelineKey[a.status] !== undefined) bump(pipelineKey[a.status]!);
+      }
+    }
+
+    return {
+      tiles: {
+        totalStudents: students.length,
+        activeStudents: studentCounts.active,
+        activeApplicants,
+        visaApproved,
+      },
+      studentPipeline: studentCounts,
+      applicationPipeline: [
+        S.APPLICATION_SUBMITTED,
+        S.CONDITIONAL_OFFER,
+        S.UNCONDITIONAL_OFFER,
+        S.DEPOSIT_PAID,
+        S.VISA_FILED,
+        S.VISA_SECURED,
+        S.DEFERRED_TO_NEXT_INTAKE,
+      ].map((status) => ({ status, count: appCounts.get(status) ?? 0 })),
     };
   }),
 

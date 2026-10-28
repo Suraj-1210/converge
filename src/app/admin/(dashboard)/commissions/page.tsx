@@ -20,6 +20,7 @@ import {
 } from "~/components/dashboard/widgets";
 import { formatINR, formatDate, countryFlag } from "~/components/dashboard/format";
 import { PayeeTags } from "~/components/admin/payee-tags";
+import { hasSection } from "~/lib/admin-sections";
 import {
   AdminRole,
   CommissionStatus,
@@ -132,10 +133,10 @@ const stamp = () => new Date().toISOString().slice(0, 10);
 export default function AdminCommissionsPage() {
   const meQ = api.authSession.me.useQuery();
   const role = meQ.data?.role;
-  const canView =
-    role === AdminRole.SUPER_ADMIN ||
-    role === AdminRole.FINANCE_MANAGER ||
-    role === AdminRole.FINANCE_EXECUTIVE;
+  // Finance roles, plus a BDM view-only over their own partners' commissions
+  // (the "commissions" section in ~/lib/admin-sections; scoped on the server).
+  const sections = api.tabAccess.mine.useQuery().data?.sections;
+  const canView = hasSection(sections, "commissions");
   const canEdit = role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_MANAGER;
 
   const [mounted, setMounted] = useState(false);

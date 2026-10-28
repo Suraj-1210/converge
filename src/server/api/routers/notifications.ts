@@ -3,7 +3,7 @@ import { db } from "~/server/db";
 import { PENDING_BANK_WHERE } from "~/server/bank-accounts";
 import { flushPartnerUpdateEmails, partnerEditedStudentIds } from "~/server/student-changes";
 import { shortlistBellItems } from "~/server/shortlist-approval";
-import { staffStudentScope } from "~/server/staff-access";
+import { bdmUserScope, staffStudentScope } from "~/server/staff-access";
 import { staffChatSignals } from "~/server/partner-chat";
 import {
   AdminRole,
@@ -58,6 +58,10 @@ export const notificationsRouter = createTRPCRouter({
     // has ended (a backstop for the in-process timer after a restart).
     void flushPartnerUpdateEmails();
     const seesPartnerEdits = COUNSELLING_ROLES.includes(ctx.cpUser.role);
+    // A BDM's partner signals cover only the partners they are BDM of, and
+    // the finance queues aren't theirs (staff-access.ts).
+    const isBdm = ctx.cpUser.role === AdminRole.BDM;
+    const partnerUsers = await bdmUserScope(ctx.cpUser);
 
     const [
       pendingApprovals,
@@ -72,6 +76,7 @@ export const notificationsRouter = createTRPCRouter({
     ] = await Promise.all([
         db.user.count({
           where: {
+            AND: [partnerUsers],
             type: UserType.AGENCY_COUNSELLOR,
             status: UserStatus.UNDER_REVIEW,
           },
@@ -81,25 +86,30 @@ export const notificationsRouter = createTRPCRouter({
         // Partners page. Kept as its own signal so its notification links there.
         db.user.count({
           where: {
+            AND: [partnerUsers],
             type: {
               in: [UserType.AGENCY_OWNER, UserType.INDEPENDENT_COUNSELLOR],
             },
             status: UserStatus.UNDER_REVIEW,
           },
         }),
-        db.partner_payout.count({
-          where: { status: PayoutStatus.READY_TO_PAY },
-        }),
-        db.invoice.count({
-          where: {
-            status: {
-              in: [
-                PartnerInvoiceStatus.SUBMITTED,
-                PartnerInvoiceStatus.UNDER_REVIEW,
-              ],
-            },
-          },
-        }),
+        isBdm
+          ? Promise.resolve(0)
+          : db.partner_payout.count({
+              where: { status: PayoutStatus.READY_TO_PAY },
+            }),
+        isBdm
+          ? Promise.resolve(0)
+          : db.invoice.count({
+              where: {
+                status: {
+                  in: [
+                    PartnerInvoiceStatus.SUBMITTED,
+                    PartnerInvoiceStatus.UNDER_REVIEW,
+                  ],
+                },
+              },
+            }),
         db.student.count({ where: { AND: [studentScope], created_at: { gte: weekAgo } } }),
         // A partner saved new or changed bank details: finance's alert, shown
         // only to the roles that can verify them.
@@ -118,6 +128,9 @@ export const notificationsRouter = createTRPCRouter({
         // with their application instead.)
         db.document.count({
           where: {
+            AND: isBdm
+              ? [{ OR: [{ user: partnerUsers }, { organization: { user: { some: partnerUsers } } }] }]
+              : [],
             status: DocumentStatus.PENDING,
             is_most_recent: 1,
             student_id: null,

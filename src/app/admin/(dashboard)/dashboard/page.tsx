@@ -33,6 +33,7 @@ import {
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { AutoAssignCard } from "./auto-assign-card";
 import { tierBadgeStyle } from "~/lib/partner-tiers";
+import { AdminRole } from "~/server/db/enums";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -82,14 +83,31 @@ function activityStyle(action: string): { icon: string; bg: string } {
   return { icon: "•", bg: "#F2F4F7" };
 }
 
-function QuickActions({
-  pending,
-  sections,
-}: {
-  pending: number;
-  sections: readonly AdminSection[] | undefined;
-}) {
-  const all: { label: string; href: string; badge?: number }[] = [
+const isCounsellor = (role: number) =>
+  role === AdminRole.COUNSELLOR || role === AdminRole.COUNSELLOR_LEAD;
+
+type QuickAction = { label: string; href: string; badge?: number };
+
+// Quick actions per role (decided with Suraj, 27 Oct 2026). Super Admin and
+// the other roles keep the original set, filtered to the sections they have.
+function quickActionsFor(role: number, pending: number): QuickAction[] {
+  if (isCounsellor(role)) {
+    return [
+      { label: "All Students", href: "/admin/students" },
+      { label: "All Applications", href: "/admin/applications" },
+      { label: "Upcoming University Events", href: "/admin/events" },
+    ];
+  }
+  if (role === AdminRole.BDM) {
+    return [
+      // Partners opens on its Pending Approvals tab; ?tab=all on All Partners.
+      { label: "Partner Management", href: "/admin/partners", badge: pending },
+      { label: "All Partners", href: "/admin/partners?tab=all" },
+      { label: "Add Universities", href: "/admin/universities" },
+      { label: "All Students Portfolio", href: "/admin/students" },
+    ];
+  }
+  return [
     // The count is partner signups under review, so it goes to Partners (which
     // opens on its Pending tab), not counsellor approvals.
     { label: "Review Approvals", href: "/admin/partners", badge: pending },
@@ -97,7 +115,20 @@ function QuickActions({
     { label: "Add University", href: "/admin/universities" },
     { label: "View Students", href: "/admin/students" },
   ];
-  const items = all.filter((it) => canAccessAdminPath(sections, it.href));
+}
+
+function QuickActions({
+  pending,
+  role,
+  sections,
+}: {
+  pending: number;
+  role: number;
+  sections: readonly AdminSection[] | undefined;
+}) {
+  const items = quickActionsFor(role, pending).filter((it) =>
+    canAccessAdminPath(sections, it.href.split("?")[0]!),
+  );
   return (
     <details className="relative">
       <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg bg-[#1570EF] px-4 text-[13px] font-semibold text-white hover:bg-[#1260d4] [&::-webkit-details-marker]:hidden">
@@ -126,6 +157,17 @@ function QuickActions({
 }
 
 export default function DashboardPage() {
+  const me = api.authSession.me.useQuery().data;
+  // Counsellors get their own dashboard; wait for the role before choosing.
+  if (!me) return null;
+  return isCounsellor(me.role) ? (
+    <CounsellorDashboard role={me.role} firstName={me.firstName} />
+  ) : (
+    <AdminDashboard />
+  );
+}
+
+function AdminDashboard() {
   const me = api.authSession.me.useQuery().data;
   const { data, isLoading } = api.dashboard.adminStats.useQuery();
   const firstName = me?.firstName ?? "";
@@ -202,7 +244,7 @@ export default function DashboardPage() {
             <Icon name="calendar" size={15} className="text-[#667085]" />
             {formatLongDate(new Date())}
           </span>
-          {me && <QuickActions pending={k?.pendingApprovals ?? 0} sections={sections} />}
+          {me && <QuickActions pending={k?.pendingApprovals ?? 0} role={me.role} sections={sections} />}
         </div>
       </div>
 
@@ -466,6 +508,187 @@ export default function DashboardPage() {
         </DashboardCard>
       </div>
 
+    </>
+  );
+}
+
+// Student pipeline rows: the overall student status (~/lib/student-pipeline).
+const STUDENT_PIPELINE: { key: "active" | "inactive" | "docsPending"; label: string; color: string }[] = [
+  { key: "active", label: "Active", color: "#12B76A" },
+  { key: "inactive", label: "Inactive", color: "#98A2B3" },
+  { key: "docsPending", label: "Documents in Process", color: "#F79009" },
+];
+
+const APP_PIPELINE_COLORS: Record<number, string> = {
+  2: "#6172F3",
+  4: "#9E77ED",
+  5: "#6941C6",
+  6: "#F79009",
+  9: "#36BFFA",
+  7: "#12B76A",
+  24: "#667085",
+};
+
+// Counsellor / Counsellor Lead dashboard (decided with Suraj, 27 Oct 2026):
+// their own students only (staff-access.ts), with no partner network,
+// revenue or partner-approval blocks.
+function CounsellorDashboard({ role, firstName }: { role: number; firstName: string }) {
+  const { data } = api.dashboard.counsellorStats.useQuery();
+  const { data: overview, isLoading } = api.dashboard.adminStats.useQuery();
+  const sections = api.tabAccess.mine.useQuery().data?.sections;
+  const t = data?.tiles;
+
+  const countryData = (overview?.applicationsByCountry ?? []).map((c, i) => ({
+    label: `${countryFlag(c.country)} ${countryName(c.country)}`,
+    value: c.count,
+    color: COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]!,
+  }));
+  const uniRows = (overview?.topUniversities ?? []).map((u, i) => ({
+    label: u.name,
+    value: u.applications,
+    color: UNI_PALETTE[i % UNI_PALETTE.length]!,
+    lead: (
+      <span style={{ color: UNI_PALETTE[i % UNI_PALETTE.length]! }} className="font-bold">
+        {i + 1}
+      </span>
+    ) as ReactNode,
+  }));
+  const activityItems = (overview?.recentActivity ?? []).map((r) => {
+    const s = activityStyle(r.action);
+    return {
+      id: r.id,
+      icon: s.icon,
+      bg: s.bg,
+      text: (
+        <>
+          <strong className="font-semibold text-[#101828]">{humanize(r.action)}</strong>
+          {r.entityType ? ` · ${r.entityType}` : ""}
+        </>
+      ),
+      time: timeAgo(r.at),
+    };
+  });
+  const appSteps = (data?.applicationPipeline ?? []).map((s) => ({
+    label: stageLabel(s.status),
+    count: s.count,
+    color: APP_PIPELINE_COLORS[s.status] ?? "#667085",
+  }));
+
+  return (
+    <>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-[#101828]" suppressHydrationWarning>
+            {greeting()}
+            {firstName ? `, ${firstName}` : ""} 👋
+          </h1>
+          <p className="mt-1 text-sm text-[#667085]">Here&apos;s where your students stand today.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span
+            className="hidden h-9 items-center gap-2 rounded-lg border border-[#E4E7EC] bg-white px-3 text-[13px] font-medium text-[#344054] sm:flex"
+            suppressHydrationWarning
+          >
+            <Icon name="calendar" size={15} className="text-[#667085]" />
+            {formatLongDate(new Date())}
+          </span>
+          <QuickActions pending={0} role={role} sections={sections} />
+        </div>
+      </div>
+
+      <Stagger className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <FadeUp className="h-full">
+          <KpiCard
+            label="Total Students"
+            icon="students"
+            tone="blue"
+            href="/admin/students"
+            loading={!data}
+            value={t ? num(t.totalStudents) : "—"}
+          />
+        </FadeUp>
+        <FadeUp className="h-full">
+          <KpiCard
+            label="Active Students"
+            icon="students"
+            tone="green"
+            href="/admin/students"
+            loading={!data}
+            value={t ? num(t.activeStudents) : "—"}
+          />
+        </FadeUp>
+        <FadeUp className="h-full">
+          <KpiCard
+            label="Active Applicants"
+            icon="applications"
+            tone="purple"
+            href="/admin/applications"
+            loading={!data}
+            value={t ? num(t.activeApplicants) : "—"}
+          />
+        </FadeUp>
+        <FadeUp className="h-full">
+          <KpiCard
+            label="Visa Approved"
+            icon="applications"
+            tone="orange"
+            loading={!data}
+            value={t ? num(t.visaApproved) : "—"}
+          />
+        </FadeUp>
+      </Stagger>
+
+      {/* Counsellor Lead only: Auto Assign switch and team */}
+      <AutoAssignCard />
+
+      <div className="mb-5 grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <DashboardCard title="Student Pipeline" link="/admin/students">
+          {!data ? (
+            <SkeletonRows rows={3} />
+          ) : (
+            <ul className="space-y-1">
+              {STUDENT_PIPELINE.map((s) => (
+                <li
+                  key={s.key}
+                  className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-[#F0F7FF]"
+                >
+                  <span className="flex items-center gap-2 text-[13px] text-[#344054]">
+                    <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                    {s.label}
+                  </span>
+                  <span className="min-w-7 rounded-md bg-[#F2F4F7] px-2 py-0.5 text-center text-[13px] font-bold text-[#101828]">
+                    {data.studentPipeline[s.key]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </DashboardCard>
+
+        <DashboardCard title="Application Pipeline" link="/admin/applications" className="lg:col-span-2">
+          {!data ? <SkeletonRows rows={7} /> : <Funnel steps={appSteps} />}
+        </DashboardCard>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <DashboardCard title="Recent Activity">
+          {isLoading ? <SkeletonRows /> : <ActivityFeed items={activityItems} />}
+        </DashboardCard>
+
+        <DashboardCard title="Applications by Country">
+          {isLoading ? (
+            <SkeletonRows />
+          ) : countryData.length > 0 ? (
+            <DonutChart data={countryData} centerLabel="apps" />
+          ) : (
+            <EmptyState />
+          )}
+        </DashboardCard>
+
+        <DashboardCard title="Top Universities">
+          {isLoading ? <SkeletonRows /> : <BreakdownList rows={uniRows} />}
+        </DashboardCard>
+      </div>
     </>
   );
 }

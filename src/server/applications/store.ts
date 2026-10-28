@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { type Prisma } from "../../../generated/prisma";
 import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
 import { partnerTierStatuses, serializeStatus } from "~/server/partner-tiers";
@@ -396,11 +397,15 @@ function mapDocStatus(code: number): PartnerDocStatus {
 // included with id + status so the admin UI can render Verify / Reject
 // controls per document without an extra round-trip. Only current documents
 // (is_most_recent) — a file an admin replaced is kept but not listed.
-export async function listApplications(): Promise<PartnerListing[]> {
+// `scope` narrows the list (a BDM's own partners: bdmUserScope in
+// ~/server/staff-access); `{}` = every partner.
+export async function listApplications(
+  scope: Prisma.userWhereInput = {},
+): Promise<PartnerListing[]> {
   const users = await db.user.findMany({
     // Agency counsellors are not partners in their own right: they're
     // reviewed on Counselor Approvals and belong to their agency's record.
-    where: { type: { notIn: [UserType.ADMIN, UserType.AGENCY_COUNSELLOR] } },
+    where: { AND: [scope], type: { notIn: [UserType.ADMIN, UserType.AGENCY_COUNSELLOR] } },
     orderBy: { created_at: "desc" },
     take: 500, // M6: defensive cap until cursor pagination lands
     include: {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { UserStatus } from "~/server/db/enums";
+import { canEditSection } from "~/lib/admin-sections";
 import { formatDate, initials } from "~/components/dashboard/format";
 import {
   StatCard,
@@ -78,6 +79,7 @@ function PendingRow({
   checked,
   onToggle,
   onChanged,
+  readOnly,
 }: {
   c: Counsellor;
   i: number;
@@ -85,21 +87,24 @@ function PendingRow({
   checked: boolean;
   onToggle: (checked: boolean) => void;
   onChanged: () => void;
+  readOnly: boolean;
 }) {
   const [reason, setReason] = useState("");
   const setStatus = api.counsellors.setStatus.useMutation({ onSuccess: onChanged });
   const busy = setStatus.isPending;
   return (
     <tr className="border-b border-[#F2F4F7] text-[13px] last:border-0 hover:bg-[#FAFBFC]">
-      <td className="px-4 py-3">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => onToggle(e.target.checked)}
-          className="h-4 w-4 cursor-pointer accent-[#1570EF]"
-          aria-label={`Select ${c.name}`}
-        />
-      </td>
+      {!readOnly && (
+        <td className="px-4 py-3">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onToggle(e.target.checked)}
+            className="h-4 w-4 cursor-pointer accent-[#1570EF]"
+            aria-label={`Select ${c.name}`}
+          />
+        </td>
+      )}
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <Avatar name={c.name} i={i} />
@@ -116,6 +121,7 @@ function PendingRow({
           <VerifyBadge ok={c.phoneVerified} label="Phone" />
         </div>
       </td>
+      {!readOnly && (
       <td className="px-4 py-3">
         <div className="flex items-center gap-1.5">
           <button
@@ -150,6 +156,7 @@ function PendingRow({
           </button>
         </div>
       </td>
+      )}
     </tr>
   );
 }
@@ -157,13 +164,22 @@ function PendingRow({
 // Deactivated by the agency, or removed (soft-deleted) by it. A removed
 // counsellor can be restored: they come back deactivated, for the agency (or an
 // approval here) to bring back to work.
-function InactiveCell({ c, onChanged }: { c: Counsellor; onChanged: () => void }) {
+function InactiveCell({
+  c,
+  onChanged,
+  readOnly,
+}: {
+  c: Counsellor;
+  onChanged: () => void;
+  readOnly: boolean;
+}) {
   const restore = api.counsellors.restoreRemoved.useMutation({ onSuccess: onChanged });
   return (
     <td className="px-4 py-3">
       {c.removedAt ? (
         <div className="flex items-center gap-2">
           <span className="text-[#B42318]">Removed by agency · {formatDate(c.removedAt)}</span>
+          {!readOnly && (
           <button
             type="button"
             disabled={restore.isPending}
@@ -172,6 +188,7 @@ function InactiveCell({ c, onChanged }: { c: Counsellor; onChanged: () => void }
           >
             Restore
           </button>
+          )}
         </div>
       ) : (
         <span className="text-[#475467]">Deactivated by agency</span>
@@ -185,6 +202,10 @@ const TH =
 
 export default function CounselorApprovalsPage() {
   const { data, isLoading } = api.counsellors.list.useQuery();
+  // A BDM sees their partners' counsellors view-only (~/lib/admin-sections);
+  // the server refuses their decisions anyway.
+  const me = api.authSession.me.useQuery().data;
+  const readOnly = !me || !canEditSection(me.role, "counsellorApprovals");
   const utils = api.useUtils();
   const refresh = () => void utils.counsellors.list.invalidate();
 
@@ -278,7 +299,9 @@ export default function CounselorApprovalsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-[#101828]">Counselor Approvals</h1>
         <p className="mt-1 text-sm text-[#667085]">
-          Review and approve counsellors invited by partner agencies.
+          {readOnly
+            ? "Counsellors your partner agencies have added (view only)."
+            : "Review and approve counsellors invited by partner agencies."}
         </p>
       </div>
 
@@ -358,7 +381,7 @@ export default function CounselorApprovalsPage() {
       </div>
 
       {/* Batch action bar (pending tab) */}
-      {tab === "pending" && selectedCount > 0 && (
+      {tab === "pending" && !readOnly && selectedCount > 0 && (
         <div className="mb-3 flex items-center justify-between rounded-xl border border-[#B2DDFF] bg-[#EFF8FF] px-4 py-2.5">
           <span className="text-[13px] font-semibold text-[#1570EF]">
             {selectedCount} counsellor{selectedCount === 1 ? "" : "s"} selected
@@ -406,7 +429,7 @@ export default function CounselorApprovalsPage() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-[#E4E7EC] bg-[#F9FAFB]">
-                  {tab === "pending" && (
+                  {tab === "pending" && !readOnly && (
                     <th className={`${TH} w-10`}>
                       <input
                         type="checkbox"
@@ -423,7 +446,7 @@ export default function CounselorApprovalsPage() {
                   {tab === "pending" && <th className={TH}>Phone</th>}
                   <th className={TH}>Signed Up</th>
                   {tab === "pending" && <th className={TH}>Verification</th>}
-                  {tab === "pending" && <th className={TH}>Actions</th>}
+                  {tab === "pending" && !readOnly && <th className={TH}>Actions</th>}
                   {tab !== "pending" && tab !== "inactive" && <th className={TH}>Decided By</th>}
                   {tab === "inactive" && <th className={TH}>Status</th>}
                 </tr>
@@ -439,6 +462,7 @@ export default function CounselorApprovalsPage() {
                         checked={selected.has(c.id)}
                         onToggle={(v) => toggleOne(c.id, v)}
                         onChanged={refresh}
+                        readOnly={readOnly}
                       />
                     ))
                   : filtered.map((c, i) => (
@@ -461,7 +485,7 @@ export default function CounselorApprovalsPage() {
                           {formatDate(c.createdAt)}
                         </td>
                         {tab === "inactive" ? (
-                          <InactiveCell c={c} onChanged={refresh} />
+                          <InactiveCell c={c} onChanged={refresh} readOnly={readOnly} />
                         ) : (
                           <td className="px-4 py-3 text-[#475467]">{c.decidedBy ?? "—"}</td>
                         )}

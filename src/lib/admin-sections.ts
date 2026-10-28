@@ -24,7 +24,9 @@ import { AdminRole } from "~/server/db/enums";
 //   BDM (8)                           → Partners, Student Placements,
 //                                       Universities, BDM Performance, plus
 //                                       Counselor Approvals and the Commission
-//                                       Ledger view-only; no Partner Chat/TAT.
+//                                       Ledger view-only; no Partner Chat, TAT
+//                                       or Events (an event's invite list
+//                                       spans every partner).
 //                                       Its data is scoped to the partners it
 //                                       is BDM of (~/server/staff-access).
 //   Finance, Content (1, 2, 7)        → what they had before
@@ -63,6 +65,7 @@ const {
   COUNSELLOR_LEAD,
   COUNSELLOR,
   OPERATIONS_LEAD,
+  OPERATIONS_EXECUTIVE,
   CONTENT_MANAGER,
   BDM,
 } = AdminRole;
@@ -82,6 +85,18 @@ const ABOVE_COUNSELLOR: number[] = [
 
 const FINANCE: number[] = [SUPER_ADMIN, FINANCE_MANAGER, FINANCE_EXECUTIVE];
 
+// Everyone but BDM: Events lists and rewrites invites across every partner.
+const NOT_BDM: number[] = [
+  SUPER_ADMIN,
+  FINANCE_MANAGER,
+  FINANCE_EXECUTIVE,
+  COUNSELLOR_LEAD,
+  COUNSELLOR,
+  OPERATIONS_LEAD,
+  OPERATIONS_EXECUTIVE,
+  CONTENT_MANAGER,
+];
+
 export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   partners: ABOVE_COUNSELLOR,
   students: EVERYONE,
@@ -100,7 +115,7 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
   universities: ABOVE_COUNSELLOR,
-  events: EVERYONE,
+  events: NOT_BDM,
   system: [SUPER_ADMIN],
 };
 
@@ -141,6 +156,8 @@ export function isSwitchableSection(value: string): value is AdminSection {
 //   BDM Performance → bdmPerformanceProcedure (a BDM sees only their own)
 //   Finance pages → financeProcedure (org-wide money data); the Commission
 //                  Ledger also for BDMs, view-only over their own partners
+//   Events → not BDM: the invite list spans every partner, and saving an
+//                  event rewrites it
 const GRANTABLE_ROLES: Partial<Record<AdminSection, number[]>> = {
   partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
   bdm: [SUPER_ADMIN, BDM],
@@ -150,6 +167,7 @@ const GRANTABLE_ROLES: Partial<Record<AdminSection, number[]>> = {
   invoices: FINANCE,
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
+  events: NOT_BDM,
 };
 
 // May this role have the tab switched on at all?

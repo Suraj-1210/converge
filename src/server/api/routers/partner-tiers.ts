@@ -8,6 +8,7 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { UserType } from "~/server/db/enums";
+import { requireStaffPartnerUser } from "~/server/staff-access";
 import {
   benefitsOf,
   currentTierFy,
@@ -396,7 +397,8 @@ export const partnerTiersRouter = createTRPCRouter({
   // A partner's tier for admin screens (any admin who can see partners).
   partnerStatus: adminSectionProcedure("partners")
     .input(z.object({ userId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      await requireStaffPartnerUser(ctx.cpUser, input.userId);
       const ref = await partnerRefForUser(input.userId);
       if (!ref) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found." });
       const status = await partnerTierStatus(ref);

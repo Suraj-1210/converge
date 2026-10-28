@@ -26,6 +26,12 @@ import {
 } from "~/server/applications/store";
 import { normalizePan, panError } from "~/lib/utils/pan";
 import { DocumentStatus, UserStatus, UserType } from "~/server/db/enums";
+import {
+  bdmUserScope,
+  requireStaffOrg,
+  requireStaffPartnerEmail,
+  requireStaffPartnerUser,
+} from "~/server/staff-access";
 import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
 import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
@@ -101,12 +107,17 @@ async function sendStatusEmail(
   }
 }
 
+// Partner Management for a BDM covers only the partners they are BDM of
+// (staff-access.ts): the list, and every action by email or document id.
+// Everyone else in the "partners" section sees every partner.
+const partnerProcedure = adminSectionProcedure("partners");
+
 export const partnersRouter = createTRPCRouter({
-  list: adminSectionProcedure("partners").query(async () => {
-    return listApplications();
+  list: partnerProcedure.query(async ({ ctx }) => {
+    return listApplications(await bdmUserScope(ctx.cpUser));
   }),
 
-  setStatus: adminSectionProcedure("partners")
+  setStatus: partnerProcedure
     .input(
       z.object({
         email: z.string().email(),
@@ -124,6 +135,7 @@ export const partnersRouter = createTRPCRouter({
       ),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       // Approving also verifies the partner's pending documents, in the same
       // transaction (see setApplicationStatus).
       const app = await setApplicationStatus(
@@ -148,26 +160,28 @@ export const partnersRouter = createTRPCRouter({
       return { ...app, emailSent };
     }),
 
-  setBdm: adminSectionProcedure("partners")
+  setBdm: partnerProcedure
     .input(
       z.object({
         email: z.string().email(),
         bdmId: z.number().int().positive().nullable(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       await setPartnerBdm(input.email, input.bdmId);
       return { success: true as const };
     }),
 
-  setPan: adminSectionProcedure("partners")
+  setPan: partnerProcedure
     .input(
       z.object({
         email: z.string().email(),
         pan: z.string().trim().max(15).nullable(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       // Clearing is allowed (partners that predate the PAN rule have none);
       // anything entered must pass the same check as signup.
       const pan = input.pan ? normalizePan(input.pan) : "";
@@ -190,7 +204,7 @@ export const partnersRouter = createTRPCRouter({
   // After approval, assign a lead counsellor + counsellor (both rows from
   // collegepond_user) onto the partner's user row. Either side can be null
   // if the admin wants to skip and assign later.
-  assignCounsellors: adminSectionProcedure("partners")
+  assignCounsellors: partnerProcedure
     .input(
       z.object({
         email: z.string().email(),
@@ -198,7 +212,8 @@ export const partnersRouter = createTRPCRouter({
         counsellorId: z.number().int().positive().nullable(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       const user = await db.user.findUnique({
         where: { email: input.email.toLowerCase() },
         select: { id: true },
@@ -219,18 +234,20 @@ export const partnersRouter = createTRPCRouter({
       return { success: true as const };
     }),
 
-  setDocumentStatus: adminSectionProcedure("partners")
+  setDocumentStatus: partnerProcedure
     .input(
       z.object({
         documentId: z.number().int().positive(),
         status: docStatus,
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const before = await db.document.findUnique({
         where: { id: input.documentId },
         select: { status: true, doc_type: true, user_id: true, org_id: true },
       });
+      if (before?.org_id != null) await requireStaffOrg(ctx.cpUser, before.org_id);
+      else if (before?.user_id != null) await requireStaffPartnerUser(ctx.cpUser, before.user_id);
       await setDocumentStatus(input.documentId, input.status);
 
       // Email only on the transition into "rejected", so re-clicking Reject
@@ -261,7 +278,7 @@ export const partnersRouter = createTRPCRouter({
   // Admin adds a partner's document on their behalf. Partners can't upload
   // until approved, so missing / re-sent documents (usually emailed to
   // support) come in this way. Lands as "pending" for the usual verify step.
-  uploadDocumentForPartner: adminSectionProcedure("partners")
+  uploadDocumentForPartner: partnerProcedure
     .input(
       z.object({
         email: z.string().email(),
@@ -275,6 +292,7 @@ export const partnersRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       const user = await db.user.findUnique({
         where: { email: input.email.toLowerCase() },
         select: { id: true, type: true, org_id: true },
@@ -329,9 +347,10 @@ export const partnersRouter = createTRPCRouter({
 
   // Remind an approved partner who hasn't signed the MOU yet. At most once a
   // day per partner (tracked in audit_log), so repeated clicks don't spam.
-  sendMouReminder: adminSectionProcedure("partners")
+  sendMouReminder: partnerProcedure
     .input(z.object({ email: z.string().email() }))
     .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       const user = await db.user.findUnique({
         where: { email: input.email.toLowerCase() },
         select: {
@@ -391,7 +410,7 @@ export const partnersRouter = createTRPCRouter({
 
   // Emails the partner a list of what is missing. Partner status is left
   // unchanged; the partner replies to the email (Reply-To: support).
-  requestMoreInfo: adminSectionProcedure("partners")
+  requestMoreInfo: partnerProcedure
     .input(
       z
         .object({
@@ -409,6 +428,7 @@ export const partnersRouter = createTRPCRouter({
         ),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireStaffPartnerEmail(ctx.cpUser, input.email);
       const app = await getApplicationByEmail(input.email);
       if (!app) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Partner application not found" });

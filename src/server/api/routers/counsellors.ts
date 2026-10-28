@@ -19,6 +19,7 @@ import {
   verifyPhoneOtp,
 } from "~/server/otp";
 import { requireOrgCounsellor } from "~/server/partner-access";
+import { bdmUserScope, requireSectionEdit } from "~/server/staff-access";
 import { approvePendingPartnerDocuments } from "~/server/applications/store";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import { findPartnerByContact, splitStoredPhone } from "~/server/partner-contact";
@@ -314,10 +315,13 @@ async function logLifecycle(
   });
 }
 
+// Counselor Approvals. A BDM sees only their own partners' counsellors and
+// may not decide anything here (view-only: ADMIN_SECTION_READ_ONLY in
+// ~/lib/admin-sections).
 export const counsellorsRouter = createTRPCRouter({
-  list: adminSectionProcedure("counsellorApprovals").query(async () => {
+  list: adminSectionProcedure("counsellorApprovals").query(async ({ ctx }) => {
     const rows = await db.user.findMany({
-      where: { type: UserType.AGENCY_COUNSELLOR },
+      where: { AND: [await bdmUserScope(ctx.cpUser)], type: UserType.AGENCY_COUNSELLOR },
       orderBy: { created_at: "desc" },
       select: {
         id: true,
@@ -386,6 +390,7 @@ export const counsellorsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      requireSectionEdit(ctx.cpUser, "counsellorApprovals");
       const ok = await decideCounsellor(
         ctx.cpUser.id,
         input.userId,
@@ -410,6 +415,7 @@ export const counsellorsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      requireSectionEdit(ctx.cpUser, "counsellorApprovals");
       // Dedupe to avoid double-processing if the client sends repeats.
       const ids = [...new Set(input.userIds)];
       let approved = 0;
@@ -426,6 +432,7 @@ export const counsellorsRouter = createTRPCRouter({
   restoreRemoved: adminSectionProcedure("counsellorApprovals")
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      requireSectionEdit(ctx.cpUser, "counsellorApprovals");
       const user = await db.user.findFirst({
         where: { id: input.userId, type: UserType.AGENCY_COUNSELLOR, deleted_at: { not: null } },
         select: { id: true },

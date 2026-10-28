@@ -11,7 +11,12 @@ import { db } from "~/server/db";
 import { findVisibleStudent } from "~/server/partner-access";
 import { presignGetUrl, spacesConfigured } from "~/server/storage/spaces";
 import { AdminRole } from "~/server/db/enums";
-import { canSeeStudent, isCounsellingRole } from "~/server/staff-access";
+import {
+  canSeeStudent,
+  isCounsellingRole,
+  requireStaffOrg,
+  requireStaffPartnerUser,
+} from "~/server/staff-access";
 import { isChatStaffRole, partnerChatScope } from "~/server/partner-chat-access";
 import { chatFileStudentId } from "~/server/partner-chat";
 
@@ -73,7 +78,8 @@ export async function GET(
   // Admins (collegepond staff) may read any document, except partners'
   // cancelled cheques / bank letters, which are for finance roles only, and
   // a counsellor's student documents, which follow the admin Students list
-  // (src/server/staff-access.ts).
+  // (src/server/staff-access.ts). A BDM is held to their own partners' files:
+  // student documents and the partners' own KYC documents.
   const adminToken = jar.get(SESSION_COOKIE_NAME)?.value;
   const admin = adminToken ? await verifySessionJwt(adminToken) : null;
   let allowed =
@@ -86,6 +92,25 @@ export async function GET(
     if (doc?.student_id != null && !(await canSeeStudent(admin, doc.student_id))) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+  }
+  if (allowed && admin?.role === AdminRole.BDM) {
+    const docs = await db.document.findMany({
+      where: { file_url: key },
+      select: { student_id: true, user_id: true, org_id: true },
+    });
+    // A file that isn't a document (an avatar, a logo) stays readable.
+    let visible = true;
+    for (const d of docs) {
+      try {
+        if (d.student_id != null) {
+          if (!(await canSeeStudent(admin, d.student_id))) visible = false;
+        } else if (d.org_id != null) await requireStaffOrg(admin, d.org_id);
+        else if (d.user_id != null) await requireStaffPartnerUser(admin, d.user_id);
+      } catch {
+        visible = false;
+      }
+    }
+    if (!visible) return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   // Partners may only read files attached to their own user/org (or to a

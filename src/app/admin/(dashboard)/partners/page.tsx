@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { TabOverridesButton } from "~/components/admin/tab-overrides-modal";
 import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
@@ -183,6 +183,11 @@ export default function PartnersPage() {
   const partnersQuery = api.partners.list.useQuery();
 
   const [tab, setTab] = useState<Tab>("pending");
+  // ?tab=all|pending|deactivated opens a tab directly (dashboard Quick Actions).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t === "all" || t === "pending" || t === "deactivated") setTab(t);
+  }, []);
   const [search, setSearch] = useState("");
   const [rejectReasonByEmail, setRejectReasonByEmail] = useState<Record<string, string>>({});
   const [infoModal, setInfoModal] = useState<InfoModalState>(emptyInfoModal);
