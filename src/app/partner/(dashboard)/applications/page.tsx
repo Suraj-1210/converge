@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
-import { countryFlag } from "~/components/dashboard/format";
+import { countryName } from "~/components/dashboard/format";
 import { UniApplicationStatusLabel } from "~/server/db/enums";
 import {
   APPLICATION_STAGE_ORDER,
@@ -226,8 +226,8 @@ function AppRow({ r, showCounsellor }: { r: Row; showCounsellor: boolean }) {
       {showCounsellor && <td className={TD}>{r.counsellor ?? <span className="text-[#98A2B3]">Unassigned</span>}</td>}
       <td className={TD}>
         <div className="max-w-[240px] truncate" title={r.university}>
-          {r.country ? `${countryFlag(r.country)} ` : ""}
           {r.university}
+          {r.country && <span className="text-[#98A2B3]"> · {countryName(r.country)}</span>}
         </div>
       </td>
       <td className={TD}>

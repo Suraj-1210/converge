@@ -23,6 +23,7 @@ import {
   staffApplicationScope,
   staffPartnerScope,
   staffStudentScope,
+  teamMemberIds,
 } from "~/server/staff-access";
 import {
   partnerRefForUser,
@@ -386,6 +387,43 @@ export const dashboardRouter = createTRPCRouter({
   // stage, each counted once: a deferred one (deferred_intake_* set) under
   // Deferred to Next Intake, Under Review with Submitted, Enrolled with Visa
   // Approved; earlier stages aren't part of it.
+  // Team activity for a Counsellor Lead (29 Oct testing, Suraj 30 Oct): what
+  // the counsellors in their team did, kept apart from the lead's own Recent
+  // Activity, students and tasks.
+  teamActivity: protectedAdminProcedure.query(async ({ ctx }) => {
+    if (ctx.cpUser.role !== AdminRole.COUNSELLOR_LEAD) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "For Counsellor Leads only." });
+    }
+    const ids = await teamMemberIds(ctx.cpUser.id);
+    if (ids.length === 0) return { members: 0, items: [] };
+    const [rows, people] = await Promise.all([
+      ctx.db.audit_log.findMany({
+        where: { OR: ids.map((id) => ({ metadata: { path: "$.byCpUserId", equals: id } })) },
+        orderBy: { created_at: "desc" },
+        take: 15,
+        select: { id: true, action: true, entity_type: true, created_at: true, metadata: true },
+      }),
+      ctx.db.collegepond_user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, first_name: true, last_name: true },
+      }),
+    ]);
+    const nameOf = new Map(people.map((p) => [p.id, `${p.first_name} ${p.last_name}`.trim()]));
+    return {
+      members: ids.length,
+      items: rows.map((r) => {
+        const by = (r.metadata as { byCpUserId?: unknown } | null)?.byCpUserId;
+        return {
+          id: r.id,
+          action: r.action,
+          entityType: r.entity_type,
+          at: r.created_at,
+          by: typeof by === "number" ? (nameOf.get(by) ?? null) : null,
+        };
+      }),
+    };
+  }),
+
   counsellorStats: protectedAdminProcedure.query(async ({ ctx }) => {
     if (!isCounsellingRole(ctx.cpUser.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "For counsellors only." });
@@ -419,7 +457,8 @@ export const dashboardRouter = createTRPCRouter({
     const appCounts = new Map<number, number>();
     const bump = (k: number) => appCounts.set(k, (appCounts.get(k) ?? 0) + 1);
     const studentCounts = { active: 0, inactive: 0, docsPending: 0 };
-    let activeApplicants = 0;
+    // Open applications, not students with one (29 Oct testing: the tile tracks applications).
+    let activeApplications = 0;
     let visaApproved = 0;
 
     for (const s of students) {
@@ -433,7 +472,7 @@ export const dashboardRouter = createTRPCRouter({
       else studentCounts.docsPending++;
 
       const open = s.application.filter((a) => !isClosedStage(a.status));
-      if (open.length > 0) activeApplicants++;
+      activeApplications += open.length;
       if (s.application.some((a) => stageAtLeast(a.status, S.VISA_SECURED))) visaApproved++;
       for (const a of open) {
         if (a.deferred_intake_month != null) bump(S.DEFERRED_TO_NEXT_INTAKE);
@@ -445,7 +484,7 @@ export const dashboardRouter = createTRPCRouter({
       tiles: {
         totalStudents: students.length,
         activeStudents: studentCounts.active,
-        activeApplicants,
+        activeApplications,
         visaApproved,
       },
       studentPipeline: studentCounts,

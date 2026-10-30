@@ -2104,6 +2104,8 @@ export const studentsRouter = createTRPCRouter({
           )
           .max(20)
           .nullish(),
+        // The university's Student ID: required for an offer if not saved yet.
+        universityAppId: z.string().trim().max(100).nullish(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -2115,6 +2117,7 @@ export const studentsRouter = createTRPCRouter({
         applicationId: input.applicationId,
         targetStatus: input.status,
         pendingDocs: input.pendingDocs ?? null,
+        universityAppId: input.universityAppId ?? null,
       });
       return { status: res.status };
     }),

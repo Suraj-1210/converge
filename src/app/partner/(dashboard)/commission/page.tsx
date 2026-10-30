@@ -26,7 +26,7 @@ import {
   SkeletonTable,
   EmptyState,
 } from "~/components/dashboard/widgets";
-import { formatINR, formatDate, countryFlag } from "~/components/dashboard/format";
+import { formatINR, formatDate, countryName } from "~/components/dashboard/format";
 import {
   PartnerInvoiceStatus,
   PartnerInvoiceStatusLabel,
@@ -344,7 +344,7 @@ function CommissionContent() {
       {/* Filter bar */}
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-40"><FormSelect label="Intake" placeholder="All Intakes" options={intakes.map((i) => ({ value: i, label: i }))} value={intake} onChange={(e) => setIntake(e.target.value)} /></div>
-        <div className="w-40"><FormSelect label="Country" placeholder="All Countries" options={countries.map((c) => ({ value: c, label: `${countryFlag(c)} ${c}` }))} value={country} onChange={(e) => setCountry(e.target.value)} /></div>
+        <div className="w-40"><FormSelect label="Country" placeholder="All Countries" options={countries.map((c) => ({ value: c, label: countryName(c) }))} value={country} onChange={(e) => setCountry(e.target.value)} /></div>
         <div className="w-36"><FormSelect label="Currency" placeholder="All Currencies" options={currencies.map((c) => ({ value: c, label: c }))} value={currency} onChange={(e) => setCurrency(e.target.value)} /></div>
         <div className="w-40"><FormSelect label="Status" placeholder="All Statuses" options={[{ value: "not-invoiced", label: "Not Invoiced" }, { value: "invoiced", label: "Invoiced" }, { value: "paid", label: "Fully Paid" }]} value={statusF} onChange={(e) => { setStatusF(e.target.value); setCardFilter("all"); }} /></div>
         <div className="ml-auto w-56"><FormInput label="Search" placeholder="Search by name or ID..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
@@ -394,7 +394,7 @@ function CommissionContent() {
                     <td className={`${TD} font-medium text-[#101828]`}>{c.studentName}</td>
                     <td className={TD}>{c.university}<span className="block text-xs text-[#98A2B3]">{c.program}</span></td>
                     <td className={TD}>{c.intake ?? "—"}</td>
-                    <td className={TD}>{countryFlag(c.country)} {c.country}</td>
+                    <td className={TD}>{countryName(c.country)}</td>
                     <td className={TD}>{c.currency}</td>
                     <td className={`${TD} font-medium`}>{c.currency} {c.tuition.toLocaleString()}</td>
                     <td className={TD}>{c.commissionRate}%</td>
@@ -541,7 +541,7 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
   ];
   return (
     <Modal open title={`${claim.studentName} · ${claim.studentCode}`} width="w-[720px]" onClose={onClose} footer={<Button onClick={onClose}>Close</Button>}>
-      <div className="text-xs text-[#667085]">{countryFlag(claim.country)} {claim.country} · {claim.university} · {claim.program}</div>
+      <div className="text-xs text-[#667085]">{countryName(claim.country)} · {claim.university} · {claim.program}</div>
       <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         <SummaryCard label="Tuition" value={`${claim.currency} ${claim.tuition.toLocaleString()}`} />
         <SummaryCard label="Commission %" value={`${claim.commissionRate}%`} />

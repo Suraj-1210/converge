@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { UniApplicationStatus } from "~/server/db/enums";
-import { formatDate, countryFlag } from "~/components/dashboard/format";
+import { formatDate, countryName } from "~/components/dashboard/format";
 import { Icon, type IconName, SkeletonTable } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 
@@ -278,11 +278,12 @@ export default function StudentPlacementsPage() {
                 <div className="px-5 pb-4">
                   {uniKeys.map((uKey) => {
                     const students = g.unis.get(uKey)!;
-                    const flag = countryFlag(students[0]?.country ?? "");
+                    const country = countryName(students[0]?.country ?? "");
                     return (
                       <div key={uKey} className="mb-3.5 last:mb-0">
                         <div className="mb-2 flex items-center gap-1.5 border-b border-[#F2F4F7] py-2 text-[13px] font-bold text-[#344054]">
-                          {flag} {uKey}
+                          {uKey}
+                          {country && <span className="font-normal text-[#667085]">· {country}</span>}
                           <span className="ml-1 text-[11px] font-normal text-[#98A2B3]">
                             {students.length} student{students.length === 1 ? "" : "s"}
                           </span>

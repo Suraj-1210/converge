@@ -69,28 +69,44 @@ export function stageLabel(status: number): string {
   return map[status] ?? `Stage ${status}`;
 }
 
-// student.country is stored ISO2 (destination of interest). Map the common
-// study-abroad destinations to a display name + flag; fall back gracefully.
-const COUNTRY: Record<string, { name: string; flag: string }> = {
-  GB: { name: "United Kingdom", flag: "🇬🇧" },
-  UK: { name: "United Kingdom", flag: "🇬🇧" },
-  US: { name: "United States", flag: "🇺🇸" },
-  CA: { name: "Canada", flag: "🇨🇦" },
-  AU: { name: "Australia", flag: "🇦🇺" },
-  DE: { name: "Germany", flag: "🇩🇪" },
-  IE: { name: "Ireland", flag: "🇮🇪" },
-  NZ: { name: "New Zealand", flag: "🇳🇿" },
-  FR: { name: "France", flag: "🇫🇷" },
-  NL: { name: "Netherlands", flag: "🇳🇱" },
-  SG: { name: "Singapore", flag: "🇸🇬" },
-  IT: { name: "Italy", flag: "🇮🇹" },
-  IN: { name: "India", flag: "🇮🇳" },
+// Country codes are stored ISO2 (e.g. IE). Show the full name: flag emoji
+// render as bare letters on Windows ("IE IE"), so the portal uses names
+// (29 Oct testing). Common destinations are listed; anything else falls back
+// to the browser's/Node's region names, then to the code itself.
+const COUNTRY_NAMES: Record<string, string> = {
+  GB: "United Kingdom",
+  UK: "United Kingdom",
+  US: "United States",
+  CA: "Canada",
+  AU: "Australia",
+  DE: "Germany",
+  IE: "Ireland",
+  NZ: "New Zealand",
+  FR: "France",
+  NL: "Netherlands",
+  SG: "Singapore",
+  IT: "Italy",
+  IN: "India",
 };
 
-export function countryName(code: string): string {
-  return COUNTRY[code.toUpperCase()]?.name ?? code;
-}
+let regionNames: Intl.DisplayNames | null | undefined;
 
-export function countryFlag(code: string): string {
-  return COUNTRY[code.toUpperCase()]?.flag ?? "🌍";
+export function countryName(code: string): string {
+  const c = code.trim().toUpperCase();
+  if (!c) return "";
+  const known = COUNTRY_NAMES[c];
+  if (known) return known;
+  if (regionNames === undefined) {
+    try {
+      regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+    } catch {
+      regionNames = null;
+    }
+  }
+  try {
+    const name = c.length === 2 ? regionNames?.of(c) : undefined;
+    return name?.trim() ? name : code;
+  } catch {
+    return code;
+  }
 }

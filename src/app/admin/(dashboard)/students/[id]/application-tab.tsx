@@ -37,6 +37,7 @@ import {
   type ShortlistCard,
 } from "../lib";
 import { LeadPipeline } from "./lead-pipeline";
+import { UniIdModal } from "~/components/students/uni-id-modal";
 import {
   APPLICATION_STAGE_ORDER,
   NEGATIVE_CLOSED_STAGES,
@@ -639,11 +640,14 @@ function AppCard({
   // Moving to (or editing) Documents Pending asks which documents first.
   const [pickDocs, setPickDocs] = useState(false);
   const [deferring, setDeferring] = useState(false);
+  // An offer without the university Student ID asks for it first.
+  const [askUniId, setAskUniId] = useState<number | null>(null);
 
   const statusMut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       invalidate();
       setPickDocs(false);
+      setAskUniId(null);
       onToast(
         vars.status === a.status && vars.pendingDocs
           ? "Pending documents updated — the partner has been told"
@@ -666,6 +670,13 @@ function AppCard({
     // back into it with a list already there).
     if (status === UniApplicationStatus.DOCUMENTS_PENDING && a.pendingDocs.length === 0) {
       setPickDocs(true);
+      return;
+    }
+    if (
+      (status === UniApplicationStatus.CONDITIONAL_OFFER || status === UniApplicationStatus.UNCONDITIONAL_OFFER) &&
+      !a.universityAppId?.trim()
+    ) {
+      setAskUniId(status);
       return;
     }
     statusMut.mutate({ applicationId: a.id, status });
@@ -802,6 +813,14 @@ function AppCard({
           onEdit={() => setPickDocs(true)}
           onToast={onToast}
           invalidate={invalidate}
+        />
+      )}
+      {askUniId !== null && (
+        <UniIdModal
+          target={askUniId}
+          busy={statusMut.isPending}
+          onClose={() => setAskUniId(null)}
+          onSubmit={(universityAppId) => statusMut.mutate({ applicationId: a.id, status: askUniId, universityAppId })}
         />
       )}
       {pickDocs && (
@@ -1772,8 +1791,11 @@ function MoneyIcon() {
       strokeWidth={2}
       className={metaIconClass}
     >
-      <line x1="12" y1="1" x2="12" y2="23" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+      {/* A banknote, not a "$": the amount beside it carries its own
+          currency symbol (€, £, $…). */}
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2.5" />
+      <path d="M6 12h.01M18 12h.01" />
     </svg>
   );
 }

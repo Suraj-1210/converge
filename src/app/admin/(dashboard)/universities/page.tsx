@@ -42,16 +42,6 @@ const COUNTRIES: Array<{ code: string; name: string }> = [
 ];
 const COUNTRY_NAME = Object.fromEntries(COUNTRIES.map((c) => [c.code, c.name]));
 
-// ISO2 → 🇺🇸 (regional indicator codepoints).
-function flagEmoji(iso2: string): string {
-  if (iso2.length !== 2) return "";
-  return iso2
-    .toUpperCase()
-    .split("")
-    .map((c) => String.fromCodePoint(c.charCodeAt(0) + 127397))
-    .join("");
-}
-
 const APP_SOURCES = ["University Portal", "Agent Portal", "Paper-based Application"];
 
 const DEGREE_LEVELS: Array<{
@@ -641,7 +631,7 @@ export default function AdminUniversitiesPage() {
             value={stats.countries.length}
             sub={
               stats.countries.length
-                ? stats.countries.map(flagEmoji).join(" ")
+                ? stats.countries.map((c) => COUNTRY_NAME[c] ?? c).join(", ")
                 : "—"
             }
           />
@@ -679,7 +669,7 @@ export default function AdminUniversitiesPage() {
               { value: "all", label: "All Countries" },
               ...knownCountries.map((c) => ({
                 value: c,
-                label: `${flagEmoji(c)} ${COUNTRY_NAME[c] ?? c}`,
+                label: COUNTRY_NAME[c] ?? c,
               })),
             ]}
           />
@@ -869,7 +859,7 @@ export default function AdminUniversitiesPage() {
           required
           options={COUNTRIES.map((c) => ({
             value: c.code,
-            label: `${flagEmoji(c.code)} ${c.name}`,
+            label: c.name,
           }))}
           value={uniForm.country}
           onChange={(e) => setUniForm({ ...uniForm, country: e.target.value })}
@@ -1395,7 +1385,6 @@ function UniversitiesCard({
                     </Td>
                     <Td>
                       <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden>{flagEmoji(u.country)}</span>
                         {COUNTRY_NAME[u.country] ?? u.country}
                       </span>
                     </Td>

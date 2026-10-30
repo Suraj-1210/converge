@@ -19,7 +19,7 @@ import {
   SkeletonTable,
   EmptyState,
 } from "~/components/dashboard/widgets";
-import { formatINR, formatDate, countryFlag } from "~/components/dashboard/format";
+import { formatINR, formatDate, countryName } from "~/components/dashboard/format";
 import { PayeeTags } from "~/components/admin/payee-tags";
 import { hasSection } from "~/lib/admin-sections";
 import {
@@ -308,7 +308,7 @@ export default function AdminCommissionsPage() {
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-44"><FormSelect label="Partner" placeholder="All Partners" options={partners.map((p) => ({ value: p, label: p }))} value={partner} onChange={(e) => setPartner(e.target.value)} /></div>
         <div className="w-36"><FormSelect label="Intake" placeholder="All Intakes" options={intakes.map((i) => ({ value: i, label: i }))} value={intake} onChange={(e) => setIntake(e.target.value)} /></div>
-        <div className="w-40"><FormSelect label="Country" placeholder="All Countries" options={countries.map((c) => ({ value: c, label: `${countryFlag(c)} ${c}` }))} value={country} onChange={(e) => setCountry(e.target.value)} /></div>
+        <div className="w-40"><FormSelect label="Country" placeholder="All Countries" options={countries.map((c) => ({ value: c, label: countryName(c) }))} value={country} onChange={(e) => setCountry(e.target.value)} /></div>
         <div className="w-44"><FormSelect label="Status" placeholder="All Statuses" options={STAGES.map(({ s }) => ({ value: String(s), label: CommissionStatusLabel[s] }))} value={statusF == null ? "" : String(statusF)} onChange={(e) => setStatusF(e.target.value ? Number(e.target.value) : null)} /></div>
         <div className="w-36"><FormSelect label="Financial Year" placeholder="All Years" options={fys.map((y) => ({ value: String(y), label: financialYearLabel(y) }))} value={fy == null ? "" : String(fy)} onChange={(e) => setFy(e.target.value ? Number(e.target.value) : null)} /></div>
         <div className="ml-auto w-56"><FormInput label="Search" placeholder="Student, partner, university..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
@@ -372,7 +372,7 @@ export default function AdminCommissionsPage() {
                         <PayeeTags partnerType={r.partnerType} payeeInactive={r.payeeInactive} />
                       </td>
                       <td className={TD}>{r.university}<span className="block text-xs text-[#98A2B3]">{r.program}</span></td>
-                      <td className={TD}>{countryFlag(r.country)} {r.country}</td>
+                      <td className={TD}>{countryName(r.country)}</td>
                       <td className={TD}>{r.currency} {r.tuition.toLocaleString()}</td>
                       <td className={TD}>{r.rate}%</td>
                       <td className={`${TD} font-medium`}>{r.currency} {r.commissionAmount.toLocaleString()}</td>
@@ -494,7 +494,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
       </>
     }>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#667085]">
-        <span>{countryFlag(row.country)} {row.country}</span><span>·</span>
+        <span>{countryName(row.country)}</span><span>·</span>
         <span>{row.university} — {row.program}</span><span>·</span>
         <span className="font-medium text-[#344054]">
           {row.partner}

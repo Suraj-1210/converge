@@ -106,10 +106,12 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
       <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
     </>
   ),
+  // A banknote rather than "$": these cards show ₹, € and £ amounts.
   deposit: (
     <>
-      <path d="M12 1v22" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2.5" />
+      <path d="M6 12h.01M18 12h.01" />
     </>
   ),
   "trend-up": (

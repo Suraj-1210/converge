@@ -4,16 +4,7 @@ import { type ReactNode } from "react";
 import Link from "next/link";
 import { api } from "~/trpc/react";
 import { type AdminSection, canAccessAdminPath } from "~/lib/admin-sections";
-import {
-  greeting,
-  formatLongDate,
-  formatINR,
-  timeAgo,
-  humanize,
-  stageLabel,
-  countryName,
-  countryFlag,
-} from "~/components/dashboard/format";
+import { greeting, formatLongDate, formatINR, timeAgo, humanize, stageLabel, countryName } from "~/components/dashboard/format";
 import {
   KpiCard,
   DashboardCard,
@@ -186,7 +177,7 @@ function AdminDashboard() {
   }));
 
   const countryData = (data?.applicationsByCountry ?? []).map((c, i) => ({
-    label: `${countryFlag(c.country)} ${countryName(c.country)}`,
+    label: countryName(c.country),
     value: c.count,
     color: COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]!,
   }));
@@ -516,7 +507,7 @@ function AdminDashboard() {
 const STUDENT_PIPELINE: { key: "active" | "inactive" | "docsPending"; label: string; color: string }[] = [
   { key: "active", label: "Active", color: "#12B76A" },
   { key: "inactive", label: "Inactive", color: "#98A2B3" },
-  { key: "docsPending", label: "Documents in Process", color: "#F79009" },
+  { key: "docsPending", label: "Document Pending", color: "#F79009" },
 ];
 
 const APP_PIPELINE_COLORS: Record<number, string> = {
@@ -535,11 +526,13 @@ const APP_PIPELINE_COLORS: Record<number, string> = {
 function CounsellorDashboard({ role, firstName }: { role: number; firstName: string }) {
   const { data } = api.dashboard.counsellorStats.useQuery();
   const { data: overview, isLoading } = api.dashboard.adminStats.useQuery();
+  const isLead = role === AdminRole.COUNSELLOR_LEAD;
+  const team = api.dashboard.teamActivity.useQuery(undefined, { enabled: isLead });
   const sections = api.tabAccess.mine.useQuery().data?.sections;
   const t = data?.tiles;
 
   const countryData = (overview?.applicationsByCountry ?? []).map((c, i) => ({
-    label: `${countryFlag(c.country)} ${countryName(c.country)}`,
+    label: countryName(c.country),
     value: c.count,
     color: COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]!,
   }));
@@ -619,12 +612,12 @@ function CounsellorDashboard({ role, firstName }: { role: number; firstName: str
         </FadeUp>
         <FadeUp className="h-full">
           <KpiCard
-            label="Active Applicants"
+            label="Active Applications"
             icon="applications"
             tone="purple"
             href="/admin/applications"
             loading={!data}
-            value={t ? num(t.activeApplicants) : "—"}
+            value={t ? num(t.activeApplications) : "—"}
           />
         </FadeUp>
         <FadeUp className="h-full">
@@ -689,6 +682,39 @@ function CounsellorDashboard({ role, firstName }: { role: number; firstName: str
           {isLoading ? <SkeletonRows /> : <BreakdownList rows={uniRows} />}
         </DashboardCard>
       </div>
+
+      {/* A lead's team, kept apart from their own activity (Suraj, 30 Oct). */}
+      {isLead && (
+        <div className="mt-5">
+          <DashboardCard title="Team activity">
+            {team.isLoading ? (
+              <SkeletonRows />
+            ) : team.data?.members === 0 ? (
+              <EmptyState label="No counsellors in your team yet." />
+            ) : (
+              <ActivityFeed
+                items={(team.data?.items ?? []).map((r) => {
+                  const st = activityStyle(r.action);
+                  return {
+                    id: r.id,
+                    icon: st.icon,
+                    bg: st.bg,
+                    text: (
+                      <>
+                        <strong className="font-semibold text-[#101828]">{r.by ?? "A team member"}</strong>
+                        {" · "}
+                        {humanize(r.action)}
+                        {r.entityType ? ` · ${r.entityType}` : ""}
+                      </>
+                    ),
+                    time: timeAgo(r.at),
+                  };
+                })}
+              />
+            )}
+          </DashboardCard>
+        </div>
+      )}
     </>
   );
 }

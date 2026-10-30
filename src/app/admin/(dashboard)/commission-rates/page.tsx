@@ -11,7 +11,7 @@ import { FormInput, FormTextarea } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { DashboardCard, SkeletonTable, EmptyState } from "~/components/dashboard/widgets";
-import { formatDate, countryFlag } from "~/components/dashboard/format";
+import { formatDate, countryName } from "~/components/dashboard/format";
 import {
   AdminRole,
   VendorType,
@@ -727,7 +727,7 @@ export default function CommissionRatesPage() {
           </td>
           <td className={`${TD} font-medium text-[#101828]`}>{c.universityName}</td>
           <td className={TD}>
-            {countryFlag(c.country)} {c.country}
+            {countryName(c.country)}
           </td>
           <td className={TD}>
             {headline ? <Pill>{typeText(headline.commissionType)}</Pill> : <span className="text-[#98A2B3]">—</span>}
@@ -1298,7 +1298,7 @@ function SummaryTab({
           <FormSelect
             label="Country"
             placeholder="All Countries"
-            options={countries.map((c) => ({ value: c, label: `${countryFlag(c)} ${c}` }))}
+            options={countries.map((c) => ({ value: c, label: countryName(c) }))}
             value={country}
             onChange={(e) => setCountry(e.target.value)}
           />
@@ -1368,7 +1368,7 @@ function SummaryTab({
                       </td>
                       <td className={`${TD} font-medium text-[#101828]`}>{u.universityName}</td>
                       <td className={TD}>
-                        {countryFlag(u.country)} {u.country}
+                        {countryName(u.country)}
                       </td>
                       <td className={TD}>
                         <CountChip>{u.sources.length}</CountChip>

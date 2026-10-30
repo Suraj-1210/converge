@@ -9,7 +9,8 @@ import { Button } from "~/components/ui/button";
 import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { StatCard, SkeletonTable } from "~/components/dashboard/widgets";
-import { countryFlag, formatDate } from "~/components/dashboard/format";
+import { formatDate, countryName } from "~/components/dashboard/format";
+import { UniIdModal } from "~/components/students/uni-id-modal";
 import { UniApplicationStatus } from "~/server/db/enums";
 import { isClosedStage } from "~/lib/application-stages";
 import { PendingDocsModal } from "~/app/admin/(dashboard)/students/[id]/pipeline-panels";
@@ -143,13 +144,13 @@ export default function ApplicationsPage() {
                     <td className="max-w-[220px] truncate px-3 py-3 text-[13px] text-[#344054]">{r.program}</td>
                     <td className={TD}>
                       {statusOptions.length > 0 ? (
-                        <StageSelect applicationId={r.id} current={r.status} statuses={statusOptions} onDone={showToast} />
+                        <StageSelect applicationId={r.id} current={r.status} hasUniId={!!r.appRef} statuses={statusOptions} onDone={showToast} />
                       ) : (
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${stageTone(r.status)}`}>{r.stage}</span>
                       )}
                     </td>
                     <td className={TD}>{r.intake}</td>
-                    <td className={TD}>{r.country ? `${countryFlag(r.country)} ${r.country}` : "—"}</td>
+                    <td className={TD}>{r.country ? countryName(r.country) : "—"}</td>
                     <td className={TD}>{r.processor ?? <span className="text-[#98A2B3]">Unassigned</span>}</td>
                     <td className={TD}>{r.days}d</td>
                     <td className={`${TD} text-right`}>
@@ -197,11 +198,14 @@ export default function ApplicationsPage() {
 function StageSelect({
   applicationId,
   current,
+  hasUniId,
   statuses,
   onDone,
 }: {
   applicationId: number;
   current: number;
+  // An offer needs the university Student ID; asked for first when missing.
+  hasUniId: boolean;
   statuses: StatusOption[];
   onDone: (msg: string) => void;
 }) {
@@ -209,10 +213,12 @@ function StageSelect({
   const label = (code: number) => statuses.find((s) => s.code === code)?.label ?? `Stage ${code}`;
   // Documents Pending names the documents first (applied from the modal).
   const [pickDocs, setPickDocs] = useState(false);
+  const [askUniId, setAskUniId] = useState<number | null>(null);
   const mut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       void utils.applications.invalidate();
       setPickDocs(false);
+      setAskUniId(null);
       onDone(`Stage updated to ${label(vars.status)}`);
     },
     onError: (e) => onDone(e.message),
@@ -240,6 +246,11 @@ function StageSelect({
           const code = Number(e.target.value);
           if (code === current) return;
           if (code === UniApplicationStatus.DOCUMENTS_PENDING) setPickDocs(true);
+          else if (
+            !hasUniId &&
+            (code === UniApplicationStatus.CONDITIONAL_OFFER || code === UniApplicationStatus.UNCONDITIONAL_OFFER)
+          )
+            setAskUniId(code);
           else mut.mutate({ applicationId, status: code });
         }}
         className={`cursor-pointer appearance-none rounded-full py-0.5 pr-6 pl-2.5 text-[11px] font-semibold outline-none focus:ring-2 focus:ring-[#B2DDFF] ${stageTone(current)} ${mut.isPending ? "opacity-60" : ""}`}
@@ -274,6 +285,14 @@ function StageSelect({
           onSubmit={(picks) =>
             mut.mutate({ applicationId, status: UniApplicationStatus.DOCUMENTS_PENDING, pendingDocs: picks })
           }
+        />
+      )}
+      {askUniId !== null && (
+        <UniIdModal
+          target={askUniId}
+          busy={mut.isPending}
+          onClose={() => setAskUniId(null)}
+          onSubmit={(universityAppId) => mut.mutate({ applicationId, status: askUniId, universityAppId })}
         />
       )}
     </span>
@@ -362,7 +381,7 @@ function QuickLookDrawer({
                 <div className="rounded-lg border border-[#E4E7EC] px-3 py-2">
                   <InfoRow label="Email" value={d.email} />
                   <InfoRow label="Phone" value={d.phone} />
-                  <InfoRow label="Country" value={d.country ? `${countryFlag(d.country)} ${d.country}` : "—"} />
+                  <InfoRow label="Country" value={d.country ? countryName(d.country) : "—"} />
                   <InfoRow label="Intake" value={d.intake} />
                   <InfoRow label="Processor" value={d.processor ?? <span className="text-[#98A2B3]">Unassigned</span>} />
                 </div>
@@ -377,7 +396,7 @@ function QuickLookDrawer({
 
               <DrawerSection title="Stage">
                 <div className="flex items-center gap-2">
-                  <StageSelect applicationId={d.applicationId} current={d.status} statuses={statuses} onDone={onToast} />
+                  <StageSelect applicationId={d.applicationId} current={d.status} hasUniId={!!d.universityAppId} statuses={statuses} onDone={onToast} />
                   <span className="text-xs text-[#98A2B3]">change here or on the row</span>
                 </div>
               </DrawerSection>

@@ -50,6 +50,9 @@ export interface TransitionInput {
   // Required when moving to Documents Pending (unless the application
   // already has a list); replaces the list while it is there.
   pendingDocs?: PendingDocInput[] | null;
+  // The university's Student ID, saved with the move. Required (here or
+  // already on the application) for Conditional / Unconditional Offer.
+  universityAppId?: string | null;
 }
 
 const label = (s: number) =>
@@ -86,10 +89,20 @@ export async function transitionApplication(input: TransitionInput) {
       submitted_at: true,
       decided_at: true,
       pending_docs: true,
+      university_app_id: true,
       stage_history: { select: { stage: true } },
     },
   });
   if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+  // An offer needs the university's Student ID (29 Oct testing): it is what
+  // Student Placements, billing and commission identify the student by.
+  const newUniId = input.universityAppId?.trim() ?? "";
+  const isOffer =
+    target === UniApplicationStatus.CONDITIONAL_OFFER || target === UniApplicationStatus.UNCONDITIONAL_OFFER;
+  if (isOffer && !newUniId && !app.university_app_id?.trim()) {
+    throw fail(`Enter the university's Student ID before moving this application to ${label(target)}.`);
+  }
 
   const stageBefore = currentStage(app.status, app.stage_history);
   const open = stageIndex(target) >= 0;
@@ -157,6 +170,7 @@ export async function transitionApplication(input: TransitionInput) {
       ...(target === UniApplicationStatus.DOCUMENTS_PENDING
         ? { pending_docs: pendingDocs as unknown as object }
         : {}),
+      ...(newUniId ? { university_app_id: newUniId } : {}),
     },
   });
   await syncStudentStatusFromApplications(app.student_id);
@@ -225,6 +239,7 @@ export async function transitionApplication(input: TransitionInput) {
         studentId: app.student_id,
         byCpUserId: input.actor.cpUserId,
         ...(input.reason ? { reason: input.reason } : {}),
+        ...(newUniId && newUniId !== app.university_app_id ? { universityAppId: newUniId } : {}),
         ...(input.actor.partnerReport
           ? {
               partnerReportId: input.actor.partnerReport.id,
