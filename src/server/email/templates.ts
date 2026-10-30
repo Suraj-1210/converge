@@ -850,3 +850,25 @@ export function counsellorStudentUpdateEmail(
     { button: { label: "Open in the Admin Portal", url: portal(appUrl, u.link) } },
   ]);
 }
+
+// An application follow-up is due or overdue (src/server/follow-ups.ts), to
+// the student's counsellor or whoever covers them today.
+export function counsellorFollowUpEmail(
+  r: { name: string },
+  f: {
+    subject: string;
+    heading: string;
+    intro: string;
+    lines: string[];
+    link: string;
+    coveringFor?: string | null;
+  },
+  appUrl: string,
+): EmailMessage {
+  return build(f.subject, f.heading, hello(r.name), [
+    ...(f.coveringFor ? [{ p: `You're covering for ${f.coveringFor} while they're out of office.` }] : []),
+    { p: f.intro },
+    { list: f.lines },
+    { button: { label: "Open application", url: portal(appUrl, f.link) } },
+  ]);
+}

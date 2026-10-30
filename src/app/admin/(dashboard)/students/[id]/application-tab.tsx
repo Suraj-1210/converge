@@ -55,6 +55,7 @@ import {
   PendingDocsPanel,
   type PendingDocPick,
 } from "./pipeline-panels";
+import { FollowUpsPanel } from "./follow-ups-panel";
 import {
   StageMark,
   stageDotStyle,
@@ -802,6 +803,11 @@ function AppCard({
 
       {/* Deferred to a later intake: still open */}
       {a.deferral && !terminal && <DeferralNotice app={a} />}
+
+      {/* Follow-ups with the university (Submitted / Under Review; history after) */}
+      {stageAtLeast(a.stage, UniApplicationStatus.APPLICATION_SUBMITTED) && (
+        <FollowUpsPanel applicationId={a.id} status={a.status} onToast={onToast} />
+      )}
 
       {/* A partner's Deposit Paid / visa outcome awaiting confirmation */}
       <PartnerReportPanel app={a} onToast={onToast} invalidate={invalidate} />

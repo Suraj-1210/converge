@@ -19,6 +19,7 @@ import { appUrl, applicationStatusEmail } from "~/server/email";
 import { emailPartners, studentPartnerRecipients } from "~/server/email/partners";
 import { createNotifications } from "~/server/notify";
 import { notifyStudentCounsellor } from "~/server/counsellor-notify";
+import { closeOpenFollowUps } from "~/server/follow-ups";
 import {
   buildPendingDocs,
   parsePendingDocs,
@@ -174,6 +175,10 @@ export async function transitionApplication(input: TransitionInput) {
     },
   });
   await syncStudentStatusFromApplications(app.student_id);
+
+  // Leaving Application Submitted / Under Review (an offer, a rejection, any
+  // closed outcome, or back before submission) ends open follow-ups.
+  if (target !== app.status) await closeOpenFollowUps(app.id, target, input.actor.cpUserId);
 
   // Partner reports still pending: the confirmed one (or one asking for this
   // very status) is confirmed; any other is overtaken by this change.

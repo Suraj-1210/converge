@@ -2,9 +2,9 @@ import "server-only";
 import { db } from "~/server/db";
 import { AdminRoleLabel, isAdminRole } from "~/server/db/enums";
 import { currentImpersonation } from "~/server/auth/impersonation-context";
-import { appUrl, counsellorStudentUpdateEmail, sendEmail } from "~/server/email";
+import { appUrl, counsellorFollowUpEmail, counsellorStudentUpdateEmail, sendEmail } from "~/server/email";
 import { dateInTimezone, oooToday, responderFor } from "~/server/out-of-office";
-import { createStaffNotifications } from "~/server/staff-notify";
+import { createStaffNotifications, upsertStaffNotification } from "~/server/staff-notify";
 import { getTatConfig } from "~/server/tat";
 
 // Telling a student's Collegepond counsellor about things that happen to
@@ -312,5 +312,68 @@ export async function notifyColleagueApplicationAction(
     });
   } catch (e) {
     console.error("[counsellor-notify] application action failed:", e instanceof Error ? e.message : e);
+  }
+}
+
+// ---- Application follow-ups ---------------------------------------------------
+
+// A follow-up reminder from the daily run (src/server/follow-ups.ts) for the
+// counsellor who owns it, routed like everything above: whoever answers for
+// them today gets the item and the email; an absent counsellor still gets
+// the in-app item. `rolling` keeps one unread item per application that the
+// next reminder refreshes (the daily overdue reminder) instead of piling up.
+// Returns false when nobody active could be told.
+export async function notifyCounsellorFollowUp(
+  counsellorId: number,
+  n: {
+    type: string;
+    title: string;
+    lines: string[];
+    link: string;
+    tone: Tone;
+    rolling?: boolean;
+    email: { subject: string; intro: string } | null;
+  },
+): Promise<boolean> {
+  try {
+    const r = await recipientsFor(counsellorId, null);
+    if (!r) return false;
+    const body = n.lines.join(" · ").slice(0, 500);
+    const item = (covering: Person | null) => ({
+      type: n.type,
+      title: n.title,
+      body: covering ? `${body} · covering for ${fullName(covering)}`.slice(0, 500) : body,
+      link: n.link,
+      tone: n.tone,
+    });
+    const send = (id: number, covering: Person | null) =>
+      n.rolling ? upsertStaffNotification(id, item(covering)) : createStaffNotifications([id], item(covering));
+    await send(r.responder.id, r.covering);
+    if (r.covering) await send(r.covering.id, null);
+    if (n.email) {
+      try {
+        await sendEmail(
+          r.responder.email,
+          counsellorFollowUpEmail(
+            { name: fullName(r.responder) },
+            {
+              subject: n.email.subject,
+              heading: n.title,
+              intro: n.email.intro,
+              lines: n.lines,
+              link: n.link,
+              coveringFor: r.covering ? fullName(r.covering) : null,
+            },
+            appUrl(),
+          ),
+        );
+      } catch (e) {
+        console.error("[counsellor-notify] follow-up email failed:", e instanceof Error ? e.message : e);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.error("[counsellor-notify] follow-up failed:", e instanceof Error ? e.message : e);
+    return false;
   }
 }

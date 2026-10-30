@@ -50,6 +50,9 @@ model application {
   deferred_at            DateTime?                      @db.Timestamp(0)
   deferred_by_cp_user_id Int?
   deferred_note          String?                        @db.VarChar(255)
+  // Weeks the university is expected to take to decide, from submitted_at
+  // (application follow-ups). NULL = not set (src/server/follow-ups.ts).
+  decision_expected_weeks Int?                          @db.UnsignedTinyInt
   course                 course                         @relation(fields: [course_id], references: [id], map: "fk_application_course")
   organization           organization?                  @relation(fields: [org_id], references: [id], map: "fk_application_organization")
   student                student                        @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_application_student")
@@ -58,6 +61,7 @@ model application {
   stage_history          application_stage_history[]
   portal_credential      application_portal_credential?
   partner_report         application_partner_report[]
+  follow_up              application_follow_up[]
 
   @@index([course_id], map: "fk_application_course1_idx")
   @@index([org_id], map: "fk_application_organization1_idx")
@@ -112,6 +116,30 @@ model application_partner_report {
 // UniApplicationStatus code < 20; order by stageIndex, not the code). Powers the dates under the profile
 // page's pipeline stepper, and preserves the stage position when the
 // status column holds a terminal outcome (>= 20).
+// Follow-ups with the university while the application is at Application
+// Submitted / Under Review (src/server/follow-ups.ts). cp_user ids are loose
+// references (no FK).
+model application_follow_up {
+  id                      Int         @id @default(autoincrement())
+  application_id          Int
+  seq                     Int         @db.UnsignedSmallInt
+  due_date                DateTime    @db.Date
+  completed_at            DateTime?   @db.Timestamp(0)
+  completed_by_cp_user_id Int?
+  closed_at               DateTime?   @db.Timestamp(0)
+  closed_reason           String?     @db.VarChar(100)
+  due_notified_at         DateTime?   @db.Timestamp(0)
+  overdue_emailed_at      DateTime?   @db.Timestamp(0)
+  overdue_reminded_on     DateTime?   @db.Date
+  created_by_cp_user_id   Int?
+  created_at              DateTime    @default(now()) @db.Timestamp(0)
+  updated_at              DateTime    @default(now()) @updatedAt @db.Timestamp(0)
+  application             application @relation(fields: [application_id], references: [id], onDelete: Cascade, map: "fk_follow_up_application")
+
+  @@unique([application_id, seq], map: "uq_follow_up_application_seq")
+  @@index([completed_at, closed_at, due_date], map: "idx_follow_up_open_due")
+}
+
 model application_stage_history {
   id             Int         @id @default(autoincrement())
   application_id Int

@@ -531,6 +531,9 @@ CREATE TABLE IF NOT EXISTS `application` (
   `deferred_at`            TIMESTAMP         NULL DEFAULT NULL,
   `deferred_by_cp_user_id` INT               NULL DEFAULT NULL,
   `deferred_note`          VARCHAR(255)      NULL DEFAULT NULL,
+  -- Weeks the university is expected to take to decide, from submitted_at
+  -- (application follow-ups). NULL = not set: 1 for a Faster TAT course, else 4.
+  `decision_expected_weeks` TINYINT UNSIGNED NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_application_student1_idx`      (`student_id` ASC) VISIBLE,
   INDEX `idx_application_deferred`         (`deferred_at` ASC) VISIBLE,
@@ -1026,6 +1029,37 @@ CREATE TABLE IF NOT EXISTS `application_partner_report` (
   CONSTRAINT `fk_apr_cp_user`
     FOREIGN KEY (`decided_by_cp_user_id`) REFERENCES `cp_user` (`id`)
     ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- application_follow_up  (FK -> application)
+-- Follow-ups with the university while an application is at Application
+-- Submitted / Under Review (src/server/follow-ups.ts). Open until completed
+-- or auto-closed; never deleted. The *_notified/emailed/reminded columns
+-- keep the daily cron idempotent. cp_user ids are loose references.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `application_follow_up` (
+  `id`                      INT               NOT NULL AUTO_INCREMENT,
+  `application_id`          INT               NOT NULL,
+  `seq`                     SMALLINT UNSIGNED NOT NULL,  -- Follow-up 1, 2, 3 … per application
+  `due_date`                DATE              NOT NULL,
+  `completed_at`            TIMESTAMP         NULL DEFAULT NULL,
+  `completed_by_cp_user_id` INT               NULL DEFAULT NULL,
+  `closed_at`               TIMESTAMP         NULL DEFAULT NULL,  -- auto-closed (offer or later, or closed)
+  `closed_reason`           VARCHAR(100)      NULL DEFAULT NULL,
+  `due_notified_at`         TIMESTAMP         NULL DEFAULT NULL,  -- due-day in-app + email sent
+  `overdue_emailed_at`      TIMESTAMP         NULL DEFAULT NULL,  -- first overdue day in-app + email sent
+  `overdue_reminded_on`     DATE              NULL DEFAULT NULL,  -- last daily overdue in-app reminder (IST date)
+  `created_by_cp_user_id`   INT               NULL DEFAULT NULL,
+  `created_at`              TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`              TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_follow_up_application_seq` (`application_id` ASC, `seq` ASC) VISIBLE,
+  INDEX `idx_follow_up_open_due` (`completed_at` ASC, `closed_at` ASC, `due_date` ASC) VISIBLE,
+  CONSTRAINT `fk_follow_up_application`
+    FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)
+    ON DELETE CASCADE
 ) ENGINE = InnoDB;
 
 
