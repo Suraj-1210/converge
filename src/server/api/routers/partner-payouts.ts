@@ -26,7 +26,7 @@ const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
 
 // Partner email once a claim is approved (fire-and-forget; already saved).
 function notifyClaimApproved(
-  inv: { org_id: number | null; payee_user_id: number | null },
+  inv: { org_id: number | null; payee_user_id: number | null; payout_currency: string | null },
   invoiceNumber: string,
   amountInr: number,
   partial: boolean,
@@ -35,7 +35,12 @@ function notifyClaimApproved(
     .then((rs) =>
       emailPartners(
         rs,
-        (r) => commissionClaimApprovedEmail(r, { invoiceNumber, amountInr, partial }, appUrl()),
+        (r) =>
+          commissionClaimApprovedEmail(
+            r,
+            { invoiceNumber, amountInr, partial, payoutCurrency: inv.payout_currency },
+            appUrl(),
+          ),
         "claim-approved",
         "fin.invoice",
       ),
@@ -155,6 +160,9 @@ export const partnerPayoutsRouter = createTRPCRouter({
         students: inv.invoice_item.length,
         totalAmount: num(inv.total_amount),
         netPayable: netOf(inv),
+        // Amounts are INR; a non-INR claim is paid out in this currency at
+        // the rate on the day (no GST / TDS on it).
+        payoutCurrency: inv.payout_currency ?? "INR",
         status: inv.status,
         gstin: inv.gstin,
         pan: inv.pan,
@@ -230,6 +238,8 @@ export const partnerPayoutsRouter = createTRPCRouter({
           data: {
             invoice_id: inv.id,
             amount_inr: netOf(inv),
+            // The foreign amount and rate are set at release.
+            currency: inv.payout_currency ?? "INR",
             status: PayoutStatus.APPROVED,
             ops_approved_by_cp_user_id: ctx.cpUser.id,
             ops_approved_at: new Date(),
@@ -293,6 +303,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           data: {
             invoice_id: inv.id,
             amount_inr: partialNet,
+            currency: inv.payout_currency ?? "INR",
             status: PayoutStatus.APPROVED,
             ops_approved_by_cp_user_id: ctx.cpUser.id,
             ops_approved_at: new Date(),
@@ -391,6 +402,9 @@ export const partnerPayoutsRouter = createTRPCRouter({
       ...payeeLabel(p.invoice),
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
+      currency: p.currency ?? "INR",
+      amountForeign: p.amount_foreign == null ? null : num(p.amount_foreign),
+      exchangeRate: p.exchange_rate == null ? null : num(p.exchange_rate),
       method: p.method,
       reference: p.reference_number,
       paymentDate: p.payment_date,

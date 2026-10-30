@@ -35,6 +35,7 @@ export const adminBankSelect = {
   org_id: true,
   payee_user_id: true,
   region: true,
+  payout_currency: true,
   account_holder: true,
   account_number_last4: true,
   ifsc: true,
@@ -62,6 +63,7 @@ type AdminBankRow = {
   org_id: number | null;
   payee_user_id: number | null;
   region: number;
+  payout_currency: string | null;
   account_holder: string;
   account_number_last4: string | null;
   ifsc: string | null;
@@ -94,6 +96,9 @@ export function toAdminBankView(b: AdminBankRow, names: Map<number, string>) {
     payeeUserId: b.payee_user_id,
     status: bankStatusOf(b),
     region: b.region === 1 ? ("international" as const) : ("domestic" as const),
+    // What the partner is paid in: INR into a domestic account; an
+    // international one picks it (older ones without a pick show null).
+    payoutCurrency: b.region === 1 ? b.payout_currency : "INR",
     accountHolder: b.account_holder,
     last4: b.account_number_last4,
     ifsc: b.ifsc,

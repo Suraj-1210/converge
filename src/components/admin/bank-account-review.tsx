@@ -57,6 +57,7 @@ export function BankAccountDetails({ bank, canReveal }: { bank: AdminBank; canRe
     ],
     ...(intl && bank.ibanLast4 ? ([["IBAN", `•••• ${bank.ibanLast4}`]] as [string, string][]) : []),
     ["Bank", [bank.bankName, bank.branch].filter(Boolean).join(", ") || "—"],
+    ["Paid in", bank.payoutCurrency ?? "Not chosen"],
     [intl ? "SWIFT / BIC" : "IFSC", (intl ? bank.swift : bank.ifsc) ?? "—"],
     ...(intl
       ? ([

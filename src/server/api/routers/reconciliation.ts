@@ -76,6 +76,7 @@ export const reconciliationRouter = createTRPCRouter({
             pan: true,
             net_payable: true,
             total_amount: true,
+            payout_currency: true,
             ...PAYEE_LABEL_SELECT,
             bank_account: { select: adminBankSelect },
             invoice_item: {
@@ -117,6 +118,9 @@ export const reconciliationRouter = createTRPCRouter({
       panReview: p.invoice.organization == null && !p.invoice.pan,
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
+      // What it's paid out in: a non-INR payout needs the remittance rate at
+      // release (no GST / TDS on it).
+      payoutCurrency: p.currency ?? p.invoice.payout_currency ?? "INR",
       status: p.status,
       opsApprovedAt: p.ops_approved_at,
       approvedBy:
@@ -193,6 +197,11 @@ export const reconciliationRouter = createTRPCRouter({
         referenceNumber: z.string().trim().max(100).optional(),
         paymentDate: z.string(),
         amountInr: z.number().positive().optional(),
+        // Foreign-currency payout (the claim's payout currency isn't INR):
+        // the remittance rate (INR per 1 unit) is required, and the amount
+        // sent defaults to INR ÷ rate (Suraj, 30 Oct 2026: rate fixed at release).
+        exchangeRate: z.number().positive().optional(),
+        amountForeign: z.number().positive().optional(),
         notes: z.string().max(500).optional(),
         // Required only when releasing MANUALLY to a domestic bank that isn't
         // RazorpayX-verified — a written justification of how the account was
@@ -241,8 +250,24 @@ export const reconciliationRouter = createTRPCRouter({
       // verified + the method maps to a RazorpayX mode. Otherwise fall back to manual
       // recording (the operator enters the bank's reference/UTR).
       const bankAccountId = payout.bank_account_id ?? payout.invoice.bank_account_id;
-      const mode = RZP_MODE[input.method]; // undefined for International Wire (no RazorpayX mode)
+      const payoutCurrency = payout.currency ?? payout.invoice.payout_currency ?? "INR";
+      const foreign = payoutCurrency !== "INR";
+      // RazorpayX pays INR only; a foreign payout is recorded by hand.
+      const mode = foreign ? undefined : RZP_MODE[input.method]; // undefined for International Wire (no RazorpayX mode)
       const amountInr = input.amountInr ?? num(payout.amount_inr);
+      if (foreign && !input.exchangeRate) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `This claim is paid in ${payoutCurrency}. Enter the exchange rate the bank used (₹ per 1 ${payoutCurrency}).`,
+        });
+      }
+      const fx = foreign
+        ? {
+            currency: payoutCurrency,
+            rate: input.exchangeRate!,
+            amount: input.amountForeign ?? Math.round((amountInr / input.exchangeRate!) * 100) / 100,
+          }
+        : null;
       const bank = bankAccountId
         ? await db.partner_bank_account.findUnique({ where: { id: bankAccountId } })
         : null;
@@ -304,6 +329,9 @@ export const reconciliationRouter = createTRPCRouter({
             released_at: now,
             fy: financialYearOf(new Date(input.paymentDate)),
             ...(input.amountInr != null ? { amount_inr: input.amountInr } : {}),
+            currency: payoutCurrency,
+            amount_foreign: fx?.amount ?? null,
+            exchange_rate: fx?.rate ?? null,
           },
         }),
         db.invoice.update({
@@ -386,6 +414,7 @@ export const reconciliationRouter = createTRPCRouter({
                     month: "long",
                     year: "numeric",
                   }),
+                  foreign: fx,
                 },
                 appUrl(),
               ),
@@ -470,6 +499,9 @@ export const reconciliationRouter = createTRPCRouter({
       ...payeeLabel(p.invoice),
       invoiceNumber: p.invoice.invoice_number,
       amountInr: num(p.amount_inr),
+      currency: p.currency ?? "INR",
+      amountForeign: p.amount_foreign == null ? null : num(p.amount_foreign),
+      exchangeRate: p.exchange_rate == null ? null : num(p.exchange_rate),
       method: p.method,
       reference: p.reference_number,
       paymentDate: p.payment_date,

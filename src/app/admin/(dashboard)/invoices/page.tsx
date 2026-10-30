@@ -17,6 +17,7 @@ import {
   EmptyState,
 } from "~/components/dashboard/widgets";
 import { formatINR, formatDate } from "~/components/dashboard/format";
+import { fxLine } from "~/lib/currency";
 import {
   AdminRole,
   PartnerInvoiceStatus,
@@ -275,7 +276,10 @@ export default function InvoicesPayoutsPage() {
                           <td className={`${TD} font-mono text-[13px]`}>{inv.invoiceNumber}</td>
                           <td className={TD}>{formatDate(inv.invoiceDate)}</td>
                           <td className={TD}>{inv.students}</td>
-                          <td className={`${TD} font-semibold text-[#101828]`}>{inr(inv.totalAmount)}</td>
+                          <td className={`${TD} font-semibold text-[#101828]`}>
+                            {inr(inv.totalAmount)}
+                            {inv.payoutCurrency !== "INR" && <span className="block text-[11px] font-medium text-[#B54708]">Paid in {inv.payoutCurrency}</span>}
+                          </td>
                           <td className={TD}><StatusPill status={inv.status} /></td>
                           <td className={`${TD} text-right whitespace-nowrap`}>
                             {inv.status === PartnerInvoiceStatus.SUBMITTED && canApprove ? (
@@ -337,7 +341,12 @@ export default function InvoicesPayoutsPage() {
                       <PayeeTags partnerType={p.partnerType} />
                     </td>
                     <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}</td>
-                    <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
+                    <td className={`${TD} font-semibold text-[#101828]`}>
+                      {inr(p.amountInr)}
+                      {p.currency !== "INR" && p.amountForeign != null && p.exchangeRate != null && (
+                        <span className="block text-[11px] font-normal text-[#667085]">{fxLine(p.amountForeign, p.currency, p.exchangeRate, p.amountInr)}</span>
+                      )}
+                    </td>
                     <td className={TD}>{p.method == null ? "—" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4]}</td>
                     <td className={TD}>{p.paymentDate ? formatDate(p.paymentDate) : "—"}</td>
                     <td className={TD}>{p.reference ?? "—"}</td>
@@ -394,6 +403,9 @@ function CrossRef({
         </div>
         <div className="text-xs text-[#98A2B3]">
           Net payable <span className="font-semibold text-[#101828]">{inr(inv.netPayable)}</span>
+          {inv.payoutCurrency !== "INR" && (
+            <span className="ml-2 font-medium text-[#B54708]">· paid in {inv.payoutCurrency} at the rate on release (no GST / TDS)</span>
+          )}
           {inv.gstin && <span className="ml-2">· GSTIN {inv.gstin}</span>}
         </div>
       </div>

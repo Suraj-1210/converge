@@ -11,6 +11,8 @@ import {
   COMMISSION_TYPE_CODES,
   CommissionType,
 } from "~/server/db/enums";
+import { FINANCE_CURRENCIES } from "~/lib/currency";
+import { trancheOvershoot, trancheScheduleIssue } from "~/server/commission-schedule";
 
 // Prisma Decimal -> number at the API boundary (the house convention; superjson
 // also handles Decimal, but routers serialise explicitly).
@@ -35,7 +37,26 @@ const commissionType = z
     "Invalid commission type",
   );
 
+// The agreement currency of a vendor / contract (30 Oct 2026). Flat rates,
+// fixed tranche amounts and bonus tiers are recorded in it.
+const currency = z.enum(FINANCE_CURRENCIES);
+
 const idInput = z.object({ id: z.number().int().positive() });
+
+// A contract's currency, falling back to its vendor's; null = rows made before
+// contracts had one (flat amounts then followed the course currency).
+const contractCurrency = (c: { currency: string | null; vendor?: { currency: string | null } | null }) =>
+  c.currency ?? c.vendor?.currency ?? null;
+
+// The contract's university-wide (headline) rate — what a FLAT tranche
+// schedule must add up to.
+async function headlineOf(contractId: number) {
+  const r = await db.commission_rate.findFirst({
+    where: { contract_id: contractId, course_id: null },
+    select: { commission_type: true, rate: true },
+  });
+  return r ? { commissionType: r.commission_type, rate: r.rate.toNumber() } : null;
+}
 const parseDate = (s?: string | null): Date | null =>
   s ? new Date(s) : null;
 
@@ -53,6 +74,7 @@ export const commissionRatesRouter = createTRPCRouter({
       contactEmail: v.contact_email,
       contactPhone: v.contact_phone,
       address: v.address,
+      currency: v.currency,
       isActive: v.is_active === 1,
     }));
   }),
@@ -66,6 +88,7 @@ export const commissionRatesRouter = createTRPCRouter({
         contactEmail: z.string().email().max(255).optional().or(z.literal("")),
         contactPhone: z.string().max(45).optional(),
         address: z.string().max(255).optional(),
+        currency,
       }),
     )
     .mutation(async ({ input }) => {
@@ -77,6 +100,7 @@ export const commissionRatesRouter = createTRPCRouter({
           contact_email: orNull(input.contactEmail),
           contact_phone: orNull(input.contactPhone),
           address: orNull(input.address),
+          currency: input.currency,
         },
       });
       return { id: v.id };
@@ -92,6 +116,9 @@ export const commissionRatesRouter = createTRPCRouter({
         contactEmail: z.string().email().max(255).optional().or(z.literal("")),
         contactPhone: z.string().max(45).optional(),
         address: z.string().max(255).optional(),
+        // The agreement currency. Existing contracts keep the currency they
+        // were made with; editing a contract changes that contract's.
+        currency,
         isActive: z.boolean().optional(),
       }),
     )
@@ -105,6 +132,7 @@ export const commissionRatesRouter = createTRPCRouter({
           contact_email: orNull(input.contactEmail),
           contact_phone: orNull(input.contactPhone),
           address: orNull(input.address),
+          currency: input.currency,
           ...(input.isActive === undefined
             ? {}
             : { is_active: input.isActive ? 1 : 0 }),
@@ -168,7 +196,9 @@ export const commissionRatesRouter = createTRPCRouter({
       },
       orderBy: { university: { name: "asc" } },
     });
-    return rows.map((c) => ({
+    return rows.map((c) => {
+      const headline = c.commission_rate.find((r) => r.course_id === null) ?? null;
+      return {
       id: c.id,
       universityId: c.university_id,
       universityName: c.university.name,
@@ -176,6 +206,8 @@ export const commissionRatesRouter = createTRPCRouter({
       vendorId: c.vendor_id,
       vendorName: c.vendor?.name ?? null,
       vendorType: c.vendor?.type ?? null,
+      // null = not set (older contracts): flat amounts follow the course currency.
+      currency: contractCurrency(c),
       cpSharePct: num(c.cp_share_pct),
       isDefault: c.is_default === 1,
       effectiveDate: c.effective_date,
@@ -204,7 +236,15 @@ export const commissionRatesRouter = createTRPCRouter({
         pct: num(t.pct),
         timing: t.timing,
       })),
-    }));
+      // Why the tranche schedule doesn't add up to the commission (null = it
+      // does, or there is none). Approve commission refuses until it's fixed.
+      trancheIssue: trancheScheduleIssue(
+        c.commission_tranche_template.map((t) => ({ pct: num(t.pct), amount: num(t.amount) })),
+        headline?.commission_type ?? null,
+        headline ? num(headline.rate) : null,
+      ),
+      };
+    });
   }),
 
   createContract: financeManagerProcedure
@@ -213,6 +253,7 @@ export const commissionRatesRouter = createTRPCRouter({
         universityId: z.number().int().positive(),
         vendorId: z.number().int().positive().nullable(),
         cpSharePct: z.number().min(0).max(100).nullable().optional(),
+        currency,
         effectiveDate: z.string().optional(),
         notes: z.string().max(500).optional(),
         isDefault: z.boolean().optional(),
@@ -248,6 +289,7 @@ export const commissionRatesRouter = createTRPCRouter({
             university_id: input.universityId,
             vendor_id: input.vendorId,
             cp_share_pct: input.cpSharePct ?? null,
+            currency: input.currency,
             effective_date: parseDate(input.effectiveDate),
             notes: orNull(input.notes),
             is_default: input.isDefault ? 1 : 0,
@@ -261,7 +303,7 @@ export const commissionRatesRouter = createTRPCRouter({
               level: input.level ?? null,
               commission_type: input.commissionType ?? CommissionType.PERCENTAGE,
               rate: input.rate,
-              currency: null,
+              currency: input.currency,
             },
           });
         }
@@ -276,6 +318,7 @@ export const commissionRatesRouter = createTRPCRouter({
         id: z.number().int().positive(),
         vendorId: z.number().int().positive().nullable().optional(),
         cpSharePct: z.number().min(0).max(100).nullable().optional(),
+        currency: currency.optional(),
         effectiveDate: z.string().nullable().optional(),
         notes: z.string().max(500).optional(),
         isDefault: z.boolean().optional(),
@@ -319,6 +362,7 @@ export const commissionRatesRouter = createTRPCRouter({
             ...(input.cpSharePct === undefined
               ? {}
               : { cp_share_pct: input.cpSharePct }),
+            ...(input.currency === undefined ? {} : { currency: input.currency }),
             ...(input.effectiveDate === undefined
               ? {}
               : { effective_date: parseDate(input.effectiveDate) }),
@@ -328,6 +372,11 @@ export const commissionRatesRouter = createTRPCRouter({
               : { is_default: input.isDefault ? 1 : 0 }),
           },
         });
+        // Rates and bonus tiers are recorded in the contract currency.
+        if (input.currency !== undefined) {
+          await tx.commission_rate.updateMany({ where: { contract_id: input.id }, data: { currency: input.currency } });
+          await tx.commission_bonus_tier.updateMany({ where: { contract_id: input.id }, data: { currency: input.currency } });
+        }
         // Exactly one default per university when this row is being set default.
         if (input.isDefault === true) {
           await tx.commission_contract.updateMany({
@@ -356,7 +405,7 @@ export const commissionRatesRouter = createTRPCRouter({
               data: {
                 contract_id: input.id,
                 course_id: null,
-                currency: null,
+                currency: input.currency ?? null,
                 ...rateData,
               },
             });
@@ -415,6 +464,9 @@ export const commissionRatesRouter = createTRPCRouter({
               isDefault: z.boolean(),
               effectiveDate: z.string().nullable(),
               notes: z.string().max(500).nullable(),
+              // Optional column: absent leaves an existing contract's currency
+              // as it is; a new one takes its vendor's.
+              currency: currency.nullable().optional(),
             }),
           )
           .min(1)
@@ -429,14 +481,17 @@ export const commissionRatesRouter = createTRPCRouter({
           for (const row of input.rows) {
             const existing = await tx.commission_contract.findFirst({
               where: { university_id: row.universityId, vendor_id: row.vendorId },
-              select: { id: true },
+              select: { id: true, currency: true, vendor: { select: { currency: true } } },
             });
             let contractId: number;
+            let ccy: string | null;
             if (existing) {
+              ccy = row.currency ?? contractCurrency(existing);
               await tx.commission_contract.update({
                 where: { id: existing.id },
                 data: {
                   cp_share_pct: row.cpSharePct,
+                  ...(row.currency ? { currency: row.currency } : {}),
                   effective_date: parseDate(row.effectiveDate),
                   notes: orNull(row.notes),
                 },
@@ -444,11 +499,17 @@ export const commissionRatesRouter = createTRPCRouter({
               contractId = existing.id;
               updated++;
             } else {
+              const vendor =
+                row.vendorId == null
+                  ? null
+                  : await tx.vendor.findUnique({ where: { id: row.vendorId }, select: { currency: true } });
+              ccy = row.currency ?? vendor?.currency ?? null;
               const c = await tx.commission_contract.create({
                 data: {
                   university_id: row.universityId,
                   vendor_id: row.vendorId,
                   cp_share_pct: row.cpSharePct,
+                  currency: ccy,
                   effective_date: parseDate(row.effectiveDate),
                   notes: orNull(row.notes),
                   is_default: 0,
@@ -466,7 +527,7 @@ export const commissionRatesRouter = createTRPCRouter({
               if (headline) {
                 await tx.commission_rate.update({
                   where: { id: headline.id },
-                  data: { commission_type: row.commissionType, rate: row.rate },
+                  data: { commission_type: row.commissionType, rate: row.rate, currency: ccy },
                 });
               } else {
                 await tx.commission_rate.create({
@@ -474,7 +535,7 @@ export const commissionRatesRouter = createTRPCRouter({
                     contract_id: contractId,
                     course_id: null,
                     level: null,
-                    currency: null,
+                    currency: ccy,
                     commission_type: row.commissionType,
                     rate: row.rate,
                   },
@@ -511,16 +572,21 @@ export const commissionRatesRouter = createTRPCRouter({
         level: z.number().int().min(0).max(255).nullable().optional(),
         commissionType: commissionType,
         rate: z.number().min(0),
-        currency: z.string().length(3).optional(),
       }),
     )
     .mutation(async ({ input }) => {
+      const contract = await db.commission_contract.findUnique({
+        where: { id: input.contractId },
+        select: { currency: true, vendor: { select: { currency: true } } },
+      });
+      if (!contract) throw new TRPCError({ code: "NOT_FOUND", message: "Contract not found." });
+      // A flat rate is in the contract currency.
       const data = {
         course_id: input.courseId,
         level: input.level ?? null,
         commission_type: input.commissionType,
         rate: input.rate,
-        currency: orNull(input.currency),
+        currency: contractCurrency(contract),
       };
       if (input.id) {
         await db.commission_rate.update({ where: { id: input.id }, data });
@@ -548,15 +614,19 @@ export const commissionRatesRouter = createTRPCRouter({
         minStudents: z.number().int().min(1).max(65535),
         maxStudents: z.number().int().min(1).max(65535).nullable().optional(),
         amountPerStudent: z.number().min(0),
-        currency: z.string().length(3).optional(),
       }),
     )
     .mutation(async ({ input }) => {
+      const contract = await db.commission_contract.findUnique({
+        where: { id: input.contractId },
+        select: { currency: true, vendor: { select: { currency: true } } },
+      });
+      if (!contract) throw new TRPCError({ code: "NOT_FOUND", message: "Contract not found." });
       const data = {
         min_students: input.minStudents,
         max_students: input.maxStudents ?? null,
         amount_per_student: input.amountPerStudent,
-        currency: orNull(input.currency),
+        currency: contractCurrency(contract),
       };
       if (input.id) {
         await db.commission_bonus_tier.update({ where: { id: input.id }, data });
@@ -576,23 +646,53 @@ export const commissionRatesRouter = createTRPCRouter({
     }),
 
   // ========================================================================
-  // Tranche templates (direct contracts; max 4 enforced here)
+  // Tranche templates — direct and vendor contracts alike (max 4). Each is a
+  // % of the commission or (FLAT deals) a fixed amount in the contract
+  // currency, with its condition (timing). A save that would take the
+  // schedule past 100% / the flat amount is refused; Approve commission
+  // refuses a schedule that doesn't add up exactly.
   // ========================================================================
   upsertTranche: financeManagerProcedure
     .input(
-      z.object({
-        id: z.number().int().positive().optional(),
-        contractId: z.number().int().positive(),
-        seq: z.number().int().min(1).max(4),
-        name: z.string().trim().min(1).max(100),
-        amount: z.number().min(0).nullable().optional(),
-        pct: z.number().min(0).max(100).nullable().optional(),
-        timing: z.string().max(150).optional(),
-      }),
+      z
+        .object({
+          id: z.number().int().positive().optional(),
+          contractId: z.number().int().positive(),
+          name: z.string().trim().min(1).max(100),
+          amount: z.number().positive().nullable().optional(),
+          pct: z.number().positive().max(100).nullable().optional(),
+          timing: z.string().max(150).optional(),
+        })
+        .refine((v) => (v.pct != null) !== (v.amount != null), {
+          message: "Enter either a percentage or an amount for the tranche.",
+          path: ["pct"],
+        }),
     )
     .mutation(async ({ input }) => {
+      const others = await db.commission_tranche_template.findMany({
+        where: { contract_id: input.contractId, ...(input.id ? { id: { not: input.id } } : {}) },
+        select: { seq: true, pct: true, amount: true },
+      });
+      if (!input.id && others.length >= 4) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "A contract can have at most 4 tranches.",
+        });
+      }
+      const headline = await headlineOf(input.contractId);
+      if (input.amount != null && headline?.commissionType !== CommissionType.FLAT) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This is a percentage deal, so each tranche must be a percentage of the commission.",
+        });
+      }
+      const schedule = [
+        ...others.map((t) => ({ pct: num(t.pct), amount: num(t.amount) })),
+        { pct: input.pct ?? null, amount: input.amount ?? null },
+      ];
+      const over = trancheOvershoot(schedule, headline?.commissionType ?? null, headline?.rate ?? null);
+      if (over) throw new TRPCError({ code: "BAD_REQUEST", message: over });
       const data = {
-        seq: input.seq,
         name: input.name,
         amount: input.amount ?? null,
         pct: input.pct ?? null,
@@ -605,17 +705,10 @@ export const commissionRatesRouter = createTRPCRouter({
         });
         return { id: input.id };
       }
-      const count = await db.commission_tranche_template.count({
-        where: { contract_id: input.contractId },
-      });
-      if (count >= 4) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "A contract can have at most 4 tranches.",
-        });
-      }
+      // Next free position (seqs can have gaps after a delete).
+      const seq = Math.max(0, ...others.map((t) => t.seq)) + 1;
       const t = await db.commission_tranche_template.create({
-        data: { contract_id: input.contractId, ...data },
+        data: { contract_id: input.contractId, seq, ...data },
       });
       return { id: t.id };
     }),
@@ -669,6 +762,7 @@ export const commissionRatesRouter = createTRPCRouter({
             cpSharePct: number | null;
             defaultRate: number | null;
             commissionType: number | null;
+            currency: string | null;
             effectiveDate: Date | null;
             hasBonus: boolean;
             hasTranches: boolean;
@@ -698,6 +792,7 @@ export const commissionRatesRouter = createTRPCRouter({
           cpSharePct: num(c.cp_share_pct),
           defaultRate: headline ? num(headline.rate) : null,
           commissionType: headline ? headline.commission_type : null,
+          currency: contractCurrency(c),
           effectiveDate: c.effective_date,
           hasBonus: c._count.commission_bonus_tier > 0,
           hasTranches: c._count.commission_tranche_template > 0,

@@ -9,6 +9,8 @@ import { api } from "~/trpc/react";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { UnsetSharesModal } from "./unset-shares-modal";
+import { CollectionsTab } from "./collections-tab";
+import { money } from "~/lib/currency";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
@@ -97,18 +99,25 @@ function NextStep({ next }: { next: Row["next"] }) {
   );
 }
 
-// Compact tranche pip bar — paid (blue) / collected-unpaid (green) / pending (grey).
+// Compact tranche pip bar — paid (blue) / collected-unpaid (green) / collected
+// awaiting approval (orange) / pending (grey).
 function TrancheBar({ t }: { t: Row["tranche"] }) {
-  if (t.total <= 1) return <span className="text-[#98A2B3]">—</span>;
+  if (t.total <= 1) {
+    return t.awaiting > 0 ? <span className="text-[11px] font-semibold text-[#B54708]">Awaiting approval</span> : <span className="text-[#98A2B3]">—</span>;
+  }
   return (
     <div>
       <div className="flex items-center gap-0.5">
         {Array.from({ length: t.total }, (_, i) => {
-          const cls = i < t.paid ? "bg-[#1570EF]" : i < t.collected ? "bg-[#12B76A]" : "bg-[#EAECF0]";
+          const cls =
+            i < t.paid ? "bg-[#1570EF]" : i < t.collected ? "bg-[#12B76A]" : i < t.collected + t.awaiting ? "bg-[#F79009]" : "bg-[#EAECF0]";
           return <span key={i} className={`h-1.5 w-4 rounded-full ${cls}`} />;
         })}
       </div>
-      <div className="mt-1 text-[10px] text-[#98A2B3]">{t.collected}/{t.total} collected{t.paid > 0 ? ` · ${t.paid} paid` : ""}</div>
+      <div className="mt-1 text-[10px] text-[#98A2B3]">
+        {t.collected}/{t.total} collected{t.paid > 0 ? ` · ${t.paid} paid` : ""}
+        {t.awaiting > 0 ? ` · ${t.awaiting} awaiting approval` : ""}
+      </div>
     </div>
   );
 }
@@ -139,14 +148,18 @@ export default function AdminCommissionsPage() {
   const sections = api.tabAccess.mine.useQuery().data?.sections;
   const canView = hasSection(sections, "commissions");
   const canEdit = role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_MANAGER;
+  // Collections (approve collection) are finance-only; a BDM's ledger view
+  // doesn't show them.
+  const isFinance = canEdit || role === AdminRole.FINANCE_EXECUTIVE;
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   // Tab and filters live in the URL, so a refresh keeps them (27 Oct testing).
   const [view, setView] = useUrlState({ tab: "commissions", status: "", partner: "", intake: "", country: "", fy: "", q: "" });
-  const tab: "commissions" | "partners" = view.tab === "partners" ? "partners" : "commissions";
-  const setTab = (t: "commissions" | "partners") => setView({ tab: t });
+  const tab: "commissions" | "partners" | "collections" =
+    view.tab === "partners" ? "partners" : view.tab === "collections" && isFinance ? "collections" : "commissions";
+  const setTab = (t: "commissions" | "partners" | "collections") => setView({ tab: t });
   const statusF = view.status === "" ? null : Number(view.status);
   const setStatusF = (v: number | null | ((c: number | null) => number | null)) =>
     setView({ status: String((typeof v === "function" ? v(statusF) : v) ?? "") });
@@ -224,10 +237,10 @@ export default function AdminCommissionsPage() {
   const exportCsv = () => {
     const src = selectedRows.length > 0 ? selectedRows : filtered;
     if (src.length === 0) { showToast("Nothing to export."); return; }
-    const header = ["CP Student ID", "Student", "Partner", "University", "Country", "Program", "Intake", "Vendor", "Currency", "Tuition", "Rate %", "Commission", "INR Value", "Partner Share %", "Partner Share (INR)", "Status", "Tranches Collected", "Tranches Paid", "Vendor Invoice", "Partner Invoice"];
+    const header = ["CP Student ID", "University Student ID", "Student", "Partner", "University", "Country", "Program", "Intake", "Vendor", "Tuition Currency", "Tuition", "Rate %", "Commission Currency", "Commission", "INR Value", "CP Share %", "Partner Share %", "Partner Share (INR)", "Status", "Tranches Collected", "Tranches Paid", "Vendor Invoice", "Partner Invoice"];
     const body = src.map((r) => [
-      r.cpStudentId, r.studentName, r.partner, r.university, r.country, r.program, r.intake ?? "", r.vendorName,
-      r.currency, r.tuition, r.rate, r.commissionAmount, r.commissionInr, r.partnerSharePct ?? "Not set", r.partnerShareInr,
+      r.cpStudentId, r.universityStudentId ?? "", r.studentName, r.partner, r.university, r.country, r.program, r.intake ?? "", r.vendorName,
+      r.tuitionCurrency, r.tuition, r.isFlat ? "Flat" : r.rate, r.currency, r.commissionAmount, r.commissionInr, r.cpSharePct ?? "", r.partnerSharePct ?? "Not set", r.partnerShareInr,
       r.statusLabel ?? CommissionStatusLabel[r.status as CommissionStatus] ?? "", `${r.tranche.collected}/${r.tranche.total}`, `${r.tranche.paid}/${r.tranche.total}`,
       r.vendorInvoice?.number ?? "", r.partnerInvoice?.number ?? "",
     ]);
@@ -319,6 +332,9 @@ export default function AdminCommissionsPage() {
         {([
           { id: "commissions", label: "Commissions", count: filtered.length },
           { id: "partners", label: "By Partner", count: byPartner.length },
+          ...(isFinance
+            ? [{ id: "collections" as const, label: "Collections", count: rows.reduce((s, r) => s + r.tranche.awaiting, 0) }]
+            : []),
         ] as const).map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`-mb-px flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-semibold transition ${tab === t.id ? "border-[#1570EF] text-[#1570EF]" : "border-transparent text-[#667085] hover:text-[#344054]"}`}>
             {t.label}
@@ -327,7 +343,9 @@ export default function AdminCommissionsPage() {
         ))}
       </div>
 
-      {tab === "commissions" ? (
+      {tab === "collections" ? (
+        <CollectionsTab canApprove={canEdit} onToast={showToast} />
+      ) : tab === "commissions" ? (
         <DashboardCard title={`Commissions (${filtered.length})`} bodyClassName="p-0" headerRight={<Button variant="secondary" className="!h-9 !px-4 !text-[13px]" onClick={exportCsv}>Export CSV</Button>}>
           {listQ.isLoading ? (
             <SkeletonTable rows={6} cols={9} />
@@ -373,9 +391,12 @@ export default function AdminCommissionsPage() {
                       </td>
                       <td className={TD}>{r.university}<span className="block text-xs text-[#98A2B3]">{r.program}</span></td>
                       <td className={TD}>{countryName(r.country)}</td>
-                      <td className={TD}>{r.currency} {r.tuition.toLocaleString()}</td>
-                      <td className={TD}>{r.rate}%</td>
-                      <td className={`${TD} font-medium`}>{r.currency} {r.commissionAmount.toLocaleString()}</td>
+                      <td className={TD}>{money(r.tuition, r.tuitionCurrency)}</td>
+                      <td className={TD}>
+                        {r.isFlat ? "Flat" : `${r.rate}%`}
+                        {r.cpSharePct != null && <span className="block text-xs text-[#98A2B3]">CP share {r.cpSharePct}%</span>}
+                      </td>
+                      <td className={`${TD} font-medium`}>{money(r.commissionAmount, r.currency)}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>{inr(r.commissionInr)}</td>
                       <td className={TD}>
                         {r.partnerSharePct == null ? (
@@ -454,7 +475,7 @@ function PartnersTab({
                       <tr key={r.commissionId} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#FCFCFD]">
                         <td className={`${TD} cursor-pointer font-medium text-[#1570EF]`} onClick={() => onOpen(r)}>{r.studentName}<span className="block text-xs font-normal text-[#98A2B3]">{r.cpStudentId}</span></td>
                         <td className={TD}>{r.university}</td>
-                        <td className={TD}>{r.currency} {r.commissionAmount.toLocaleString()}</td>
+                        <td className={TD}>{money(r.commissionAmount, r.currency)}</td>
                         <td className={`${TD} font-semibold text-[#101828]`}>{inr(r.commissionInr)}</td>
                         <td className={TD}><StatusPill status={r.status} label={r.statusLabel} /></td>
                         <td className={`${TD} text-right`}><NextStep next={r.next} /></td>
@@ -474,6 +495,7 @@ function PartnersTab({
 // ---- per-tranche detail -----------------------------------------------------
 function trancheDisplay(t: TrancheRow): { label: string; pill: string; dot: string } {
   if (t.status === TrancheStatus.PAID) return { label: "Paid", pill: "bg-[#EFF8FF] text-[#1570EF]", dot: "bg-[#1570EF]" };
+  if (t.status === TrancheStatus.COLLECTED) return { label: "Collected, awaiting approval", pill: "bg-[#FFF6ED] text-[#B54708]", dot: "bg-[#F79009]" };
   if (t.status === TrancheStatus.RECEIVED) return t.claimed ? { label: "Invoiced", pill: "bg-[#FFF6ED] text-[#B54708]", dot: "bg-[#F79009]" } : { label: "Available to Claim", pill: "bg-[#ECFDF3] text-[#067647]", dot: "bg-[#12B76A]" };
   return { label: TrancheStatusLabel[t.status as TrancheStatus], pill: "bg-[#F2F4F7] text-[#667085]", dot: "bg-[#D0D5DD]" };
 }
@@ -505,9 +527,12 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-        <SummaryCard label="Tuition" value={`${row.currency} ${row.tuition.toLocaleString()}`} />
-        <SummaryCard label="Commission" value={`${row.currency} ${row.commissionAmount.toLocaleString()} (${row.rate}%)`} />
+        <SummaryCard label="Tuition" value={money(row.tuition, row.tuitionCurrency)} />
+        <SummaryCard label="Commission" value={`${money(row.commissionAmount, row.currency)} (${row.isFlat ? "Flat" : `${row.rate}%`})`} />
         <SummaryCard label="INR Value" value={inr(row.commissionInr)} />
+        {row.cpSharePct != null && (
+          <SummaryCard label="CP Share (vendor)" value={`${row.cpSharePct}% · ${money(row.cpReceivable, row.currency)}`} />
+        )}
         <SummaryCard label="Partner Share" value={row.partnerSharePct == null ? "Not set — not claimable" : `${row.partnerSharePct}%${row.partnerTier ? ` (${row.partnerTier})` : ""} · ${inr(row.partnerShareInr)}`} />
         <SummaryCard label="Available to Claim" value={row.claimableInr > 0 ? inr(row.claimableInr) : "—"} />
         <SummaryCard label="Financial Year" value={financialYearLabel(row.fy)} />
@@ -521,7 +546,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
             <ol className="space-y-3">
               {row.tranches.map((t) => {
                 const d = trancheDisplay(t);
-                const known = t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID;
+                const known = t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID || t.status === TrancheStatus.COLLECTED;
                 return (
                   <li key={t.seq} className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-2.5">
@@ -532,7 +557,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
                       </div>
                     </div>
                     <div className="shrink-0 text-right">
-                      {known ? <div className="text-sm font-semibold text-[#101828]">{inr(t.amountInr)}</div> : <><div className="text-sm font-medium text-[#98A2B3]">{row.currency} {t.plannedForeign.toLocaleString()}</div><div className="text-[10px] text-[#98A2B3]">planned</div></>}
+                      {known ? <div className="text-sm font-semibold text-[#101828]">{inr(t.amountInr)}</div> : <><div className="text-sm font-medium text-[#98A2B3]">{money(t.plannedForeign, row.currency)}</div><div className="text-[10px] text-[#98A2B3]">planned</div></>}
                     </div>
                   </li>
                 );

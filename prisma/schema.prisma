@@ -170,6 +170,9 @@ model commission {
   id                      Int                  @id @default(autoincrement())
   tuition_fee             Decimal              @db.Decimal(12, 2)
   currency                String               @db.Char(3)
+  // Course currency of tuition_fee; NULL = same as currency (a FLAT deal is
+  // stamped in the contract currency, which can differ).
+  tuition_currency        String?              @db.Char(3)
   commision_rate          Decimal              @db.Decimal(5, 2)
   commision_amount        Decimal              @db.Decimal(12, 2)
   partner_paid_at         DateTime?            @db.Timestamp(0)
@@ -354,6 +357,8 @@ model invoice {
   invoice_date          DateTime              @db.Date
   total_amount          Decimal               @db.Decimal(14, 2)
   currency              String                @db.Char(3)
+  // Paid out in this currency (bank account snapshot); NULL = INR.
+  payout_currency       String?               @db.Char(3)
   status                Int                   @default(0) @db.UnsignedTinyInt
   bank_details          String?               @db.VarChar(1000)
   notes                 String?               @db.VarChar(1000)
@@ -1051,6 +1056,8 @@ model vendor {
   contact_email       String?               @db.VarChar(255)
   contact_phone       String?               @db.VarChar(45)
   address             String?               @db.VarChar(255)
+  // Agreement currency; the vendor's contracts default to it.
+  currency            String?               @db.Char(3)
   is_active           Int                   @default(1) @db.TinyInt
   created_at          DateTime              @default(now()) @db.Timestamp(0)
   updated_at          DateTime              @default(now()) @db.Timestamp(0)
@@ -1067,6 +1074,8 @@ model commission_contract {
   university_id               Int
   vendor_id                   Int?
   cp_share_pct                Decimal?                      @db.Decimal(5, 2)
+  // Flat amounts are in this currency; NULL = the course's currency.
+  currency                    String?                       @db.Char(3)
   is_default                  Int                           @default(0) @db.TinyInt
   effective_date              DateTime?                     @db.Date
   notes                       String?                       @db.VarChar(500)
@@ -1145,6 +1154,8 @@ model commission_tranche {
   name          String?       @db.VarChar(100)
   amount        Decimal?      @db.Decimal(12, 2)
   amount_inr    Decimal?      @db.Decimal(14, 2)
+  // The collection that covers it (loose vendor_payment ref).
+  vendor_payment_id Int?
   status        Int           @default(0) @db.UnsignedTinyInt
   received_at   DateTime?     @db.Timestamp(0)
   disbursed_at  DateTime?     @db.Timestamp(0)
@@ -1155,6 +1166,7 @@ model commission_tranche {
 
   @@unique([commission_id, seq], map: "uq_commission_tranche_seq")
   @@index([commission_id], map: "fk_commission_tranche_commission_idx")
+  @@index([vendor_payment_id], map: "idx_commission_tranche_vendor_payment")
 }
 
 // INBOUND: CP's invoice TO a vendor/university. Bundles confirmed-attended
@@ -1215,6 +1227,7 @@ model vendor_payment {
   amount_inr            Decimal        @db.Decimal(14, 2)
   exchange_rate         Decimal        @db.Decimal(12, 4)
   amount_foreign        Decimal        @db.Decimal(14, 2)
+  amount_expected       Decimal?       @db.Decimal(14, 2)
   payment_date          DateTime       @db.Date
   payment_reference     String?        @db.VarChar(100)
   is_tranche            Int            @default(0) @db.TinyInt
@@ -1224,6 +1237,9 @@ model vendor_payment {
   notes                 String?        @db.VarChar(255)
   fy                    Int?           @db.SmallInt
   created_by_cp_user_id Int?
+  // Approve collection (loose cp_user ref).
+  approved_by_cp_user_id Int?
+  approved_at           DateTime?      @db.Timestamp(0)
   created_at            DateTime       @default(now()) @db.Timestamp(0)
   vendor_invoice        vendor_invoice @relation(fields: [vendor_invoice_id], references: [id], onDelete: Cascade, map: "fk_vendor_payment_invoice")
 
@@ -1241,6 +1257,8 @@ model partner_bank_account {
   payee_user_id            Int?
   // 0 Domestic (IFSC), 1 International (SWIFT).
   region                   Int              @default(0) @db.UnsignedTinyInt
+  // INR when domestic; an international account picks it.
+  payout_currency          String?          @db.Char(3)
   account_holder           String           @db.VarChar(150)
   account_number_enc       String?          @db.VarChar(1024)
   account_number_last4     String?          @db.Char(4)
@@ -1289,6 +1307,10 @@ model partner_payout {
   invoice_id                 Int                   @unique(map: "uq_partner_payout_invoice")
   bank_account_id            Int?
   amount_inr                 Decimal               @db.Decimal(14, 2)
+  // Foreign-currency payout, set at release.
+  currency                   String?               @db.Char(3)
+  amount_foreign             Decimal?              @db.Decimal(14, 2)
+  exchange_rate              Decimal?              @db.Decimal(12, 4)
   status                     Int                   @default(0) @db.UnsignedTinyInt
   ops_approved_by_cp_user_id Int?
   ops_approved_at            DateTime?             @db.Timestamp(0)

@@ -18,6 +18,11 @@ import {
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
 import { PAYEE_LABEL_SELECT, payeeData, payeeForApplication, payeeLabel } from "~/server/payee";
+import { trancheScheduleIssue } from "~/server/commission-schedule";
+import { FINANCE_CURRENCIES } from "~/lib/currency";
+import { createNotifications } from "~/server/notify";
+import { appUrl, commissionClaimableEmail } from "~/server/email";
+import { emailPartners, payeeRecipients } from "~/server/email/partners";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -27,10 +32,7 @@ const orNull = (v: string | null | undefined): string | null => {
   return t;
 };
 
-const BILLING_CURRENCIES = [
-  "USD", "GBP", "AUD", "CAD", "EUR", "INR", "NZD", "SGD",
-] as const;
-const currency = z.enum(BILLING_CURRENCIES);
+const currency = z.enum(FINANCE_CURRENCIES);
 const varianceReason = z
   .number()
   .int()
@@ -38,11 +40,16 @@ const varianceReason = z
 
 // Resolve the default contract + applicable rate for a (university, course).
 // course-specific rate wins over the university-wide rate (course_id null).
-// Returns the gross commission for the given tuition.
+// Also the contract's currency (falling back to its vendor's; null on older
+// contracts), its CP share and its tranche schedule.
 async function resolveDefaultRate(universityId: number, courseId: number) {
   const contract = await db.commission_contract.findFirst({
     where: { university_id: universityId, is_default: 1 },
-    include: { commission_rate: true, vendor: true },
+    include: {
+      commission_rate: true,
+      vendor: true,
+      commission_tranche_template: { orderBy: { seq: "asc" } },
+    },
   });
   if (!contract) return null;
   const courseRate = contract.commission_rate.find((r) => r.course_id === courseId);
@@ -60,8 +67,53 @@ async function resolveDefaultRate(universityId: number, courseId: number) {
     rate: num(rate.rate),
     // A course-specific rate overrides the university-wide one.
     isProgramSpecific: courseRate != null,
+    contractCurrency: contract.currency ?? contract.vendor?.currency ?? null,
+    // The vendor's pass-through to Collegepond (third-party deals); null on a
+    // direct contract = Collegepond gets the whole commission.
+    cpSharePct: contract.cp_share_pct == null ? null : num(contract.cp_share_pct),
+    templates: contract.commission_tranche_template.map((t) => ({
+      seq: t.seq,
+      name: t.name,
+      pct: t.pct == null ? null : num(t.pct),
+      amount: t.amount == null ? null : num(t.amount),
+    })),
   };
 }
+type ResolvedRate = NonNullable<Awaited<ReturnType<typeof resolveDefaultRate>>>;
+
+// The currency a commission is stamped in (decided 30 Oct 2026): a FLAT
+// amount is in the CONTRACT currency, so the commission is stamped in it —
+// even when the course is priced in another (e.g. a €2,000 flat fee on a
+// £-priced course is €2,000, never £2,000). A percentage is a share of the
+// tuition, so it stays in the course currency. Contracts made before
+// contracts had a currency fall back to the course currency (as before).
+function commissionCurrency(resolved: ResolvedRate, courseCurrency: string): string {
+  return resolved.commissionType === CommissionType.FLAT
+    ? (resolved.contractCurrency ?? courseCurrency)
+    : courseCurrency;
+}
+
+// The amount Collegepond actually earns on a commission: the gross, or on a
+// third-party deal the vendor's CP share of it. It's what CP bills the vendor.
+const cpReceivable = (gross: number, cpSharePct: number | null): number =>
+  cpSharePct == null ? gross : Math.round(gross * cpSharePct) / 100;
+
+// Split the gross into tranche slices as Approve commission stamps them.
+function trancheSlices(resolved: ResolvedRate, gross: number) {
+  return resolved.templates.length > 0
+    ? resolved.templates.map((t) => ({
+        seq: t.seq,
+        name: t.name,
+        amount:
+          t.pct != null
+            ? Math.round(gross * (t.pct / 100) * 100) / 100
+            : t.amount ?? gross,
+      }))
+    : [{ seq: 1, name: "Full commission", amount: gross }];
+}
+
+const staffName = (u: { first_name: string; last_name: string } | undefined, id: number | null) =>
+  id == null ? null : u ? `${u.first_name} ${u.last_name}`.trim() : `Staff #${id}`;
 
 // The deposit slip a partner (or Collegepond) uploads for an application once
 // the deposit is paid. A commission can't be approved until a counsellor has
@@ -105,10 +157,13 @@ function prismaCode(e: unknown): string | undefined {
   return typeof e === "object" && e !== null ? (e as { code?: string }).code : undefined;
 }
 
-// A tranche counts as collected once CP has received it (and stays so once
-// it's paid out to the partner).
+// A tranche counts as collected once Finance has recorded the vendor's
+// payment for it — awaiting approval (COLLECTED) or approved and claimable
+// (RECEIVED) — and stays so once it's paid out to the partner.
 const isCollected = (status: number) =>
-  status === TrancheStatus.RECEIVED || status === TrancheStatus.PAID;
+  status === TrancheStatus.COLLECTED ||
+  status === TrancheStatus.RECEIVED ||
+  status === TrancheStatus.PAID;
 
 // Gross commission for a tuition under a rate (percentage of tuition, or flat).
 function grossCommission(
@@ -160,6 +215,7 @@ export const universityBillingRouter = createTRPCRouter({
         const intake = [a.course.intake_month, a.course.intake_year]
           .filter(Boolean)
           .join(" ");
+        const isFlat = resolved?.commissionType === CommissionType.FLAT;
         return {
           applicationId: a.id,
           studentId: a.student.id,
@@ -174,6 +230,9 @@ export const universityBillingRouter = createTRPCRouter({
           tuition: num(a.course.tuition_fee),
           currency: a.course.currency,
           rate: resolved?.rate ?? null,
+          isFlat,
+          // What the commission will be stamped in (contract currency for flat).
+          commissionCurrency: resolved ? commissionCurrency(resolved, a.course.currency) : a.course.currency,
           vendorId: resolved?.vendorId ?? null,
           vendorName: resolved?.vendorName ?? "Direct",
           vendorType: resolved?.vendorType ?? null,
@@ -231,48 +290,37 @@ export const universityBillingRouter = createTRPCRouter({
       }
       const tuition = num(app.course.tuition_fee);
       const gross = resolved ? grossCommission(tuition, resolved.rate, resolved.commissionType) : null;
-      const templates = resolved
-        ? await db.commission_tranche_template.findMany({
-            where: { contract_id: resolved.contractId },
-            orderBy: { seq: "asc" },
-            select: { seq: true, name: true, pct: true, amount: true },
-          })
-        : [];
       // Same split confirmBilling materialises.
-      const tranches =
-        gross == null
-          ? []
-          : templates.length > 0
-            ? templates.map((t) => ({
-                seq: t.seq,
-                name: t.name,
-                amount:
-                  t.pct != null
-                    ? Math.round(gross * (num(t.pct) / 100) * 100) / 100
-                    : t.amount != null
-                      ? num(t.amount)
-                      : gross,
-              }))
-            : [{ seq: 1, name: "Full commission", amount: gross }];
+      const tranches = resolved && gross != null ? trancheSlices(resolved, gross) : [];
+      const cpGets = resolved && gross != null ? cpReceivable(gross, resolved.cpSharePct) : null;
       return {
         applicationId: app.id,
         studentId: app.student.id,
         studentName: `${app.student.first_name} ${app.student.last_name}`.trim(),
         university: app.course.university.name,
         program: app.course.name,
-        currency: app.course.currency,
+        // The commission's currency (contract currency on a flat deal) and
+        // the tuition's (the course's) — they differ on a cross-currency flat deal.
+        currency: resolved ? commissionCurrency(resolved, app.course.currency) : app.course.currency,
+        tuitionCurrency: app.course.currency,
         tuition,
         rate: resolved?.rate ?? null,
         isFlat: resolved?.commissionType === CommissionType.FLAT,
         rateType: resolved ? (resolved.isProgramSpecific ? "Program-specific" : "Unified") : null,
         gross,
+        cpSharePct: resolved?.cpSharePct ?? null,
+        cpReceivable: cpGets,
+        trancheIssue: resolved
+          ? trancheScheduleIssue(resolved.templates, resolved.commissionType, gross)
+          : null,
         vendorName: resolved?.vendorName ?? null,
         payee: payee
           ? { name: payeeName, type: payee.orgId != null ? ("agency" as const) : ("independent" as const) }
           : null,
         tier: share?.tier.name ?? null,
         sharePct: share?.sharePct ?? null,
-        partnerShare: share && gross != null ? Math.round(gross * share.sharePct) / 100 : null,
+        // The partner's share is of what Collegepond receives.
+        partnerShare: share && cpGets != null ? Math.round(cpGets * share.sharePct) / 100 : null,
         tranches,
         depositSlip: (await depositSlipStatuses([app.id])).get(app.id) ?? "missing",
       };
@@ -327,6 +375,15 @@ export const universityBillingRouter = createTRPCRouter({
           message: `Set a default commission rate for ${app.course.university.name} in Commission Rates first.`,
         });
       }
+      const tuition = num(app.course.tuition_fee);
+      const amount = grossCommission(tuition, resolved.rate, resolved.commissionType);
+      const scheduleIssue = trancheScheduleIssue(resolved.templates, resolved.commissionType, amount);
+      if (scheduleIssue) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `${app.course.university.name}'s tranche schedule doesn't add up: ${scheduleIssue} Fix it in Commission Rates first.`,
+        });
+      }
       const payee = await payeeForApplication(app);
       if (!payee) {
         throw new TRPCError({
@@ -343,14 +400,15 @@ export const universityBillingRouter = createTRPCRouter({
           message: "Partner Tiers aren't set up, so the partner's commission share can't be worked out. Ask a Super Admin to check Settings → Partner Tiers.",
         });
       }
-      const tuition = num(app.course.tuition_fee);
-      const amount = grossCommission(tuition, resolved.rate, resolved.commissionType);
       const created = await db.commission.create({
         data: {
           application_id: app.id,
           ...payeeData(payee),
           tuition_fee: tuition,
-          currency: app.course.currency,
+          currency: commissionCurrency(resolved, app.course.currency),
+          tuition_currency: app.course.currency,
+          // The contract's CP share (vendor pass-through), as a snapshot.
+          cp_share_pct: resolved.cpSharePct,
           // Flat deals store rate 0; the gross amount carries the value.
           commision_rate:
             resolved.commissionType === CommissionType.FLAT ? 0 : resolved.rate,
@@ -383,34 +441,15 @@ export const universityBillingRouter = createTRPCRouter({
       // Materialize tranche instances from the contract's tranche schedule so the
       // partner can claim each tranche as CP collects it (pay-as-collected). A
       // single-payment contract gets one 100% tranche so claimability is uniform.
-      const templates = await db.commission_tranche_template.findMany({
-        where: { contract_id: resolved.contractId },
-        orderBy: { seq: "asc" },
+      await db.commission_tranche.createMany({
+        data: trancheSlices(resolved, amount).map((t) => ({
+          commission_id: created.id,
+          seq: t.seq,
+          name: t.name,
+          amount: t.amount,
+          status: TrancheStatus.UPCOMING,
+        })),
       });
-      const trancheRows =
-        templates.length > 0
-          ? templates.map((t) => ({
-              commission_id: created.id,
-              seq: t.seq,
-              name: t.name,
-              amount:
-                t.pct != null
-                  ? Math.round(amount * (num(t.pct) / 100) * 100) / 100
-                  : t.amount != null
-                    ? num(t.amount)
-                    : amount,
-              status: TrancheStatus.UPCOMING,
-            }))
-          : [
-              {
-                commission_id: created.id,
-                seq: 1,
-                name: "Full commission",
-                amount,
-                status: TrancheStatus.UPCOMING,
-              },
-            ];
-      await db.commission_tranche.createMany({ data: trancheRows });
       return { commissionId: created.id };
     }),
 
@@ -471,10 +510,9 @@ export const universityBillingRouter = createTRPCRouter({
       // Tranche collection progress: how many of this commission's tranches CP has
       // already received from the vendor (RECEIVED or PAID), out of the total.
       const trancheTotal = c.commission_tranche.length;
-      const trancheCollected = c.commission_tranche.filter(
-        (t) =>
-          t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID,
-      ).length;
+      const trancheCollected = c.commission_tranche.filter((t) => isCollected(t.status)).length;
+      const gross = num(c.commision_amount);
+      const cpSharePct = c.cp_share_pct == null ? null : num(c.cp_share_pct);
       return {
         commissionId: c.id,
         vendorId: c.vendor_id,
@@ -489,9 +527,14 @@ export const universityBillingRouter = createTRPCRouter({
         program: c.application.course.name,
         ...payeeLabel(c),
         tuition: num(c.tuition_fee),
+        tuitionCurrency: c.tuition_currency ?? c.currency,
         currency: c.currency,
         rate: num(c.commision_rate),
-        calcAmount: num(c.commision_amount),
+        isFlat: num(c.commision_rate) === 0,
+        grossAmount: gross,
+        cpSharePct,
+        // What CP bills the vendor: its CP share of the gross.
+        calcAmount: cpReceivable(gross, cpSharePct),
         rateType: specificByUni.get(uniId)?.has(courseId)
           ? "Program-specific"
           : "Unified",
@@ -552,11 +595,12 @@ export const universityBillingRouter = createTRPCRouter({
         const c = byId.get(l.commissionId)!;
         const rate = num(c.commision_rate);
         // Percentage deals recompute from the entered tuition; flat deals keep
-        // the stored gross commission.
-        const calc =
+        // the stored gross commission. Either way CP bills its CP share of it.
+        const gross =
           rate > 0
             ? grossCommission(l.tuitionAmount, rate, CommissionType.PERCENTAGE)
             : num(c.commision_amount);
+        const calc = cpReceivable(gross, c.cp_share_pct == null ? null : num(c.cp_share_pct));
         const variance = Math.round((l.expectedAmount - calc) * 100) / 100;
         if (variance !== 0 && l.varianceReason === 0) {
           throw new TRPCError({
@@ -705,6 +749,8 @@ export const universityBillingRouter = createTRPCRouter({
           amountInr: num(p.amount_inr),
           exchangeRate: num(p.exchange_rate),
           amountForeign: num(p.amount_foreign),
+          amountExpected: p.amount_expected == null ? null : num(p.amount_expected),
+          approved: p.approved_at != null,
           reference: p.payment_reference,
           isTranche: p.is_tranche === 1,
           trancheNumber: p.tranche_number,
@@ -718,12 +764,15 @@ export const universityBillingRouter = createTRPCRouter({
 
   // Record money received from the vendor against an invoice. Collection is
   // tranche-aware (pay-as-collected): Finance says which tranche(s) the
-  // payment covers, and only those tranches become RECEIVED ("Available to
-  // Claim") on every student on the invoice. A final payment covers every
-  // tranche still outstanding. A payment that covers no tranche (part of a
-  // tranche) is recorded but unlocks nothing. The invoice is FULLY_PAID once
-  // every tranche on it is collected.
-  recordVendorPayment: financeManagerProcedure
+  // payment covers, and only those tranches become COLLECTED ("Collected,
+  // awaiting approval") on every student on the invoice. A final payment
+  // covers every tranche still outstanding. A payment that covers no tranche
+  // (part of a tranche) is recorded but unlocks nothing. The invoice is
+  // FULLY_PAID once every tranche on it is collected.
+  // Any finance role records it (a Finance Executive included); nothing is
+  // claimable until a Super Admin / Finance Manager approves the collection
+  // (approveCollections, 30 Oct 2026).
+  recordVendorPayment: financeProcedure
     .input(
       z.object({
         vendorInvoiceId: z.number().int().positive(),
@@ -795,7 +844,18 @@ export const universityBillingRouter = createTRPCRouter({
       const amountForeign =
         Math.round((input.amountInr / input.exchangeRate) * 100) / 100;
       const fy = financialYearOf(new Date(input.paymentDate));
-      const now = new Date();
+      // What the covered tranches were invoiced at (invoice currency): the
+      // "claimed" side of the collection record.
+      let expected = 0;
+      for (const it of items) {
+        const gross = num(it.commission.commision_amount);
+        for (const t of it.commission.commission_tranche) {
+          if (collectNow.has(t.id)) expected += num(it.expected_amount) * (gross > 0 ? num(t.amount) / gross : 1);
+        }
+        if (it.commission.commission_tranche.length === 0 && it.commission.collegepond_received_at == null && input.isFinal) {
+          expected += num(it.expected_amount);
+        }
+      }
 
       await db.$transaction(async (tx) => {
         const payment = await tx.vendor_payment.create({
@@ -804,6 +864,7 @@ export const universityBillingRouter = createTRPCRouter({
             amount_inr: input.amountInr,
             exchange_rate: input.exchangeRate,
             amount_foreign: amountForeign,
+            amount_expected: Math.round(expected * 100) / 100,
             payment_date: new Date(input.paymentDate),
             payment_reference: orNull(input.reference),
             // Shown as "<last tranche covered>/<tranches>" on the invoice.
@@ -824,38 +885,20 @@ export const universityBillingRouter = createTRPCRouter({
               : VendorInvoiceStatus.PARTIAL_PAYMENT,
           },
         });
-        // Each covered tranche becomes claimable; amount_inr is the tranche's
-        // slice of the line's expected amount at this payment's realised rate.
+        // Each covered tranche is collected, awaiting approval; amount_inr is
+        // the tranche's slice of the line's expected amount at this payment's
+        // realised rate. It becomes claimable (RECEIVED) on approval, which
+        // also stamps the commission-level "fully collected" milestone.
         for (const it of items) {
           const gross = num(it.commission.commision_amount);
-          let receivedInr = 0;
           for (const t of it.commission.commission_tranche) {
-            if (!collectNow.has(t.id)) {
-              receivedInr += num(t.amount_inr);
-              continue;
-            }
+            if (!collectNow.has(t.id)) continue;
             const fraction = gross > 0 ? num(t.amount) / gross : 1;
             const amountInr =
               Math.round(num(it.expected_amount) * fraction * input.exchangeRate * 100) / 100;
-            receivedInr += amountInr;
             await tx.commission_tranche.update({
               where: { id: t.id },
-              data: { status: TrancheStatus.RECEIVED, received_at: now, amount_inr: amountInr },
-            });
-          }
-          // The commission-level "fully collected" stamp + full claimable_inr
-          // (reporting and pre-tranche rows), once its last tranche is in.
-          if (it.commission.collegepond_received_at == null && fullyCollected(it)) {
-            const tranched = it.commission.commission_tranche.length > 0;
-            await tx.commission.update({
-              where: { id: it.commission_id },
-              data: {
-                collegepond_received_at: now,
-                received_fx_rate: input.exchangeRate,
-                claimable_inr: tranched
-                  ? Math.round(receivedInr * 100) / 100
-                  : Math.round(num(it.expected_amount) * input.exchangeRate * 100) / 100,
-              },
+              data: { status: TrancheStatus.COLLECTED, amount_inr: amountInr, vendor_payment_id: payment.id },
             });
           }
         }
@@ -882,6 +925,255 @@ export const universityBillingRouter = createTRPCRouter({
         collectedTranches: collectNow.size,
         fullyPaid: invoiceDone,
       };
+    }),
+
+  // ========================================================================
+  // Collections — every recorded vendor payment as a collection record, for
+  // Commission Ledger > Collections: awaiting approval first, then approved.
+  // ========================================================================
+  collections: financeProcedure.query(async () => {
+    const payments = await db.vendor_payment.findMany({
+      orderBy: { created_at: "desc" },
+      take: 300,
+      include: {
+        vendor_invoice: {
+          select: {
+            id: true,
+            invoice_number: true,
+            currency: true,
+            vendor: { select: { name: true } },
+          },
+        },
+      },
+    });
+    const ids = payments.map((p) => p.id);
+    const tranches =
+      ids.length === 0
+        ? []
+        : await db.commission_tranche.findMany({
+            where: { vendor_payment_id: { in: ids } },
+            orderBy: [{ commission_id: "asc" }, { seq: "asc" }],
+            select: {
+              vendor_payment_id: true,
+              seq: true,
+              name: true,
+              status: true,
+              amount: true,
+              amount_inr: true,
+              commission: {
+                select: {
+                  id: true,
+                  commision_amount: true,
+                  ...PAYEE_LABEL_SELECT,
+                  vendor_invoice_item: { select: { expected_amount: true } },
+                  application: {
+                    select: {
+                      university_app_id: true,
+                      student: { select: { id: true, first_name: true, last_name: true } },
+                      course: { select: { name: true, university: { select: { name: true } } } },
+                    },
+                  },
+                },
+              },
+            },
+          });
+    const staffIds = Array.from(
+      new Set(
+        payments
+          .flatMap((p) => [p.created_by_cp_user_id, p.approved_by_cp_user_id])
+          .filter((x): x is number => x != null),
+      ),
+    );
+    const staff = new Map(
+      (staffIds.length > 0
+        ? await db.collegepond_user.findMany({
+            where: { id: { in: staffIds } },
+            select: { id: true, first_name: true, last_name: true },
+          })
+        : []
+      ).map((u) => [u.id, u]),
+    );
+    // Awaiting approval first, newest first within each group.
+    payments.sort((a, b) => Number(a.approved_at != null) - Number(b.approved_at != null));
+    return payments.map((p) => {
+      const lines = tranches
+        .filter((t) => t.vendor_payment_id === p.id)
+        .map((t) => {
+          const c = t.commission;
+          const gross = num(c.commision_amount);
+          const expectedLine = num(c.vendor_invoice_item?.expected_amount ?? null);
+          return {
+            commissionId: c.id,
+            studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
+            cpStudentId: `CP-${String(c.application.student.id).padStart(5, "0")}`,
+            universityStudentId: c.application.university_app_id,
+            university: c.application.course.university.name,
+            program: c.application.course.name,
+            ...payeeLabel(c),
+            tranche: t.name ?? `Tranche ${t.seq}`,
+            trancheStatus: t.status,
+            // This tranche's slice of the line's invoiced amount (invoice currency).
+            expected: Math.round(expectedLine * (gross > 0 ? num(t.amount) / gross : 1) * 100) / 100,
+            amountInr: num(t.amount_inr),
+          };
+        });
+      const pending = p.approved_at == null;
+      return {
+        id: p.id,
+        vendorInvoiceId: p.vendor_invoice.id,
+        invoiceNumber: p.vendor_invoice.invoice_number,
+        vendorName: p.vendor_invoice.vendor?.name ?? "Direct",
+        currency: p.vendor_invoice.currency,
+        // Claimed (invoiced) vs received, in the invoice currency.
+        amountExpected: p.amount_expected == null ? null : num(p.amount_expected),
+        amountReceived: num(p.amount_foreign),
+        exchangeRate: num(p.exchange_rate),
+        amountInr: num(p.amount_inr),
+        paymentDate: p.payment_date,
+        reference: p.payment_reference,
+        notes: p.notes,
+        isFinal: p.is_final === 1,
+        recordedBy: staffName(staff.get(p.created_by_cp_user_id ?? -1), p.created_by_cp_user_id),
+        recordedAt: p.created_at,
+        approvedBy: staffName(staff.get(p.approved_by_cp_user_id ?? -1), p.approved_by_cp_user_id),
+        approvedAt: p.approved_at,
+        pending,
+        lines,
+      };
+    });
+  }),
+
+  // Approve collections (bulk). Their tranches become RECEIVED — claimable —
+  // and the partners are told (in-app + email). A commission whose last
+  // tranche is now in gets its "fully collected" stamp. Super Admin / Finance
+  // Manager only: a Finance Executive records, a manager approves.
+  approveCollections: financeManagerProcedure
+    .input(z.object({ paymentIds: z.array(z.number().int().positive()).min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const payments = await db.vendor_payment.findMany({
+        where: { id: { in: input.paymentIds }, approved_at: null },
+        select: { id: true, exchange_rate: true, is_final: true, vendor_invoice_id: true },
+      });
+      if (payments.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Those collections are already approved." });
+      }
+      const now = new Date();
+      // Partner notifications, per payee: the students now claimable.
+      const claimable = new Map<string, { orgId: number | null; userId: number | null; lines: string[] }>();
+      let tranchesReleased = 0;
+      for (const p of payments) {
+        await db.$transaction(async (tx) => {
+          const res = await tx.vendor_payment.updateMany({
+            where: { id: p.id, approved_at: null },
+            data: { approved_at: now, approved_by_cp_user_id: ctx.cpUser.id },
+          });
+          if (res.count === 0) return; // approved meanwhile
+          const covered = await tx.commission_tranche.findMany({
+            where: { vendor_payment_id: p.id, status: TrancheStatus.COLLECTED },
+            select: { id: true, commission_id: true },
+          });
+          await tx.commission_tranche.updateMany({
+            where: { id: { in: covered.map((t) => t.id) } },
+            data: { status: TrancheStatus.RECEIVED, received_at: now },
+          });
+          tranchesReleased += covered.length;
+          const commissionIds = Array.from(new Set(covered.map((t) => t.commission_id)));
+          // A final payment also settles pre-tranche commissions on its invoice.
+          const legacy = p.is_final
+            ? await tx.vendor_invoice_item.findMany({
+                where: {
+                  vendor_invoice_id: p.vendor_invoice_id,
+                  commission: { collegepond_received_at: null, commission_tranche: { none: {} } },
+                },
+                select: { commission_id: true, expected_amount: true },
+              })
+            : [];
+          for (const l of legacy) {
+            await tx.commission.update({
+              where: { id: l.commission_id },
+              data: {
+                collegepond_received_at: now,
+                received_fx_rate: p.exchange_rate,
+                claimable_inr: Math.round(num(l.expected_amount) * num(p.exchange_rate) * 100) / 100,
+              },
+            });
+          }
+          const comms = await tx.commission.findMany({
+            where: { id: { in: [...commissionIds, ...legacy.map((l) => l.commission_id)] } },
+            select: {
+              id: true,
+              org_id: true,
+              payee_user_id: true,
+              collegepond_received_at: true,
+              commission_tranche: { select: { status: true, amount_inr: true, vendor_payment_id: true, name: true } },
+              application: { select: { student: { select: { first_name: true, last_name: true } } } },
+            },
+          });
+          for (const c of comms) {
+            const ts = c.commission_tranche;
+            // The commission-level "fully collected" stamp + full claimable_inr
+            // (reporting), once its last tranche is approved.
+            if (
+              c.collegepond_received_at == null &&
+              ts.length > 0 &&
+              ts.every((t) => t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID)
+            ) {
+              await tx.commission.update({
+                where: { id: c.id },
+                data: {
+                  collegepond_received_at: now,
+                  received_fx_rate: p.exchange_rate,
+                  claimable_inr: Math.round(ts.reduce((s, t) => s + num(t.amount_inr), 0) * 100) / 100,
+                },
+              });
+            }
+            const key = `${c.org_id ?? ""}:${c.payee_user_id ?? ""}`;
+            const entry = claimable.get(key) ?? { orgId: c.org_id, userId: c.payee_user_id, lines: [] };
+            const names = ts.filter((t) => t.vendor_payment_id === p.id).map((t) => t.name).filter(Boolean);
+            entry.lines.push(
+              `${`${c.application.student.first_name} ${c.application.student.last_name}`.trim()}${names.length ? ` — ${names.join(", ")}` : ""}`,
+            );
+            claimable.set(key, entry);
+          }
+          await tx.audit_log.create({
+            data: {
+              action: "vendor_payment.collection_approved",
+              entity_type: "vendor_payment",
+              entity_id: p.id,
+              metadata: {
+                byCpUserId: ctx.cpUser.id,
+                vendorInvoiceId: p.vendor_invoice_id,
+                releasedTrancheIds: covered.map((t) => t.id),
+                legacyCommissionIds: legacy.map((l) => l.commission_id),
+              },
+            },
+          });
+        });
+      }
+      // Tell each partner what they can claim now (fire-and-forget; saved).
+      for (const e of claimable.values()) {
+        void payeeRecipients({ orgId: e.orgId, userId: e.userId })
+          .then(async (rs) => {
+            await createNotifications(
+              rs.map((r) => r.id),
+              {
+                type: "commission.claimable",
+                title: e.lines.length === 1 ? "Commission ready to claim" : `${e.lines.length} commissions ready to claim`,
+                body: e.lines.slice(0, 3).join("; ") + (e.lines.length > 3 ? "…" : ""),
+                link: "/partner/commission",
+                tone: "green",
+              },
+            );
+            await emailPartners(
+              rs,
+              (r) => commissionClaimableEmail(r, { students: e.lines }, appUrl()),
+              "commission-claimable",
+              "fin.commission",
+            );
+          })
+          .catch((err) => console.error("[notify] commission-claimable failed:", err));
+      }
+      return { approved: payments.length, tranches: tranchesReleased };
     }),
 
   // Ageing — unpaid (SENT/PARTIAL) invoices bucketed by days overdue.

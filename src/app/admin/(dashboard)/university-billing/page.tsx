@@ -29,6 +29,7 @@ import {
   financialYearLabel,
   toINR,
 } from "~/server/db/enums";
+import { FINANCE_CURRENCIES, money as fmtMoney } from "~/lib/currency";
 
 type RO = inferRouterOutputs<AppRouter>;
 type BillingStudent = RO["universityBilling"]["vendorBillingStudents"][number];
@@ -38,12 +39,11 @@ type Invoice = RO["universityBilling"]["listVendorInvoices"][number];
 type DepositSlip = ConfirmedStudent["depositSlip"];
 type AgeingRow = RO["universityBilling"]["ageing"]["rows"][number];
 
-const BILLING_CURRENCIES = ["USD", "GBP", "AUD", "CAD", "EUR", "INR", "NZD", "SGD"];
-
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
 const TD = "px-3.5 py-3 text-sm text-[#344054]";
-const money = (n: number, ccy?: string) =>
-  `${ccy ? ccy + " " : ""}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// "€1,234.50" — with the currency's symbol (30 Oct 2026: no bare codes / "$").
+const money = (n: number, ccy?: string | null) =>
+  ccy ? fmtMoney(n, ccy) : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const todayInput = () => new Date().toISOString().slice(0, 10);
 const plusDaysInput = (d: number) =>
   new Date(Date.now() + d * 86_400_000).toISOString().slice(0, 10);
@@ -299,12 +299,12 @@ function UniversityBilling() {
     setFocusInvoiceId(inv.id);
     if (inv.status === VendorInvoiceStatus.FULLY_PAID && !inv.hasUncollected) {
       toast(`Invoice ${inv.invoiceNumber} is already fully paid.`);
-    } else if (!canEdit) {
-      toast("Only Finance Managers and Super Admins can record a payment.");
+    } else if (!canView) {
+      toast("Only the finance team can record a payment.");
     } else {
       setModal({ kind: "recordPayment", invoice: inv });
     }
-  }, [mounted, deepLinkId, invoicesQ.data, canEdit, router]);
+  }, [mounted, deepLinkId, invoicesQ.data, canView, router]);
 
   if (!mounted || meQ.isLoading) {
     return (
@@ -379,6 +379,7 @@ function UniversityBilling() {
       {tab === "billing" && (
         <VendorBillingTab
           canEdit={canEdit}
+          canRecord={canView}
           focusInvoiceId={focusInvoiceId}
           onOpenCreateInvoice={(vendorId, vendorName, students) => setModal({ kind: "createInvoice", vendorId, vendorName, students })}
           onOpenRecordPayment={(invoice) => setModal({ kind: "recordPayment", invoice })}
@@ -597,7 +598,9 @@ function ApproveCommissionModal({
           ? "This student isn't linked to an agency or an independent counsellor."
           : p.sharePct == null
             ? "Partner Tiers aren't set up, so the partner's share can't be worked out."
-            : null;
+            : p.trancheIssue
+              ? `This university's tranche schedule doesn't add up: ${p.trancheIssue} Fix it in Commission Rates first.`
+              : null;
   return (
     <Modal
       open
@@ -627,11 +630,21 @@ function ApproveCommissionModal({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-[#F9FAFB] px-3.5 py-3 sm:grid-cols-3">
-            <ReviewField label="Tuition">{money(p.tuition, p.currency)}</ReviewField>
+            <ReviewField label="Tuition">{money(p.tuition, p.tuitionCurrency)}</ReviewField>
             <ReviewField label="Rate" sub={p.rateType}>
               {p.rate == null ? "—" : p.isFlat ? `Flat ${money(p.rate, p.currency)}` : `${p.rate}%`}
             </ReviewField>
-            <ReviewField label="Gross commission">{p.gross == null ? "—" : money(p.gross, p.currency)}</ReviewField>
+            <ReviewField
+              label="Gross commission"
+              sub={p.isFlat && p.currency !== p.tuitionCurrency ? `In the contract currency (${p.currency})` : null}
+            >
+              {p.gross == null ? "—" : money(p.gross, p.currency)}
+            </ReviewField>
+            {p.cpSharePct != null && (
+              <ReviewField label="CP share (vendor)" sub={p.cpReceivable != null ? `${money(p.cpReceivable, p.currency)} to Collegepond` : null}>
+                {p.cpSharePct}%
+              </ReviewField>
+            )}
             <ReviewField
               label="Payee"
               sub={p.payee ? (p.payee.type === "agency" ? "Agency" : "Independent counsellor") : null}
@@ -699,13 +712,18 @@ function ReviewField({
 // =============================================================================
 type VbFilter = "total" | "not-invoiced" | "outstanding" | "paid" | null;
 
+// canRecord: any finance role records a vendor payment (a Finance Executive
+// too); a Super Admin / Finance Manager approves the collection in the
+// Commission Ledger before anything is claimable.
 function VendorBillingTab({
   canEdit,
+  canRecord,
   focusInvoiceId,
   onOpenCreateInvoice,
   onOpenRecordPayment,
 }: {
   canEdit: boolean;
+  canRecord: boolean;
   focusInvoiceId: number | null;
   onOpenCreateInvoice: (vendorId: number | null, vendorName: string, students: BillingStudent[]) => void;
   onOpenRecordPayment: (invoice: Invoice) => void;
@@ -798,7 +816,7 @@ function VendorBillingTab({
         />
       ) : (
         <InvoicesView
-          canEdit={canEdit}
+          canEdit={canRecord}
           invoices={invoices}
           loading={invoicesQ.isLoading}
           filter={filter}
@@ -933,8 +951,11 @@ function BillingStudentsView({
                           </td>
                           <td className={TD}>{st.universityStudentId ?? <span className="text-[#98A2B3] italic">Not entered</span>}</td>
                           <td className={TD}>{st.program}</td>
-                          <td className={TD}>{money(st.tuition, st.currency)}</td>
-                          <td className={TD}>{st.rate > 0 ? `${st.rate}%` : money(st.calcAmount, st.currency)}</td>
+                          <td className={TD}>{money(st.tuition, st.tuitionCurrency)}</td>
+                          <td className={TD}>
+                            {st.isFlat ? `Flat ${money(st.grossAmount, st.currency)}` : `${st.rate}%`}
+                            {st.cpSharePct != null && <span className="block text-xs text-[#98A2B3]">CP share {st.cpSharePct}%</span>}
+                          </td>
                           <td className={`${TD} font-semibold text-[#101828]`}>{money(st.calcAmount, st.currency)}</td>
                           <td className={TD}>
                             <span className={`rounded-[10px] px-2 py-0.5 text-[11px] font-semibold ${st.rateType === "Program-specific" ? "bg-[#F9F5FF] text-[#7F56D9]" : "bg-[#F2F4F7] text-[#667085]"}`}>
@@ -1071,7 +1092,7 @@ function InvoicesView({
               <span className="text-sm text-[#344054]">{inv.vendorName}</span>
               <span className="text-sm text-[#344054]">{invUniversity(inv)}</span>
               <span className="text-sm text-[#344054]">{inv.items.length}</span>
-              <span className="text-sm font-semibold text-[#101828]">{money(inv.totalExpected)}</span>
+              <span className="text-sm font-semibold text-[#101828]">{money(inv.totalExpected, inv.currency)}</span>
               <span className="text-sm text-[#344054]">{inv.currency}</span>
               <span><InvoiceStatusPill status={inv.status} /></span>
               <span className="text-xs text-[#98A2B3]">{formatDate(inv.invoiceDate)}</span>
@@ -1148,6 +1169,7 @@ function InvoicesView({
                             <th className={TH}>Reference</th>
                             <th className={TH}>Tranche</th>
                             <th className={TH}>Final?</th>
+                            <th className={TH}>Collection</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1160,12 +1182,21 @@ function InvoicesView({
                               <td className={TD}>{p.reference ?? "—"}</td>
                               <td className={TD}>{p.isTranche ? `${p.trancheNumber}/${p.totalTranches}` : "—"}</td>
                               <td className={TD}>{p.isFinal ? "✓" : "—"}</td>
+                              <td className={TD}>
+                                {p.approved ? (
+                                  <span className="rounded-[10px] bg-[#ECFDF3] px-2 py-0.5 text-[11px] font-semibold text-[#067647]">Approved</span>
+                                ) : (
+                                  <Link href="/admin/commissions?tab=collections" className="rounded-[10px] bg-[#FFF6ED] px-2 py-0.5 text-[11px] font-semibold text-[#B54708] hover:underline">
+                                    Awaiting approval
+                                  </Link>
+                                )}
+                              </td>
                             </tr>
                           ))}
                           <tr className="bg-[#F9FAFB] font-semibold text-[#101828]">
                             <td className={TD}>Total Paid</td>
                             <td className={TD}>₹{inv.paidInr.toLocaleString()}</td>
-                            <td className={TD} colSpan={5}>
+                            <td className={TD} colSpan={6}>
                               <span className="text-[#667085]">Remaining: </span>{money(remaining, inv.currency)}
                             </td>
                           </tr>
@@ -1320,7 +1351,10 @@ type Line = {
   university: string;
   program: string;
   rate: number;
+  cpSharePct: number | null;
   storedCalc: number;
+  tuitionCurrency: string;
+  commissionCurrency: string;
   tuition: string;
   expected: string;
   reason: number;
@@ -1350,7 +1384,10 @@ function CreateInvoiceModal({
       university: st.university,
       program: st.program,
       rate: st.rate,
+      cpSharePct: st.cpSharePct,
       storedCalc: st.calcAmount,
+      tuitionCurrency: st.tuitionCurrency,
+      commissionCurrency: st.currency,
       tuition: String(st.tuition),
       expected: String(st.calcAmount),
       reason: VarianceReason.NONE,
@@ -1375,11 +1412,17 @@ function CreateInvoiceModal({
     onError: (e) => setErr(e.message),
   });
 
+  // Same as the server: % of the entered tuition (flat: the stored amount),
+  // then the vendor's CP share of it — what Collegepond bills.
   const calcFor = (l: Line) => {
     const t = Number(l.tuition);
-    if (l.rate > 0) return Math.round(((t * l.rate) / 100) * 100) / 100;
-    return l.storedCalc;
+    if (l.rate <= 0) return l.storedCalc;
+    const gross = Math.round(((t * l.rate) / 100) * 100) / 100;
+    return l.cpSharePct == null ? gross : Math.round(gross * l.cpSharePct) / 100;
   };
+  // Lines whose commission isn't in the invoice currency: the calculated
+  // amount is in the commission's currency, so expected needs converting.
+  const otherCurrency = lines.filter((l) => l.commissionCurrency !== currency);
   const varianceFor = (l: Line) => Math.round((Number(l.expected) - calcFor(l)) * 100) / 100;
   const totalExpected = lines.reduce((sum, l) => sum + (Number(l.expected) || 0), 0);
 
@@ -1399,7 +1442,7 @@ function CreateInvoiceModal({
     create.mutate({
       vendorId,
       invoiceNumber: invoiceNumber.trim(),
-      currency: currency as "USD",
+      currency: currency as (typeof FINANCE_CURRENCIES)[number],
       invoiceDate,
       dueDate: dueDate || undefined,
       notes: notes || undefined,
@@ -1462,15 +1505,19 @@ function CreateInvoiceModal({
                   </td>
                   <td className={TD}>{l.university}</td>
                   <td className={TD}>{l.program}</td>
-                  <td className={TD}>{l.rate > 0 ? `${l.rate}%` : "Flat"}</td>
+                  <td className={TD}>
+                    {l.rate > 0 ? `${l.rate}%` : "Flat"}
+                    {l.cpSharePct != null && <span className="block text-xs text-[#98A2B3]">× CP {l.cpSharePct}%</span>}
+                  </td>
                   <td className={TD}>
                     <input type="number" value={l.tuition} onChange={(e) => setLine(i, { tuition: e.target.value })} className="h-9 w-24 rounded-md border border-[#D0D5DD] px-2 text-sm outline-none focus:border-[#1570EF]" />
+                    <span className="block text-xs text-[#98A2B3]">{l.tuitionCurrency}</span>
                   </td>
-                  <td className={`${TD} font-semibold text-[#067647]`}>{money(calcFor(l))}</td>
+                  <td className={`${TD} font-semibold text-[#067647]`}>{money(calcFor(l), l.commissionCurrency)}</td>
                   <td className={TD}>
                     <input type="number" value={l.expected} onChange={(e) => setLine(i, { expected: e.target.value })} className="h-9 w-24 rounded-md border border-[#D0D5DD] px-2 text-sm outline-none focus:border-[#1570EF]" />
                   </td>
-                  <td className={`${TD} ${v < 0 ? "text-[#B42318]" : v > 0 ? "text-[#067647]" : ""}`}>{v > 0 ? "+" : ""}{money(v)}</td>
+                  <td className={`${TD} ${v < 0 ? "text-[#B42318]" : v > 0 ? "text-[#067647]" : ""}`}>{v > 0 ? "+" : ""}{money(v, currency)}</td>
                   <td className={TD}>
                     {v === 0 ? (
                       <span className="text-[#98A2B3]">—</span>
@@ -1495,10 +1542,16 @@ function CreateInvoiceModal({
       </div>
 
       <div className="text-right text-sm font-semibold text-[#101828]">Total Expected Amount: {money(totalExpected, currency)}</div>
+      {otherCurrency.length > 0 && (
+        <p className="rounded-md bg-[#FFFAEB] px-3 py-2 text-xs font-medium text-[#B54708]">
+          ⚠ {otherCurrency.map((l) => `${l.student} (${l.commissionCurrency})`).join(", ")}{" "}
+          {otherCurrency.length === 1 ? "has" : "have"} a commission in another currency than this {currency} invoice. Enter the expected amount in {currency} and pick a variance reason.
+        </p>
+      )}
 
       <div className="flex gap-3">
         <FormInput label="Invoice Number" required value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder={`INV-${new Date().getFullYear()}-001`} />
-        <FormSelect label="Currency" options={BILLING_CURRENCIES.map((c) => ({ value: c, label: c }))} value={currency} onChange={(e) => setCurrency(e.target.value)} />
+        <FormSelect label="Currency" options={FINANCE_CURRENCIES.map((c) => ({ value: c, label: c }))} value={currency} onChange={(e) => setCurrency(e.target.value)} />
       </div>
       <div className="flex gap-3">
         <FormInput label="Invoice Date" type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
@@ -1515,9 +1568,10 @@ function CreateInvoiceModal({
 // =============================================================================
 // Collection is tranche-aware: Finance ticks the tranche(s) this payment
 // completes (default: the next one still outstanding). Only ticked tranches
-// become claimable; a payment that completes none is recorded as a
-// part-payment and unlocks nothing. "Final payment" collects every tranche
-// still outstanding.
+// are collected — "awaiting approval" until a Super Admin / Finance Manager
+// approves the collection, then claimable; a payment that completes none is
+// recorded as a part-payment and unlocks nothing. "Final payment" collects
+// every tranche still outstanding.
 function RecordPaymentModal({
   invoice,
   onClose,
@@ -1554,11 +1608,9 @@ function RecordPaymentModal({
       // The ledger's stage + next step change with collection.
       void utils.commissions.invalidate();
       onToast(
-        r.fullyPaid
-          ? "Payment recorded — invoice fully paid, every tranche claimable"
-          : r.collectedTranches > 0
-            ? "Payment recorded — the covered tranche is now claimable"
-            : "Part-payment recorded — nothing becomes claimable until a tranche is complete",
+        r.collectedTranches > 0
+          ? `Payment recorded — ${r.fullyPaid ? "invoice fully paid; " : ""}the covered tranche${r.collectedTranches === 1 ? " is" : "s are"} awaiting approval in Commission Ledger › Collections`
+          : "Part-payment recorded — nothing becomes claimable until a tranche is complete",
       );
       onClose();
     },
@@ -1667,9 +1719,9 @@ function RecordPaymentModal({
       </label>
       <p className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#475467]">
         {covered.length > 0
-          ? `${covered.map((t) => t.name ?? `Tranche ${t.seq}`).join(", ")} becomes claimable by the partner${completesInvoice ? " and the invoice is marked fully paid" : ""}.`
+          ? `${covered.map((t) => t.name ?? `Tranche ${t.seq}`).join(", ")} is marked collected${completesInvoice ? " and the invoice fully paid" : ""}. The partner can claim once a Finance Manager approves the collection.`
           : isFinal
-            ? "The invoice is marked fully paid and the partner can claim."
+            ? "The invoice is marked fully paid. The partner can claim once a Finance Manager approves the collection."
             : "No tranche ticked: the money is recorded as a part-payment and nothing becomes claimable yet."}
       </p>
       {shortOfCovered && (

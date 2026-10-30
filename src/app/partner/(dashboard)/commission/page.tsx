@@ -30,14 +30,15 @@ import { formatINR, formatDate, countryName } from "~/components/dashboard/forma
 import {
   PartnerInvoiceStatus,
   PartnerInvoiceStatusLabel,
-  TrancheStatus,
-  TrancheStatusLabel,
   financialYearLabel,
 } from "~/server/db/enums";
+import { fxLine, money } from "~/lib/currency";
 
 type RO = inferRouterOutputs<AppRouter>;
 type Claim = RO["partnerCommission"]["listClaimable"][number];
 type TrancheRow = Claim["tranches"][number];
+type ClaimState = Claim["status"];
+type HistoryRow = RO["partnerCommission"]["invoiceHistory"][number];
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap text-[#667085]";
 const TD = "px-3.5 py-3 text-sm whitespace-nowrap text-[#344054]";
@@ -46,6 +47,9 @@ const TD = "px-3.5 py-3 text-sm whitespace-nowrap text-[#344054]";
 const shareText = (pct: number | null) => (pct == null ? "Pending" : `${pct}%`);
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const todayInput = () => new Date().toISOString().slice(0, 10);
+// "Flat €2,000" or "12% · £3,000".
+const commissionText = (c: Claim) =>
+  c.isFlat ? `Flat ${money(c.commissionAmount, c.currency)}` : `${c.commissionRate}% · ${money(c.commissionAmount, c.currency)}`;
 
 // ---- CSV --------------------------------------------------------------------
 const csvCell = (v: string | number | null | undefined): string => {
@@ -63,98 +67,93 @@ function downloadCsv(filename: string, rows: (string | number | null | undefined
   URL.revokeObjectURL(url);
 }
 
-function ClaimStatusPill({ status }: { status: Claim["status"] }) {
-  const map = {
-    pending: { c: "bg-[#F2F4F7] text-[#667085]", t: "Awaiting CP Payment" },
-    claimable: { c: "bg-[#ECFDF3] text-[#067647]", t: "Available to Claim" },
-    invoiced: { c: "bg-[#FFF6ED] text-[#B54708]", t: "Invoiced" },
-    paid: { c: "bg-[#EFF8FF] text-[#1570EF]", t: "Fully Paid" },
-  };
-  const { c, t } = map[status];
+// One status per student, read from its tranches (server: partnerCommissionState)
+// — the list pill, "Paid to Partner", the timeline and the invoice history all
+// say the same thing.
+const CLAIM_STATE: Record<ClaimState, { c: string; t: string }> = {
+  pending: { c: "bg-[#F2F4F7] text-[#667085]", t: "Awaiting payment to Collegepond" },
+  claimable: { c: "bg-[#ECFDF3] text-[#067647]", t: "Available to Claim" },
+  claimed: { c: "bg-[#FFF6ED] text-[#B54708]", t: "Claimed" },
+  part_paid: { c: "bg-[#F4F3FF] text-[#6941C6]", t: "Part Paid" },
+  paid: { c: "bg-[#EFF8FF] text-[#1570EF]", t: "Fully Paid" },
+};
+function ClaimStatusPill({ status }: { status: ClaimState }) {
+  const { c, t } = CLAIM_STATE[status];
   return <span className={`rounded-[10px] px-2.5 py-0.5 text-[11px] font-semibold ${c}`}>{t}</span>;
 }
 
 // ---- per-tranche display (pay-as-collected) ---------------------------------
-// A tranche's display state layers the claim lifecycle on top of the raw status:
-// a RECEIVED tranche is "Available to Claim" until it lands on an invoice
-// ("Invoiced"), then "Paid" once the payout is released.
-function trancheDisplay(t: TrancheRow): { label: string; pill: string; dot: string } {
-  if (t.status === TrancheStatus.PAID)
-    return { label: "Paid", pill: "bg-[#EFF8FF] text-[#1570EF]", dot: "bg-[#1570EF]" };
-  if (t.status === TrancheStatus.RECEIVED)
-    return t.claimed
-      ? { label: "Invoiced", pill: "bg-[#FFF6ED] text-[#B54708]", dot: "bg-[#F79009]" }
-      : { label: "Available to Claim", pill: "bg-[#ECFDF3] text-[#067647]", dot: "bg-[#12B76A]" };
-  return {
-    label: TrancheStatusLabel[t.status as TrancheStatus],
-    pill: "bg-[#F2F4F7] text-[#667085]",
-    dot: "bg-[#D0D5DD]",
-  };
-}
-const isCollected = (t: TrancheRow) =>
-  t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID;
+const TRANCHE_STATE: Record<TrancheRow["state"], { label: string; pill: string; dot: string }> = {
+  pending: { label: "Awaiting payment to Collegepond", pill: "bg-[#F2F4F7] text-[#667085]", dot: "bg-[#D0D5DD]" },
+  claimable: { label: "Available to Claim", pill: "bg-[#ECFDF3] text-[#067647]", dot: "bg-[#12B76A]" },
+  claimed: { label: "Claimed", pill: "bg-[#FFF6ED] text-[#B54708]", dot: "bg-[#F79009]" },
+  paid: { label: "Paid", pill: "bg-[#EFF8FF] text-[#1570EF]", dot: "bg-[#1570EF]" },
+};
 
 // Compact segmented bar for the table — one pip per tranche, coloured by state.
 function TrancheProgress({ tranches }: { tranches: TrancheRow[] }) {
-  const collected = tranches.filter(isCollected).length;
+  const received = tranches.filter((t) => t.state !== "pending").length;
+  const paid = tranches.filter((t) => t.state === "paid").length;
   return (
     <div className="mt-1.5">
       <div className="flex items-center gap-0.5">
-        {tranches.map((t) => {
-          const d = trancheDisplay(t);
-          return (
-            <span
-              key={t.seq}
-              className={`h-1.5 w-4 rounded-full ${d.dot}`}
-              title={`${t.name}: ${d.label}`}
-            />
-          );
-        })}
+        {tranches.map((t) => (
+          <span
+            key={t.seq}
+            className={`h-1.5 w-4 rounded-full ${TRANCHE_STATE[t.state].dot}`}
+            title={`${t.name}: ${TRANCHE_STATE[t.state].label}`}
+          />
+        ))}
       </div>
       <div className="mt-1 text-[10px] text-[#98A2B3]">
-        {collected}/{tranches.length} tranches collected
+        {received}/{tranches.length} received{paid > 0 ? ` · ${paid} paid` : ""}
       </div>
     </div>
   );
 }
 
+// "€5,342 × 92.10 = ₹4,91,998" when the money came in a foreign currency.
+function FxNote({ fx, inrAmount }: { fx: { amount: number; currency: string; rate: number } | null; inrAmount: number }) {
+  if (!fx || fx.currency === "INR") return null;
+  return <span className="block text-[11px] font-normal text-[#98A2B3]">{fxLine(fx.amount, fx.currency, fx.rate, inrAmount)}</span>;
+}
+
 // Full per-tranche list for the student-detail modal.
-function TrancheBreakdown({ currency, tranches }: { currency: string; tranches: TrancheRow[] }) {
-  const available = tranches
-    .filter((t) => t.status === TrancheStatus.RECEIVED && !t.claimed)
-    .reduce((s, t) => s + t.amountInr, 0);
-  const paid = tranches
-    .filter((t) => t.status === TrancheStatus.PAID)
-    .reduce((s, t) => s + t.amountInr, 0);
+function TrancheBreakdown({ claim }: { claim: Claim }) {
   return (
     <div className="rounded-lg border border-[#E4E7EC] p-4">
       <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">
-        Tranche Breakdown
+        {claim.tranches.length > 1 ? `Tranches (${claim.tranches.length})` : "Payment"}
       </div>
       <ol className="space-y-3">
-        {tranches.map((t) => {
-          const d = trancheDisplay(t);
-          const collected = isCollected(t);
+        {claim.tranches.map((t) => {
+          const d = TRANCHE_STATE[t.state];
           return (
             <li key={t.seq} className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-2.5">
                 <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${d.dot}`} />
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-[#101828]">{t.name}</div>
-                  <span className={`mt-1 inline-block rounded-[10px] px-2 py-0.5 text-[10px] font-semibold ${d.pill}`}>
-                    {d.label}
-                  </span>
+                  <span className={`mt-1 inline-block rounded-[10px] px-2 py-0.5 text-[10px] font-semibold ${d.pill}`}>{d.label}</span>
+                  {(t.invoiceNumber != null || t.paidAt != null) && (
+                    <div className="mt-1 text-[11px] text-[#667085]">
+                      {t.invoiceNumber ? `Invoice ${t.invoiceNumber}` : ""}
+                      {t.invoiceNumber && t.paidAt ? " · " : ""}
+                      {t.paidAt ? `paid ${formatDate(t.paidAt)}` : ""}
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="shrink-0 text-right">
-                {collected ? (
-                  <div className="text-sm font-semibold text-[#101828]">{inr(t.amountInr)}</div>
+                {t.state !== "pending" ? (
+                  <div className="text-sm font-semibold text-[#101828]">
+                    {inr(t.amountInr)}
+                    <FxNote fx={t.foreign} inrAmount={t.amountInr} />
+                  </div>
                 ) : (
                   <>
-                    <div className="text-sm font-medium text-[#98A2B3]">
-                      {currency} {t.plannedForeign.toLocaleString()}
-                    </div>
-                    <div className="text-[10px] text-[#98A2B3]">planned</div>
+                    <div className="text-sm font-medium text-[#98A2B3]">{money(t.plannedForeign, claim.currency)}</div>
+                    <div className="text-[10px] text-[#98A2B3]">expected</div>
                   </>
                 )}
               </div>
@@ -162,16 +161,6 @@ function TrancheBreakdown({ currency, tranches }: { currency: string; tranches: 
           );
         })}
       </ol>
-      <div className="mt-3 space-y-1 border-t border-[#E4E7EC] pt-3 text-xs">
-        <div className="flex justify-between">
-          <span className="text-[#667085]">Available to claim now</span>
-          <span className="font-semibold text-[#067647]">{inr(available)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[#667085]">Already paid to you</span>
-          <span className="font-semibold text-[#1570EF]">{inr(paid)}</span>
-        </div>
-      </div>
     </div>
   );
 }
@@ -194,8 +183,39 @@ function InvoiceStatusPill({ status }: { status: number }) {
   );
 }
 
-type CardFilter = "all" | "not-invoiced" | "invoiced" | "available";
-const CARD_FILTERS: CardFilter[] = ["all", "not-invoiced", "invoiced", "available"];
+// How a released payout was paid: the reference to quote to the bank, the
+// date, and the foreign amount + rate for a non-INR payout.
+function PayoutLine({ payout }: { payout: HistoryRow["payout"] }) {
+  if (!payout) return <span className="text-[#98A2B3]">—</span>;
+  return (
+    <span>
+      <span className="font-medium text-[#101828]">{payout.reference ?? "—"}</span>
+      <span className="block text-[11px] text-[#667085]">
+        {payout.paymentDate ? formatDate(payout.paymentDate) : ""}
+        {payout.currency !== "INR" && payout.amountForeign != null && payout.exchangeRate != null
+          ? ` · ${fxLine(payout.amountForeign, payout.currency, payout.exchangeRate, payout.amountInr)}`
+          : ""}
+      </span>
+    </span>
+  );
+}
+
+type CardFilter = "all" | "claimable" | "claimed" | "paid";
+const CARD_FILTERS: CardFilter[] = ["all", "claimable", "claimed", "paid"];
+const STATUS_OPTIONS: { value: ClaimState; label: string }[] = [
+  { value: "pending", label: CLAIM_STATE.pending.t },
+  { value: "claimable", label: CLAIM_STATE.claimable.t },
+  { value: "claimed", label: CLAIM_STATE.claimed.t },
+  { value: "part_paid", label: CLAIM_STATE.part_paid.t },
+  { value: "paid", label: CLAIM_STATE.paid.t },
+];
+
+// "Paid to Partner": the date once every tranche is paid, else how many are.
+function paidToPartner(c: Claim): string {
+  if (c.paidAt) return formatDate(c.paidAt);
+  if (c.paidCount > 0) return `${c.paidCount} of ${c.trancheCount} tranches`;
+  return "—";
+}
 
 // =============================================================================
 // Commission, claims and payouts belong to the agency, so only its owner (or
@@ -247,30 +267,32 @@ function CommissionContent() {
   const tierQ = api.dashboard.partnerTier.useQuery();
   const yearly = useMemo(() => yearlyQ.data ?? [], [yearlyQ.data]);
 
-  // ---- KPIs ----
+  // ---- KPIs: the same per-tranche figures as the table ----
   const kpis = useMemo(() => {
-    let receivable = 0, niAmt = 0, niCount = 0, invAmt = 0, invCount = 0, avAmt = 0, avCount = 0;
+    const k = { received: 0, claimable: 0, claimableN: 0, claimed: 0, claimedN: 0, paid: 0, paidN: 0 };
     for (const c of claims) {
-      if (c.status === "pending" || c.status === "claimable") { niAmt += c.claimableInr; niCount++; receivable += c.claimableInr; }
-      if (c.status === "claimable") { avAmt += c.claimableInr; avCount++; }
-      if (c.status === "invoiced") { invAmt += c.claimableInr; invCount++; receivable += c.claimableInr; }
+      k.received += c.receivedInr;
+      k.claimable += c.claimableInr;
+      k.claimed += c.claimedInr;
+      k.paid += c.paidInr;
+      if (c.claimableInr > 0) k.claimableN++;
+      if (c.claimedInr > 0) k.claimedN++;
+      if (c.paidInr > 0) k.paidN++;
     }
-    return { receivable, niAmt, niCount, invAmt, invCount, avAmt, avCount, total: claims.length };
+    return k;
   }, [claims]);
 
   // ---- filtering ----
   const filtered = useMemo(() => {
     return claims.filter((c) => {
-      if (cardFilter === "not-invoiced" && !(c.status === "pending" || c.status === "claimable")) return false;
-      if (cardFilter === "invoiced" && c.status !== "invoiced") return false;
-      if (cardFilter === "available" && c.status !== "claimable") return false;
+      if (cardFilter === "claimable" && c.claimableInr <= 0) return false;
+      if (cardFilter === "claimed" && c.claimedInr <= 0) return false;
+      if (cardFilter === "paid" && c.paidInr <= 0) return false;
       if (intake && c.intake !== intake) return false;
       if (country && c.country !== country) return false;
       if (currency && c.currency !== currency) return false;
-      if (statusF === "not-invoiced" && !(c.status === "pending" || c.status === "claimable")) return false;
-      if (statusF === "invoiced" && c.status !== "invoiced") return false;
-      if (statusF === "paid" && c.status !== "paid") return false;
-      if (search.trim() && !`${c.studentName} ${c.studentCode}`.toLowerCase().includes(search.trim().toLowerCase())) return false;
+      if (statusF && c.status !== statusF) return false;
+      if (search.trim() && !`${c.studentName} ${c.studentCode} ${c.universityStudentId ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())) return false;
       return true;
     });
   }, [claims, cardFilter, intake, country, currency, statusF, search]);
@@ -293,15 +315,16 @@ function CommissionContent() {
     const rows = selectedClaims.length > 0 ? selectedClaims : filtered;
     if (rows.length === 0) { showToast("Nothing to export."); return; }
     const header = [
-      "Student ID", "Name", "Programme", "University", "Start Date", "Country", "Currency", "Tuition",
-      "Commission %", "Commission Amount", "% Share", "Claimable (INR)", "Invoice Status",
-      "Paid to CP", "Paid to Partner", "Payment Date",
+      "University Student ID", "CP Student ID", "Name", "Programme", "University", "Start Date", "Country",
+      "Tuition Currency", "Tuition", "Commission Type", "Commission %", "Commission Currency", "Commission Amount",
+      "Your Share %", "Your Share", "Received by Collegepond (INR)", "Claimable Now (INR)", "Claimed (INR)", "Paid (INR)",
+      "Status", "Paid to Partner",
     ];
     const body = rows.map((c) => [
-      c.studentCode, c.studentName, c.program, c.university, c.intake ?? "", c.country, c.currency,
-      c.tuition, c.commissionRate, c.commissionAmount, shareText(c.partnerSharePct), c.claimableInr,
-      c.status === "paid" ? "Fully Paid" : c.status === "invoiced" ? "Invoiced" : "Not Invoiced",
-      c.receivedAt ? "Yes" : "No", c.paidAt ? "Yes" : "No", c.paidAt ? formatDate(c.paidAt) : "",
+      c.universityStudentId ?? "", c.studentCode, c.studentName, c.program, c.university, c.intake ?? "", c.country,
+      c.tuitionCurrency, c.tuition, c.isFlat ? "Flat" : "Percentage", c.isFlat ? "" : c.commissionRate, c.currency, c.commissionAmount,
+      shareText(c.partnerSharePct), c.shareAmount, c.receivedInr, c.claimableInr, c.claimedInr, c.paidInr,
+      CLAIM_STATE[c.status].t, paidToPartner(c),
     ]);
     downloadCsv(`commission-export-${todayInput()}.csv`, [header, ...body]);
     logExport("Partner commission CSV", body.length);
@@ -323,7 +346,7 @@ function CommissionContent() {
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#101828]">💰 Commission &amp; Payments</h1>
-          <p className="mt-1 text-sm text-[#667085]">Track payments, generate invoices, and manage your commission claims.</p>
+          <p className="mt-1 text-sm text-[#667085]">Track payments, generate invoices, and manage your commission claims. Amounts in ₹ are your share.</p>
         </div>
         {selectedClaims.length === 0 && (
           <Button disabled title="Select students below to generate an invoice">Generate Invoice</Button>
@@ -332,10 +355,10 @@ function CommissionContent() {
 
       {/* KPI cards */}
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard icon="revenue" tone="blue" label="Total Commission Receivable" value={claimsQ.data ? formatINR(kpis.receivable) : "—"} sub={`${kpis.niCount + kpis.invCount} students to be claimed`} active={cardFilter === "all"} onClick={() => pickCard("all")} />
-        <StatCard icon="clock" tone="orange" label="Not Yet Invoiced" value={claimsQ.data ? `${kpis.niCount} / ${kpis.total}` : "—"} sub={`~${formatINR(kpis.niAmt)} pending`} active={cardFilter === "not-invoiced"} onClick={() => pickCard("not-invoiced")} />
-        <StatCard icon="applications" tone="purple" label="Invoiced" value={claimsQ.data ? `${kpis.invCount} / ${kpis.total}` : "—"} sub={`~${formatINR(kpis.invAmt)} invoiced`} active={cardFilter === "invoiced"} onClick={() => pickCard("invoiced")} />
-        <StatCard icon="deposit" tone="green" label="Available to Claim" value={claimsQ.data ? `${kpis.avCount} / ${kpis.total}` : "—"} sub={`${formatINR(kpis.avAmt)} available`} active={cardFilter === "available"} onClick={() => pickCard("available")} />
+        <StatCard icon="revenue" tone="blue" label="Received by Collegepond" value={claimsQ.data ? formatINR(kpis.received) : "—"} sub={`your share, across ${claims.length} students`} active={cardFilter === "all"} onClick={() => pickCard("all")} />
+        <StatCard icon="deposit" tone="green" label="Claimable Now" value={claimsQ.data ? formatINR(kpis.claimable) : "—"} sub={`${kpis.claimableN} students`} active={cardFilter === "claimable"} onClick={() => pickCard("claimable")} />
+        <StatCard icon="applications" tone="orange" label="Claimed" value={claimsQ.data ? formatINR(kpis.claimed) : "—"} sub={`${kpis.claimedN} students · awaiting payment`} active={cardFilter === "claimed"} onClick={() => pickCard("claimed")} />
+        <StatCard icon="trophy" tone="purple" label="Paid to You" value={claimsQ.data ? formatINR(kpis.paid) : "—"} sub={`${kpis.paidN} students`} active={cardFilter === "paid"} onClick={() => pickCard("paid")} />
       </div>
 
       {/* Year-over-Year */}
@@ -346,7 +369,7 @@ function CommissionContent() {
         <div className="w-40"><FormSelect label="Intake" placeholder="All Intakes" options={intakes.map((i) => ({ value: i, label: i }))} value={intake} onChange={(e) => setIntake(e.target.value)} /></div>
         <div className="w-40"><FormSelect label="Country" placeholder="All Countries" options={countries.map((c) => ({ value: c, label: countryName(c) }))} value={country} onChange={(e) => setCountry(e.target.value)} /></div>
         <div className="w-36"><FormSelect label="Currency" placeholder="All Currencies" options={currencies.map((c) => ({ value: c, label: c }))} value={currency} onChange={(e) => setCurrency(e.target.value)} /></div>
-        <div className="w-40"><FormSelect label="Status" placeholder="All Statuses" options={[{ value: "not-invoiced", label: "Not Invoiced" }, { value: "invoiced", label: "Invoiced" }, { value: "paid", label: "Fully Paid" }]} value={statusF} onChange={(e) => { setStatusF(e.target.value); setCardFilter("all"); }} /></div>
+        <div className="w-52"><FormSelect label="Status" placeholder="All Statuses" options={STATUS_OPTIONS} value={statusF} onChange={(e) => { setStatusF(e.target.value); setCardFilter("all"); }} /></div>
         <div className="ml-auto w-56"><FormInput label="Search" placeholder="Search by name or ID..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
       </div>
 
@@ -359,7 +382,7 @@ function CommissionContent() {
           <EmptyState label="No commissions match your filters." />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse" style={{ minWidth: 2000 }}>
+            <table className="w-full border-collapse" style={{ minWidth: 1900 }}>
               <thead>
                 <tr>
                   <th className={`${TH} sticky left-0 z-10 bg-[#F9FAFB] w-10`}>
@@ -370,17 +393,16 @@ function CommissionContent() {
                   <th className={TH}>University / Programme</th>
                   <th className={TH}>Start Date</th>
                   <th className={TH}>Country</th>
-                  <th className={TH}>Currency</th>
                   <th className={TH}>Tuition</th>
-                  <th className={TH}>Comm %</th>
-                  <th className={TH}>Commission Amt</th>
-                  <th className={TH}>% Share</th>
-                  <th className={TH}>Claimable (₹)</th>
-                  <th className={TH}>Invoice Status</th>
-                  <th className={TH}>Paid to CP</th>
+                  <th className={TH}>Commission</th>
+                  <th className={TH}>Your Share %</th>
+                  <th className={TH}>Your Share</th>
+                  <th className={TH}>Received by CP (₹)</th>
+                  <th className={TH}>Claimable Now (₹)</th>
+                  <th className={TH}>Claimed (₹)</th>
+                  <th className={TH}>Paid (₹)</th>
+                  <th className={TH}>Status</th>
                   <th className={TH}>Paid to Partner</th>
-                  <th className={TH}>Payment Date</th>
-                  <th className={TH}>CP Commission</th>
                   <th className={`${TH} text-right`}>Actions</th>
                 </tr>
               </thead>
@@ -390,28 +412,34 @@ function CommissionContent() {
                     <td className={`${TD} sticky left-0 z-10 bg-white w-10`}>
                       <input type="checkbox" disabled={!c.selectable} checked={selected.has(c.commissionId)} onChange={() => toggle(c.commissionId)} />
                     </td>
-                    <td className={`${TD} font-semibold text-[#1570EF] cursor-pointer`} onClick={() => setDetailFor(c)}>{c.studentCode}</td>
+                    <td className={`${TD} cursor-pointer`} onClick={() => setDetailFor(c)}>
+                      {/* The university's Student ID first; the CP-ID is ours. */}
+                      <span className="font-semibold text-[#1570EF]">{c.universityStudentId ?? "Not entered"}</span>
+                      <span className="block text-xs text-[#98A2B3]">{c.studentCode}</span>
+                    </td>
                     <td className={`${TD} font-medium text-[#101828]`}>{c.studentName}</td>
                     <td className={TD}>{c.university}<span className="block text-xs text-[#98A2B3]">{c.program}</span></td>
                     <td className={TD}>{c.intake ?? "—"}</td>
                     <td className={TD}>{countryName(c.country)}</td>
-                    <td className={TD}>{c.currency}</td>
-                    <td className={`${TD} font-medium`}>{c.currency} {c.tuition.toLocaleString()}</td>
-                    <td className={TD}>{c.commissionRate}%</td>
-                    <td className={`${TD} font-medium`}>{c.currency} {c.commissionAmount.toLocaleString()}</td>
+                    <td className={`${TD} font-medium`}>{money(c.tuition, c.tuitionCurrency)}</td>
+                    <td className={TD}>{commissionText(c)}</td>
                     <td className={TD} title={c.partnerSharePct == null ? "Collegepond Finance hasn't set the commission share for this student yet" : undefined}>{shareText(c.partnerSharePct)}</td>
-                    <td className={`${TD} font-semibold text-[#067647]`}>{inr(c.claimableInr)}</td>
+                    <td className={TD}>{c.partnerSharePct == null ? "—" : money(c.shareAmount, c.currency)}</td>
+                    <td className={TD}>
+                      {c.receivedInr > 0 ? inr(c.receivedInr) : "—"}
+                      <FxNote fx={c.receivedFx} inrAmount={c.receivedInr} />
+                    </td>
+                    <td className={`${TD} font-semibold text-[#067647]`}>{c.claimableInr > 0 ? inr(c.claimableInr) : "—"}</td>
+                    <td className={TD}>{c.claimedInr > 0 ? inr(c.claimedInr) : "—"}</td>
+                    <td className={TD}>{c.paidInr > 0 ? inr(c.paidInr) : "—"}</td>
                     <td className={TD}>
                       <ClaimStatusPill status={c.status} />
-                      {c.sharePending && c.status === "claimable" && (
+                      {c.sharePending && c.claimableInr > 0 && (
                         <span className="mt-1 block text-[11px] text-[#B54708]">Share being set by Collegepond</span>
                       )}
                       {c.tranches.length > 1 && <TrancheProgress tranches={c.tranches} />}
                     </td>
-                    <td className={`${TD} text-center`}>{c.receivedAt ? <span className="text-[#067647]">✓</span> : "—"}</td>
-                    <td className={`${TD} text-center`}>{c.paidAt ? <span className="text-[#067647]">✓</span> : "—"}</td>
-                    <td className={TD}>{c.paidAt ? formatDate(c.paidAt) : "—"}</td>
-                    <td className={TD}>{c.cpCommissionInr > 0 ? inr(c.cpCommissionInr) : "—"}</td>
+                    <td className={TD}>{paidToPartner(c)}</td>
                     <td className={`${TD} text-right`}>
                       <button className="text-[13px] font-semibold text-[#1570EF] hover:underline" onClick={() => setDetailFor(c)}>View</button>
                     </td>
@@ -429,35 +457,41 @@ function CommissionContent() {
         ) : (historyQ.data ?? []).length === 0 ? (
           <EmptyState label="No invoices raised yet." />
         ) : (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr>
-                <th className={TH}>Invoice #</th>
-                <th className={TH}>Date</th>
-                <th className={TH}>Students</th>
-                <th className={TH}>Amount</th>
-                <th className={TH}>Net Payable</th>
-                <th className={TH}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(historyQ.data ?? []).map((h) => (
-                <tr key={h.id} className="border-b border-[#F2F4F7] last:border-0">
-                  <td className={`${TD} font-medium text-[#101828]`}>{h.invoiceNumber}</td>
-                  <td className={TD}>{formatDate(h.invoiceDate)}</td>
-                  <td className={TD}>{h.students}</td>
-                  <td className={TD}>{inr(h.totalAmount)}</td>
-                  <td className={`${TD} font-semibold text-[#101828]`}>{inr(h.netPayable)}</td>
-                  <td className={TD}>
-                    <InvoiceStatusPill status={h.status} />
-                    {h.status === PartnerInvoiceStatus.REJECTED && h.rejectionReason && (
-                      <span className="block text-[11px] text-[#B42318]">{h.rejectionReason}</span>
-                    )}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>Invoice #</th>
+                  <th className={TH}>Date</th>
+                  <th className={TH}>Students</th>
+                  <th className={TH}>Amount</th>
+                  <th className={TH}>Net Payable</th>
+                  <th className={TH}>Paid In</th>
+                  <th className={TH}>Status</th>
+                  <th className={TH}>Payment Ref / UTR</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(historyQ.data ?? []).map((h) => (
+                  <tr key={h.id} className="border-b border-[#F2F4F7] last:border-0">
+                    <td className={`${TD} font-medium text-[#101828]`}>{h.invoiceNumber}</td>
+                    <td className={TD}>{formatDate(h.invoiceDate)}</td>
+                    <td className={TD}>{h.students}</td>
+                    <td className={TD}>{inr(h.totalAmount)}</td>
+                    <td className={`${TD} font-semibold text-[#101828]`}>{inr(h.netPayable)}</td>
+                    <td className={TD}>{h.payoutCurrency}</td>
+                    <td className={TD}>
+                      <InvoiceStatusPill status={h.status} />
+                      {h.status === PartnerInvoiceStatus.REJECTED && h.rejectionReason && (
+                        <span className="block text-[11px] text-[#B42318]">{h.rejectionReason}</span>
+                      )}
+                    </td>
+                    <td className={TD}><PayoutLine payout={h.payout} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </DashboardCard>
 
@@ -523,66 +557,100 @@ function LoyaltyModal({ status, onClose }: { status: TierStatusView; onClose: ()
 }
 
 // ---- Student-detail modal ---------------------------------------------------
+// The figures, the timeline and the invoice history all come from the same
+// per-tranche states as the list row.
 function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => void }) {
   const detailQ = api.partnerCommission.studentDetail.useQuery({ commissionId: claim.commissionId });
   const d = detailQ.data;
-  const SummaryCard = ({ label, value }: { label: string; value: string }) => (
+  const SummaryCard = ({ label, value, sub }: { label: string; value: string; sub?: string | null }) => (
     <div className="rounded-lg border border-[#E4E7EC] p-3">
       <div className="text-[11px] tracking-wide text-[#98A2B3] uppercase">{label}</div>
       <div className="mt-0.5 text-sm font-bold text-[#101828]">{value}</div>
+      {sub && <div className="mt-0.5 text-[11px] text-[#667085]">{sub}</div>}
     </div>
   );
-  const timeline: { title: string; at: Date | string | null; done: boolean }[] = [
+  const n = claim.tranches.length;
+  const received = claim.tranches.filter((t) => t.state !== "pending").length;
+  const claimed = claim.tranches.filter((t) => t.state === "claimed" || t.state === "paid").length;
+  const paid = claim.paidCount;
+  const progress = (k: number) => (n > 1 ? ` (${k} of ${n} tranches)` : "");
+  const latestInvoice = d?.invoices[0] ?? null;
+  const timeline: { title: string; at: Date | string | null; done: boolean; partial?: boolean }[] = [
     { title: "Application submitted", at: d?.appSubmittedAt ?? null, done: !!d?.appSubmittedAt },
     { title: "Confirmed for billing", at: d?.commissionCreatedAt ?? null, done: !!d?.commissionCreatedAt },
-    { title: "Paid to CollegePond", at: d?.receivedAt ?? null, done: !!d?.receivedAt },
-    { title: "Invoice raised", at: d?.invoicedAt ?? null, done: !!d?.invoicedAt },
-    { title: "Paid to you", at: d?.paidAt ?? null, done: !!d?.paidAt },
+    { title: `Received by Collegepond${progress(received)}`, at: received === n ? (d?.receivedAt ?? null) : null, done: received === n, partial: received > 0 && received < n },
+    { title: `Claimed by you${progress(claimed)}`, at: latestInvoice?.date ?? null, done: claimed === n, partial: claimed > 0 && claimed < n },
+    { title: `Paid to you${progress(paid)}`, at: claim.paidAt, done: claim.status === "paid", partial: paid > 0 && paid < n },
   ];
+  const fxSub = claim.receivedFx ? fxLine(claim.receivedFx.amount, claim.receivedFx.currency, claim.receivedFx.rate, claim.receivedInr) : null;
   return (
-    <Modal open title={`${claim.studentName} · ${claim.studentCode}`} width="w-[720px]" onClose={onClose} footer={<Button onClick={onClose}>Close</Button>}>
-      <div className="text-xs text-[#667085]">{countryName(claim.country)} · {claim.university} · {claim.program}</div>
-      <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-        <SummaryCard label="Tuition" value={`${claim.currency} ${claim.tuition.toLocaleString()}`} />
-        <SummaryCard label="Commission %" value={`${claim.commissionRate}%`} />
-        <SummaryCard label="Total Commission" value={`${claim.currency} ${claim.commissionAmount.toLocaleString()}`} />
-        <SummaryCard label="% Share" value={shareText(claim.partnerSharePct)} />
-        <SummaryCard label="Claimable (₹)" value={inr(claim.claimableInr)} />
-        <SummaryCard label="CP Commission (₹)" value={claim.cpCommissionInr > 0 ? inr(claim.cpCommissionInr) : "—"} />
+    <Modal open title={`${claim.studentName} · ${claim.universityStudentId ?? claim.studentCode}`} width="w-[780px]" onClose={onClose} footer={<Button onClick={onClose}>Close</Button>}>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[#667085]">
+        <span>{countryName(claim.country)} · {claim.university} · {claim.program}</span>
+        <span>· {claim.universityStudentId ? `Uni ID ${claim.universityStudentId} · ` : ""}{claim.studentCode}</span>
+        <ClaimStatusPill status={claim.status} />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        <SummaryCard label="Tuition" value={money(claim.tuition, claim.tuitionCurrency)} />
+        <SummaryCard label="Commission" value={commissionText(claim)} />
+        <SummaryCard label="Your Share" value={claim.partnerSharePct == null ? "Pending" : `${claim.partnerSharePct}% · ${money(claim.shareAmount, claim.currency)}`} />
+        <SummaryCard label="Received by Collegepond" value={claim.receivedInr > 0 ? inr(claim.receivedInr) : "—"} sub={fxSub} />
+        <SummaryCard label="Claimable Now" value={claim.claimableInr > 0 ? inr(claim.claimableInr) : "—"} />
+        <SummaryCard label="Claimed" value={claim.claimedInr > 0 ? inr(claim.claimedInr) : "—"} />
+        <SummaryCard label="Paid to You" value={claim.paidInr > 0 ? inr(claim.paidInr) : "—"} sub={paidToPartner(claim) !== "—" ? paidToPartner(claim) : null} />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        {claim.tranches.length > 1 ? (
-          <TrancheBreakdown currency={claim.currency} tranches={claim.tranches} />
-        ) : (
-          <div className="rounded-lg border border-[#E4E7EC] p-4">
-            <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Payment Timeline</div>
-            <ol className="relative space-y-3.5 border-l border-[#E4E7EC] pl-4">
-              {timeline.map((e, i) => (
-                <li key={i} className="relative">
-                  <span className={`absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${e.done ? "bg-[#12B76A]" : "bg-[#D0D5DD]"}`} />
-                  <div className={`text-sm font-semibold ${e.done ? "text-[#101828]" : "text-[#98A2B3]"}`}>{e.title}</div>
-                  <div className="text-xs text-[#667085]">{e.at ? formatDate(e.at) : "—"}</div>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
+        <TrancheBreakdown claim={claim} />
         <div className="rounded-lg border border-[#E4E7EC] p-4">
-          <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Invoice History</div>
-          {detailQ.isLoading ? (
-            <p className="text-sm text-[#98A2B3]">Loading…</p>
-          ) : d?.invoice ? (
-            <div className="space-y-1.5 text-sm">
-              <div className="flex justify-between"><span className="text-[#667085]">Invoice #</span><span className="font-medium text-[#101828]">{d.invoice.number}</span></div>
-              <div className="flex justify-between"><span className="text-[#667085]">Date</span><span className="text-[#344054]">{d.invoice.date ? formatDate(d.invoice.date) : "—"}</span></div>
-              <div className="flex justify-between"><span className="text-[#667085]">Net Payable</span><span className="font-semibold text-[#101828]">{inr(d.invoice.netPayable)}</span></div>
-              <div className="flex justify-between"><span className="text-[#667085]">Status</span><InvoiceStatusPill status={d.invoice.status} /></div>
-            </div>
-          ) : (
-            <p className="text-sm text-[#98A2B3]">No invoice raised for this commission yet.</p>
-          )}
+          <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Payment Timeline</div>
+          <ol className="relative space-y-3.5 border-l border-[#E4E7EC] pl-4">
+            {timeline.map((e, i) => (
+              <li key={i} className="relative">
+                <span className={`absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${e.done ? "bg-[#12B76A]" : e.partial ? "bg-[#F79009]" : "bg-[#D0D5DD]"}`} />
+                <div className={`text-sm font-semibold ${e.done || e.partial ? "text-[#101828]" : "text-[#98A2B3]"}`}>{e.title}</div>
+                <div className="text-xs text-[#667085]">{e.at ? formatDate(e.at) : e.partial ? "In progress" : "—"}</div>
+              </li>
+            ))}
+          </ol>
         </div>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-[#E4E7EC] p-4">
+        <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Invoice History</div>
+        {detailQ.isLoading ? (
+          <p className="text-sm text-[#98A2B3]">Loading…</p>
+        ) : !d || d.invoices.length === 0 ? (
+          <p className="text-sm text-[#98A2B3]">No invoice raised for this student yet.</p>
+        ) : (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className={TH}>Invoice #</th>
+                <th className={TH}>Date</th>
+                <th className={TH}>Covers</th>
+                <th className={TH}>This Student</th>
+                <th className={TH}>Status</th>
+                <th className={TH}>Payment Ref / UTR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.invoices.map((inv) => (
+                <tr key={inv.id} className="border-b border-[#F2F4F7] last:border-0">
+                  <td className={`${TD} font-medium text-[#101828]`}>{inv.number}</td>
+                  <td className={TD}>{formatDate(inv.date)}</td>
+                  <td className={TD}>{inv.tranches.join(", ")}</td>
+                  <td className={TD}>
+                    {inr(inv.studentAmount)}
+                    {inv.payoutCurrency !== "INR" && <span className="block text-[11px] text-[#98A2B3]">paid in {inv.payoutCurrency}</span>}
+                  </td>
+                  <td className={TD}><InvoiceStatusPill status={inv.status} /></td>
+                  <td className={TD}><PayoutLine payout={inv.payout} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </Modal>
   );
@@ -681,15 +749,21 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
     }
   };
 
+  // A claim paid in a foreign currency carries no GST / TDS; it's worked out
+  // in INR and converted at the rate on the day it's paid.
+  const foreignPayout = previewQ.data?.payoutCurrency != null && previewQ.data.payoutCurrency !== "INR";
+
   const downloadPdf = () => {
     const p = previewQ.data;
     if (!p) return;
-    const lines = claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${c.currency} ${c.commissionAmount.toLocaleString()}</td><td style="text-align:right">${shareText(c.partnerSharePct)}</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
-    const taxRows = p.isInterstate === false
-      ? `<tr><td>CGST @9%</td><td style="text-align:right">${inr(p.cgst)}</td></tr><tr><td>SGST @9%</td><td style="text-align:right">${inr(p.sgst)}</td></tr>`
-      : p.isInterstate === true ? `<tr><td>IGST @18%</td><td style="text-align:right">${inr(p.igst)}</td></tr>`
-        : `<tr><td>Less: TDS @2% (194J)</td><td style="text-align:right">− ${inr(p.tds)}</td></tr>`;
-    const totalLabel = p.isInterstate === null ? "Net Payable" : "Grand Total";
+    const lines = claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${money(c.commissionAmount, c.currency)}</td><td style="text-align:right">${shareText(c.partnerSharePct)}</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
+    const taxRows = foreignPayout
+      ? `<tr><td>No GST / TDS — paid in ${p.payoutCurrency}</td><td style="text-align:right">—</td></tr>`
+      : p.isInterstate === false
+        ? `<tr><td>CGST @9%</td><td style="text-align:right">${inr(p.cgst)}</td></tr><tr><td>SGST @9%</td><td style="text-align:right">${inr(p.sgst)}</td></tr>`
+        : p.isInterstate === true ? `<tr><td>IGST @18%</td><td style="text-align:right">${inr(p.igst)}</td></tr>`
+          : `<tr><td>Less: TDS @2% (194J)</td><td style="text-align:right">− ${inr(p.tds)}</td></tr>`;
+    const totalLabel = foreignPayout ? `Net Payable (INR equivalent, paid in ${p.payoutCurrency})` : p.isInterstate === null ? "Net Payable" : "Grand Total";
     const w = window.open("", "_blank", "width=820,height=1000");
     if (!w) return;
     w.document.write(`<html><head><title>${invoiceNumber}</title><style>body{font-family:system-ui,sans-serif;padding:32px;color:#101828}table{width:100%;border-collapse:collapse;margin:8px 0}td,th{padding:6px 8px;border-bottom:1px solid #eee;font-size:13px}</style></head><body>
@@ -768,7 +842,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                 <tr key={c.commissionId} className="border-b border-[#F2F4F7] last:border-0">
                   <td className={`${TD} font-medium text-[#101828]`}>{c.studentName}<span className="block text-xs font-normal text-[#98A2B3]">{c.studentCode}</span></td>
                   <td className={TD}>{c.intake ?? "—"}</td>
-                  <td className={TD}>{c.currency} {c.tuition.toLocaleString()}</td>
+                  <td className={TD}>{money(c.tuition, c.tuitionCurrency)}</td>
                   <td className={TD} title={c.partnerSharePct == null ? "Collegepond Finance hasn't set the commission share for this student yet" : undefined}>{shareText(c.partnerSharePct)}</td>
                   <td className={`${TD} text-right font-semibold`}>{inr(c.claimableInr)}</td>
                 </tr>
@@ -786,7 +860,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
             <FormInput label="Invoice Date" type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
           </div>
           <div className="flex gap-3">
-            <FormInput label="Your GSTIN (blank if unregistered → TDS)" value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="27ABCDE1234F1Z5" />
+            <FormInput label={bank?.payoutCurrency && bank.payoutCurrency !== "INR" ? `Your GSTIN (optional — paid in ${bank.payoutCurrency}, no GST/TDS)` : "Your GSTIN (blank if unregistered → TDS)"} value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="27ABCDE1234F1Z5" />
             <FormInput label="PAN (auto from GSTIN chars 3–12)" required={bank?.panRequired} value={pan} onChange={(e) => setPan(normalizePan(e.target.value))} maxLength={10} placeholder="ABCDE1234F" />
           </div>
           <div className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#667085]">Recipient: <b className="text-[#344054]">Collegepond Counsellors Pvt Ltd</b> · GSTIN 27AADCK1234F1Z5 · SAC 998399</div>
@@ -871,7 +945,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                   {claims.map((c) => (
                     <tr key={c.commissionId} className="border-b border-[#F2F4F7]">
                       <td className={TD}>{c.studentName}<span className="block text-xs text-[#98A2B3]">{c.university}</span></td>
-                      <td className={`${TD} text-right`}>{c.currency} {c.commissionAmount.toLocaleString()}</td>
+                      <td className={`${TD} text-right`}>{money(c.commissionAmount, c.currency)}</td>
                       <td className={`${TD} text-right`}>{shareText(c.partnerSharePct)}</td>
                       <td className={`${TD} text-right`}>{inr(c.claimableInr)}</td>
                     </tr>
@@ -880,11 +954,22 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
               </table>
               <div className="ml-auto w-64 space-y-1 text-sm">
                 <Row label="Subtotal" value={inr(previewQ.data.subtotal)} />
-                {previewQ.data.isInterstate === false && (<><Row label="CGST @9%" value={inr(previewQ.data.cgst)} /><Row label="SGST @9%" value={inr(previewQ.data.sgst)} /></>)}
-                {previewQ.data.isInterstate === true && <Row label="IGST @18%" value={inr(previewQ.data.igst)} />}
-                {previewQ.data.isInterstate === null && <Row label="Less: TDS @2% (194J)" value={`− ${inr(previewQ.data.tds)}`} />}
-                <div className="border-t border-[#E4E7EC] pt-1"><Row label={previewQ.data.isInterstate === null ? "Net Payable" : "Grand Total"} value={inr(previewQ.data.netPayable)} bold /></div>
+                {foreignPayout ? (
+                  <Row label="GST / TDS" value="None" />
+                ) : (
+                  <>
+                    {previewQ.data.isInterstate === false && (<><Row label="CGST @9%" value={inr(previewQ.data.cgst)} /><Row label="SGST @9%" value={inr(previewQ.data.sgst)} /></>)}
+                    {previewQ.data.isInterstate === true && <Row label="IGST @18%" value={inr(previewQ.data.igst)} />}
+                    {previewQ.data.isInterstate === null && <Row label="Less: TDS @2% (194J)" value={`− ${inr(previewQ.data.tds)}`} />}
+                  </>
+                )}
+                <div className="border-t border-[#E4E7EC] pt-1"><Row label={foreignPayout || previewQ.data.isInterstate === null ? "Net Payable" : "Grand Total"} value={inr(previewQ.data.netPayable)} bold /></div>
               </div>
+              {foreignPayout && (
+                <p className="mt-2 rounded-lg bg-[#EFF8FF] px-3 py-2 text-[11px] text-[#175CD3]">
+                  You&apos;re paid in {previewQ.data.payoutCurrency}: no GST or TDS applies. The amount above is in INR; it&apos;s converted to {previewQ.data.payoutCurrency} at the exchange rate on the day the payment is sent, and you&apos;ll see the {previewQ.data.payoutCurrency} amount and rate in your invoice history.
+                </p>
+              )}
               {notes && <p className="mt-3 text-[11px] text-[#667085]"><span className="font-semibold">Notes:</span> {notes}</p>}
               <p className="mt-3 text-[11px] text-[#98A2B3]">Authorized signatory: {signatory} ({designation}){signedAt ? ` · signed ${signedAt}` : ""}</p>
             </div>

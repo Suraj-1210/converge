@@ -7,6 +7,7 @@ import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { BANK_PROOF_LABELS } from "~/lib/constants/partner-labels";
+import { CURRENCY_OPTIONS, isFinanceCurrency } from "~/lib/currency";
 
 // The partner's payout bank account: one form and one summary, used by the
 // Account page (Bank Details tab) and the commission invoice wizard.
@@ -61,6 +62,7 @@ export function BankAccountSummary({ bank }: { bank: BankOnFile }) {
   const intl = bank.region === "international";
   const rows: [string, string | null][] = [
     ["Type", intl ? "International" : "Domestic (India)"],
+    ["Paid in", intl ? (bank.payoutCurrency ?? "Not chosen — update your details") : "INR (₹)"],
     ["Account holder", bank.accountHolder],
     ["Account number", bank.accountNumberLast4 ? `•••• ${bank.accountNumberLast4}` : null],
     ...(intl && bank.ibanLast4 ? ([["IBAN", `•••• ${bank.ibanLast4}`]] as [string, string][]) : []),
@@ -111,6 +113,9 @@ export function BankDetailsForm({
     bankCountry: bank?.bankCountry && bank.bankCountry !== "IN" ? bank.bankCountry : "",
     bankAddress: bank?.bankAddress ?? "",
     accountType: bank?.accountType ?? "Current Account",
+    // International accounts are paid in the currency picked here (Suraj,
+    // 30 Oct 2026); domestic ones in INR.
+    payoutCurrency: bank?.region === "international" && bank.payoutCurrency ? bank.payoutCurrency : "",
   });
   const [proof, setProof] = useState<{ url?: string; name?: string; uploading?: boolean }>({});
   const [err, setErr] = useState("");
@@ -147,6 +152,7 @@ export function BankDetailsForm({
     if (intl && !SWIFT_RE.test(f.swift)) return setErr("Enter a valid SWIFT/BIC (8 or 11 characters)");
     if (intl && !f.bankCountry) return setErr("Select the bank's country");
     if (intl && !f.bankAddress.trim()) return setErr("Enter the bank's address");
+    if (intl && !isFinanceCurrency(f.payoutCurrency)) return setErr("Pick the currency you want to be paid in");
     if (!proof.url) {
       return setErr(intl ? "Upload a bank letter or statement" : "Upload a cancelled cheque");
     }
@@ -162,6 +168,7 @@ export function BankDetailsForm({
         branch: f.branch.trim() || undefined,
         bankCountry: intl ? f.bankCountry : undefined,
         bankAddress: intl ? f.bankAddress.trim() : undefined,
+        payoutCurrency: intl && isFinanceCurrency(f.payoutCurrency) ? f.payoutCurrency : undefined,
         accountType: f.accountType || undefined,
         proofUrl: proof.url,
         proofFileName: proof.name,
@@ -226,6 +233,19 @@ export function BankDetailsForm({
             <FormInput label="Branch" value={form.branch} onChange={(e) => set("branch", e.target.value)} />
             <div className="sm:col-span-2">
               <FormInput label="Bank Address" required value={form.bankAddress} onChange={(e) => set("bankAddress", e.target.value)} />
+            </div>
+            <div className="sm:col-span-2">
+              <FormSelect
+                label="Paid In (Currency)"
+                required
+                placeholder="Select the currency for your payouts"
+                options={CURRENCY_OPTIONS}
+                value={form.payoutCurrency}
+                onChange={(e) => set("payoutCurrency", e.target.value)}
+              />
+              <p className="mt-1 text-xs text-[#667085]">
+                Your claims are worked out in INR. A payout in another currency is converted at the exchange rate on the day it&apos;s sent, with no GST or TDS on the invoice.
+              </p>
             </div>
           </>
         ) : (

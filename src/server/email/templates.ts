@@ -5,6 +5,8 @@
 // HTML is table-based with inline styles: email clients ignore <style> blocks
 // and most modern CSS. Every interpolated value goes through esc().
 
+import { currencySymbol } from "~/lib/currency";
+
 export interface EmailMessage {
   subject: string;
   html: string;
@@ -294,6 +296,9 @@ export function documentRejectedEmail(p: PartnerRef, documentName: string): Emai
 
 const inr = (n: number) =>
   `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A foreign amount: "€5,342.00", "CHF 1,200.00".
+const fx = (n: number, ccy: string) =>
+  `${currencySymbol(ccy)}${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const portal = (appUrl: string, path: string) => `${appUrl.replace(/\/+$/, "")}${path}`;
 
 // 11. A student's university application moved to a new status.
@@ -335,12 +340,36 @@ export function applicationStatusEmail(
   );
 }
 
-// 12. A commission claim (partner invoice) was approved, in full or in part.
-export function commissionClaimApprovedEmail(
+// 11a. Collegepond's collection was approved: these students' commission (or
+// a tranche of it) is now ready for the partner to claim.
+export function commissionClaimableEmail(
   p: PartnerRef,
-  c: { invoiceNumber: string; amountInr: number; partial: boolean },
+  c: { students: string[] },
   appUrl: string,
 ): EmailMessage {
+  const n = c.students.length;
+  return build(
+    n === 1 ? "Commission Ready to Claim" : `${n} Commissions Ready to Claim`,
+    "Commission is ready to claim",
+    hello(p.name),
+    [
+      { p: `Collegepond has received the commission from the university for ${n === 1 ? "this student" : "these students"}, and it is now ready for you to claim.` },
+      { list: c.students.slice(0, 20) },
+      { p: "Select the students on the Commission page of the Partner Portal and submit your invoice." },
+      { button: { label: "Go to Commission", url: portal(appUrl, "/partner/commission") } },
+    ],
+  );
+}
+
+// 12. A commission claim (partner invoice) was approved, in full or in part.
+// A foreign-currency claim is approved in INR terms; the remitted amount is
+// fixed at release.
+export function commissionClaimApprovedEmail(
+  p: PartnerRef,
+  c: { invoiceNumber: string; amountInr: number; partial: boolean; payoutCurrency?: string | null },
+  appUrl: string,
+): EmailMessage {
+  const foreign = c.payoutCurrency != null && c.payoutCurrency !== "INR";
   return build(
     c.partial
       ? `Commission Claim ${c.invoiceNumber} Partially Approved`
@@ -353,7 +382,14 @@ export function commissionClaimApprovedEmail(
           ? `Your commission claim ${c.invoiceNumber} has been partially approved. We have approved the students for whom Collegepond has already received the commission from the university; the rest will follow once it arrives.`
           : `Your commission claim ${c.invoiceNumber} has been approved for payment.`,
       },
-      { list: [`Amount approved: ${inr(c.amountInr)}`] },
+      {
+        list: foreign
+          ? [
+              `Amount approved: ${inr(c.amountInr)} (INR equivalent)`,
+              `Paid in: ${c.payoutCurrency}, at the exchange rate on the day it is sent`,
+            ]
+          : [`Amount approved: ${inr(c.amountInr)}`],
+      },
       { p: "Our finance team will now release the payment to your registered bank account. You will receive another email once it has been sent." },
       { button: { label: "View in the Partner Portal", url: portal(appUrl, "/partner/commission") } },
     ],
@@ -379,21 +415,33 @@ export function commissionClaimRejectedEmail(
   );
 }
 
-// 14. A payout was released to the partner's bank.
+// 14. A payout was released to the partner's bank. A foreign-currency payout
+// shows the remitted amount, the rate and the INR equivalent.
 export function payoutSentEmail(
   p: PartnerRef,
-  pay: { invoiceNumber: string; amountInr: number; method: string; reference: string; paymentDate: string },
+  pay: {
+    invoiceNumber: string;
+    amountInr: number;
+    method: string;
+    reference: string;
+    paymentDate: string;
+    foreign?: { currency: string; amount: number; rate: number } | null;
+  },
   appUrl: string,
 ): EmailMessage {
+  const f = pay.foreign && pay.foreign.currency !== "INR" ? pay.foreign : null;
+  const amountLine = f
+    ? `${fx(f.amount, f.currency)} (at ${f.rate.toFixed(2)} = ${inr(pay.amountInr)})`
+    : inr(pay.amountInr);
   return build(
-    `Payment Sent: ${inr(pay.amountInr)} for Claim ${pay.invoiceNumber}`,
+    `Payment Sent: ${f ? fx(f.amount, f.currency) : inr(pay.amountInr)} for Claim ${pay.invoiceNumber}`,
     "Your payment is on its way",
     hello(p.name),
     [
       { p: `We have released the payment for your commission claim ${pay.invoiceNumber}.` },
       {
         list: [
-          `Amount: ${inr(pay.amountInr)}`,
+          `Amount: ${amountLine}`,
           `Payment method: ${pay.method}`,
           `Reference / UTR: ${pay.reference}`,
           `Payment date: ${pay.paymentDate}`,

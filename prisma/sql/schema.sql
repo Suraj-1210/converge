@@ -566,6 +566,9 @@ CREATE TABLE IF NOT EXISTS `commission` (
   `id`                       INT NOT NULL AUTO_INCREMENT,
   `tuition_fee`              DECIMAL(12,2) NOT NULL,
   `currency`                 CHAR(3) NOT NULL,
+  -- The course currency the tuition is in. A FLAT deal is stamped in the
+  -- contract currency (`currency`), which can differ. NULL = same as currency.
+  `tuition_currency`         CHAR(3) NULL DEFAULT NULL,
   `commision_rate`           DECIMAL(5,2)  NOT NULL,
   `commision_amount`         DECIMAL(12,2) NOT NULL,
   `partner_paid_at`          TIMESTAMP NULL DEFAULT NULL,
@@ -627,6 +630,9 @@ CREATE TABLE IF NOT EXISTS `invoice` (
   `invoice_date`          DATE NOT NULL,
   `total_amount`          DECIMAL(14,2) NOT NULL,
   `currency`              CHAR(3) NOT NULL,
+  -- Currency the claim is paid out in (snapshot of the bank account's);
+  -- amounts above stay INR. Non-INR: no GST, no TDS. NULL = INR.
+  `payout_currency`       CHAR(3) NULL DEFAULT NULL,
   `status`                TINYINT(5) UNSIGNED NOT NULL DEFAULT 0,
   `bank_details`          VARCHAR(1000) NULL DEFAULT NULL,
   `notes`                 VARCHAR(1000) NULL DEFAULT NULL,
@@ -1149,6 +1155,8 @@ CREATE TABLE IF NOT EXISTS `vendor` (
   `contact_email` VARCHAR(255) NULL DEFAULT NULL,
   `contact_phone` VARCHAR(45)  NULL DEFAULT NULL,
   `address`       VARCHAR(255) NULL DEFAULT NULL,
+  -- The vendor agreement's currency; its contracts default to it.
+  `currency`      CHAR(3)      NULL DEFAULT NULL,
   `is_active`     TINYINT NOT NULL DEFAULT 1,
   `created_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1165,6 +1173,9 @@ CREATE TABLE IF NOT EXISTS `commission_contract` (
   `university_id`  INT NOT NULL,
   `vendor_id`      INT NULL DEFAULT NULL,
   `cp_share_pct`   DECIMAL(5,2) NULL DEFAULT NULL,
+  -- Contract currency: flat rates, fixed tranche amounts and bonus tiers are
+  -- in it. NULL (rows before 20261030140000) = the course's currency.
+  `currency`       CHAR(3)      NULL DEFAULT NULL,
   `is_default`     TINYINT NOT NULL DEFAULT 0,
   `effective_date` DATE NULL DEFAULT NULL,
   `notes`          VARCHAR(500) NULL DEFAULT NULL,
@@ -1260,6 +1271,9 @@ CREATE TABLE IF NOT EXISTS `commission_tranche` (
   `name`          VARCHAR(100) NULL DEFAULT NULL,
   `amount`        DECIMAL(12,2) NULL DEFAULT NULL,
   `amount_inr`    DECIMAL(14,2) NULL DEFAULT NULL,
+  -- The recorded collection covering this tranche (loose ref, no FK). Status
+  -- 5 = collected, awaiting approval; approval makes it 3 (claimable).
+  `vendor_payment_id` INT NULL DEFAULT NULL,
   `status`        TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
   `received_at`   TIMESTAMP NULL DEFAULT NULL,
   `disbursed_at`  TIMESTAMP NULL DEFAULT NULL,
@@ -1268,6 +1282,7 @@ CREATE TABLE IF NOT EXISTS `commission_tranche` (
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uq_commission_tranche_seq` (`commission_id` ASC, `seq` ASC) VISIBLE,
   INDEX `fk_commission_tranche_commission_idx` (`commission_id` ASC) VISIBLE,
+  INDEX `idx_commission_tranche_vendor_payment` (`vendor_payment_id` ASC) VISIBLE,
   CONSTRAINT `fk_commission_tranche_commission`
     FOREIGN KEY (`commission_id`) REFERENCES `commission` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE
@@ -1343,6 +1358,8 @@ CREATE TABLE IF NOT EXISTS `vendor_payment` (
   `amount_inr`            DECIMAL(14,2) NOT NULL,
   `exchange_rate`         DECIMAL(12,4) NOT NULL,
   `amount_foreign`        DECIMAL(14,2) NOT NULL,
+  -- What the covered tranches were invoiced at (invoice currency).
+  `amount_expected`       DECIMAL(14,2) NULL DEFAULT NULL,
   `payment_date`          DATE NOT NULL,
   `payment_reference`     VARCHAR(100) NULL DEFAULT NULL,
   `is_tranche`            TINYINT NOT NULL DEFAULT 0,
@@ -1352,6 +1369,9 @@ CREATE TABLE IF NOT EXISTS `vendor_payment` (
   `notes`                 VARCHAR(255) NULL DEFAULT NULL,
   `fy`                    SMALLINT NULL DEFAULT NULL,
   `created_by_cp_user_id` INT NULL DEFAULT NULL,
+  -- Approve collection (Super Admin / Finance Manager); loose cp_user ref.
+  `approved_by_cp_user_id` INT NULL DEFAULT NULL,
+  `approved_at`           TIMESTAMP NULL DEFAULT NULL,
   `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `fk_vendor_payment_invoice_idx` (`vendor_invoice_id` ASC) VISIBLE,
@@ -1372,6 +1392,8 @@ CREATE TABLE IF NOT EXISTS `partner_bank_account` (
   `org_id`                   INT NULL DEFAULT NULL,
   `payee_user_id`            INT NULL DEFAULT NULL,
   `region`                   TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 Domestic (IFSC), 1 International (SWIFT)
+  -- Currency the partner is paid in: INR when domestic; picked when international.
+  `payout_currency`          CHAR(3) NULL DEFAULT NULL,
   `account_holder`           VARCHAR(150) NOT NULL,
   `account_number_enc`       VARCHAR(1024) NULL DEFAULT NULL,
   `account_number_last4`     CHAR(4) NULL DEFAULT NULL,
@@ -1429,6 +1451,10 @@ CREATE TABLE IF NOT EXISTS `partner_payout` (
   `invoice_id`                 INT NOT NULL,
   `bank_account_id`            INT NULL DEFAULT NULL,
   `amount_inr`                 DECIMAL(14,2) NOT NULL,
+  -- Foreign-currency payout, set at release: remitted amount and rate.
+  `currency`                   CHAR(3)       NULL DEFAULT NULL,
+  `amount_foreign`             DECIMAL(14,2) NULL DEFAULT NULL,
+  `exchange_rate`              DECIMAL(12,4) NULL DEFAULT NULL,
   `status`                     TINYINT(3) UNSIGNED NOT NULL DEFAULT 0,
   `ops_approved_by_cp_user_id` INT NULL DEFAULT NULL,
   `ops_approved_at`            TIMESTAMP NULL DEFAULT NULL,

@@ -33,7 +33,13 @@ function nextStep(
   status: number,
   hasPendingPartnerInvoice: boolean,
   vendorInvoiceId: number | null,
+  awaitingApproval: boolean,
 ): NextStep {
+  // A recorded collection waits for a Super Admin / Finance Manager before the
+  // partner can claim it.
+  if (awaitingApproval && status !== CommissionStatus.READY_TO_DISBURSE) {
+    return { label: "Approve collection", href: "/admin/commissions?tab=collections" };
+  }
   switch (status) {
     case CommissionStatus.NOT_INVOICED:
       return { label: "Bill the vendor", href: "/admin/university-billing" };
@@ -184,6 +190,8 @@ export const commissionsRouter = createTRPCRouter({
           : c.partner_paid_at != null
             ? 1
             : 0;
+      // Collected by Finance, awaiting a manager's approval (not claimable yet).
+      const awaiting = tranches.filter((t) => t.status === TrancheStatus.COLLECTED).length;
 
       // Partner's claimable-now: received-but-unclaimed tranche share (realised INR).
       const claimableInr =
@@ -221,9 +229,14 @@ export const commissionsRouter = createTRPCRouter({
       else if (hasVendorInvoice) status = CommissionStatus.INVOICED;
       else status = CommissionStatus.NOT_INVOICED;
       // Some tranches already paid out, the rest still to collect from the
-      // vendor: Invoiced by stage, but say so.
+      // vendor: Invoiced by stage, but say so. A recorded collection waiting
+      // for approval is still Invoiced by stage.
       const statusLabel =
-        status === CommissionStatus.INVOICED && paid > 0 ? "Part paid · awaiting collection" : null;
+        status === CommissionStatus.INVOICED && awaiting > 0
+          ? "Collected · awaiting approval"
+          : status === CommissionStatus.INVOICED && paid > 0
+            ? "Part paid · awaiting collection"
+            : null;
 
       const commissionInr = toINR(num(c.commision_amount), c.currency);
       const intake =
@@ -242,23 +255,31 @@ export const commissionsRouter = createTRPCRouter({
         intake,
         vendorName: c.vendor?.name ?? "Direct",
         isDirect: c.vendor_id == null,
+        // The commission's currency (the contract currency on a flat deal) and
+        // the tuition's (the course's).
         currency: c.currency,
+        tuitionCurrency: c.tuition_currency ?? c.currency,
         tuition: num(c.tuition_fee),
         rate: num(c.commision_rate),
+        // Flat deals store rate 0; the amount carries the value.
+        isFlat: num(c.commision_rate) === 0,
         commissionAmount: num(c.commision_amount),
         commissionInr,
         partnerSharePct,
         partnerTier: c.partner_tier?.name ?? null,
-        cpSharePct:
-          c.cp_share_pct != null
-            ? num(c.cp_share_pct)
-            : partnerSharePct == null
-              ? null
-              : round2(100 - partnerSharePct),
-        partnerShareInr: share(commissionInr),
+        // The vendor's CP share stamped from the contract at approval (null on
+        // a direct deal: Collegepond gets the whole commission).
+        cpSharePct: c.cp_share_pct == null ? null : num(c.cp_share_pct),
+        cpReceivable:
+          c.cp_share_pct == null
+            ? num(c.commision_amount)
+            : round2((num(c.commision_amount) * num(c.cp_share_pct)) / 100),
+        partnerShareInr: share(
+          c.cp_share_pct == null ? commissionInr : round2((commissionInr * num(c.cp_share_pct)) / 100),
+        ),
         status,
         statusLabel,
-        tranche: { total, collected, paid },
+        tranche: { total, collected, paid, awaiting },
         // Per-tranche detail for the slide-over (partner-share amounts).
         tranches: tranches.map((t) => ({
           seq: t.seq,
@@ -289,7 +310,7 @@ export const commissionsRouter = createTRPCRouter({
             : null,
         approvedAt: c.approved_at,
         next: viewOnlyStep(
-          nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null),
+          nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null, awaiting > 0),
           !!bdm,
         ),
       };
@@ -315,6 +336,7 @@ export const commissionsRouter = createTRPCRouter({
               status: true,
               total_amount: true,
               net_payable: true,
+              payout_currency: true,
               partner_payout: { select: { id: true } },
               invoice_item: {
                 include: {
@@ -367,6 +389,7 @@ export const commissionsRouter = createTRPCRouter({
             data: {
               invoice_id: inv.id,
               amount_inr: net,
+              currency: inv.payout_currency ?? "INR",
               status: PayoutStatus.APPROVED,
               ops_approved_by_cp_user_id: ctx.cpUser.id,
               ops_approved_at: new Date(),

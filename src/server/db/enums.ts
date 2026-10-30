@@ -801,6 +801,9 @@ export const INDICATIVE_FX_RATES: Record<string, number> = {
   CAD: 61.3,
   NZD: 49.8,
   SGD: 62.1,
+  CHF: 95.4,
+  HKD: 10.7,
+  JPY: 0.56,
   INR: 1,
 };
 export const toINR = (
@@ -811,13 +814,16 @@ export const toINR = (
 
 // commission_tranche.status — per-tranche lifecycle for tranche-based deals
 // (e.g. 90% on enrollment, 10% on completion). "RECEIVED" = available for the
-// partner to claim; dimmed/already-paid tranches are PAID.
+// partner to claim; dimmed/already-paid tranches are PAID. COLLECTED = Finance
+// recorded the vendor's payment but a Super Admin / Finance Manager hasn't
+// approved the collection yet: collected, not claimable (30 Oct 2026).
 export const TrancheStatus = {
   UPCOMING: 0,
   NOT_INVOICED: 1,
   AWAITING_PAYMENT: 2,
   RECEIVED: 3,
   PAID: 4,
+  COLLECTED: 5,
 } as const;
 export type TrancheStatus = (typeof TrancheStatus)[keyof typeof TrancheStatus];
 
@@ -827,6 +833,7 @@ export const TrancheStatusLabel: Record<TrancheStatus, string> = {
   [TrancheStatus.AWAITING_PAYMENT]: "Awaiting Payment to CP",
   [TrancheStatus.RECEIVED]: "Available to Claim",
   [TrancheStatus.PAID]: "Paid",
+  [TrancheStatus.COLLECTED]: "Collected, awaiting approval",
 };
 
 export const TRANCHE_STATUS_CODES = Object.values(

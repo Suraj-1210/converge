@@ -17,9 +17,11 @@ import {
 } from "~/server/payee";
 import {
   PartnerInvoiceStatus,
+  PayoutStatus,
   TrancheStatus,
   financialYearOf,
 } from "~/server/db/enums";
+import { FINANCE_CURRENCIES } from "~/lib/currency";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -41,8 +43,13 @@ const CP = {
 };
 
 // GST math (partner is the supplier billing CP): intra-state -> CGST+SGST,
-// inter-state -> IGST; no GSTIN -> less TDS @2% u/s 194J.
-function computeTax(subtotal: number, partnerGstin: string | null) {
+// inter-state -> IGST; no GSTIN -> less TDS @2% u/s 194J. A claim paid out in
+// a foreign currency carries no GST and no TDS (Suraj, 30 Oct 2026): any
+// withholding is handled outside the app.
+function computeTax(subtotal: number, partnerGstin: string | null, payoutCurrency = "INR") {
+  if (payoutCurrency !== "INR") {
+    return { isInterstate: null as boolean | null, cgst: 0, sgst: 0, igst: 0, tds: 0, netPayable: subtotal };
+  }
   if (!partnerGstin) {
     const tds = round2(subtotal * 0.02);
     return {
@@ -120,6 +127,68 @@ function refuseUnsetShare(comms: { partner_share_pct: unknown }[]): void {
 
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
 
+// The currency an account is paid in: INR into a domestic account; an
+// international one picks it on the bank-details form (null = not picked yet,
+// accounts saved before 30 Oct 2026).
+const payoutCurrencyOf = (b: { region: number; payout_currency: string | null }): string | null =>
+  b.region === 1 ? b.payout_currency : "INR";
+
+// How a tranche reads to the partner. "pending" covers everything before
+// Collegepond's collection is approved (a recorded-but-unapproved collection
+// isn't the partner's to claim yet).
+type PartnerTrancheState = "pending" | "claimable" | "claimed" | "paid";
+function partnerTrancheState(status: number, onInvoice: boolean): PartnerTrancheState {
+  if (status === TrancheStatus.PAID) return "paid";
+  if (status === TrancheStatus.RECEIVED) return onInvoice ? "claimed" : "claimable";
+  return "pending";
+}
+
+// One status for the whole student, from its tranches — the same rule the
+// list pill, "Paid to partner", the timeline and the invoice history read.
+type PartnerCommissionState = "pending" | "claimable" | "claimed" | "part_paid" | "paid";
+function partnerCommissionState(states: PartnerTrancheState[]): PartnerCommissionState {
+  if (states.length === 0) return "pending";
+  if (states.every((s) => s === "paid")) return "paid";
+  if (states.some((s) => s === "claimable")) return "claimable";
+  if (states.some((s) => s === "claimed")) return "claimed";
+  if (states.some((s) => s === "paid")) return "part_paid";
+  return "pending";
+}
+
+// The payout a partner sees on their invoice history: how and when it was
+// paid, and the reference to quote to their bank.
+type PayoutRow = {
+  status: number;
+  reference_number: string | null;
+  utr: string | null;
+  payment_date: Date | null;
+  currency: string | null;
+  amount_foreign: { toNumber: () => number } | null;
+  exchange_rate: { toNumber: () => number } | null;
+  amount_inr: { toNumber: () => number };
+};
+const payoutSelect = {
+  status: true,
+  reference_number: true,
+  utr: true,
+  payment_date: true,
+  currency: true,
+  amount_foreign: true,
+  exchange_rate: true,
+  amount_inr: true,
+} as const;
+function partnerPayoutView(p: PayoutRow | null) {
+  if (p?.status !== PayoutStatus.RELEASED) return null;
+  return {
+    reference: p.utr ?? p.reference_number,
+    paymentDate: p.payment_date,
+    amountInr: num(p.amount_inr),
+    currency: p.currency ?? "INR",
+    amountForeign: p.amount_foreign == null ? null : num(p.amount_foreign),
+    exchangeRate: p.exchange_rate == null ? null : num(p.exchange_rate),
+  };
+}
+
 // Partner invoice numbers are unique across ALL partners (a schema rule), so
 // a number another partner already used is refused with a clear message
 // rather than Prisma's P2002.
@@ -133,8 +202,12 @@ const invoiceNumberTaken = (n: string) =>
   });
 
 export const partnerCommissionRouter = createTRPCRouter({
-  // Every commission for the partner (agency or independent), with a derived
-  // claim status.
+  // Every commission for the partner (agency or independent), with one set of
+  // figures the whole page reads (testers, 29 Oct 2026): Tuition, Commission
+  // (flat or %), Your share % and amount, Received by Collegepond, Claimable
+  // now, Claimed and Paid — all the partner's share, in INR once collected —
+  // and a per-tranche breakdown whose states drive the list status, "Paid to
+  // partner", the timeline and the invoice history alike.
   listClaimable: payeeProcedure.query(async ({ ctx }) => {
     const payee = payeeFromSession(ctx.payee);
     const comms = await db.commission.findMany({
@@ -155,6 +228,9 @@ export const partnerCommissionRouter = createTRPCRouter({
             },
           },
         },
+        // The vendor invoice's currency: what a collected tranche's foreign
+        // amount is in.
+        vendor_invoice_item: { select: { vendor_invoice: { select: { currency: true } } } },
         // Legacy single-invoice rows (no tranche) — kept for pre-tranche commissions.
         invoice_item: {
           where: { commission_tranche_id: null },
@@ -169,6 +245,8 @@ export const partnerCommissionRouter = createTRPCRouter({
             status: true,
             amount: true, // planned (commission-currency) slice — used before collection
             amount_inr: true, // realised INR — set once collected from the vendor
+            vendor_payment_id: true,
+            disbursed_at: true,
             invoice_item: {
               select: { invoice: { select: { invoice_number: true, status: true } } },
             },
@@ -176,6 +254,16 @@ export const partnerCommissionRouter = createTRPCRouter({
         },
       },
     });
+    // The rate each collected tranche was booked at.
+    const paymentIds = Array.from(
+      new Set(comms.flatMap((c) => c.commission_tranche.map((t) => t.vendor_payment_id)).filter((x): x is number => x != null)),
+    );
+    const rates = new Map(
+      (paymentIds.length > 0
+        ? await db.vendor_payment.findMany({ where: { id: { in: paymentIds } }, select: { id: true, exchange_rate: true } })
+        : []
+      ).map((p) => [p.id, num(p.exchange_rate)]),
+    );
 
     return comms.map((c) => {
       // The share is stamped from the partner's tier when Finance confirms the
@@ -184,47 +272,71 @@ export const partnerCommissionRouter = createTRPCRouter({
       const partnerSharePct = c.partner_share_pct == null ? null : num(c.partner_share_pct);
       const share = (gross: number) =>
         partnerSharePct == null ? 0 : round2(gross * (partnerSharePct / 100));
-      const tranches = c.commission_tranche;
+      // On a third-party deal Collegepond gets only its CP share of the gross;
+      // the partner's share is of that.
+      const cpFrac = c.cp_share_pct == null ? 1 : num(c.cp_share_pct) / 100;
+      const gross = num(c.commision_amount);
+      const fxCurrency = c.vendor_invoice_item?.vendor_invoice.currency ?? c.currency;
+      const legacyRate = c.received_fx_rate == null ? null : num(c.received_fx_rate);
 
-      let claimableGross: number;
-      let status: "pending" | "claimable" | "invoiced" | "paid";
-      let invoice: { invoice_number: string; status: number } | null;
-
-      if (tranches.length > 0) {
-        // RECEIVED ("available to claim") tranches not yet on an invoice.
-        const claimable = tranches.filter(
-          (t) => t.status === TrancheStatus.RECEIVED && t.invoice_item == null,
-        );
-        const claimed = tranches.filter((t) => t.invoice_item != null);
-        claimableGross = claimable.reduce((s, t) => s + num(t.amount_inr), 0);
-        status =
-          claimable.length > 0
-            ? "claimable"
-            : tranches.every((t) => t.status === TrancheStatus.PAID)
-              ? "paid"
-              : claimed.length > 0
-                ? "invoiced"
-                : "pending";
-        invoice = claimed[claimed.length - 1]?.invoice_item?.invoice ?? null;
-      } else {
-        // Legacy (pre-tranche) commission — commission-level claimability.
-        claimableGross = num(c.claimable_inr);
-        status =
-          c.partner_paid_at != null
-            ? "paid"
-            : c.invoice_item.length > 0
-              ? "invoiced"
-              : c.collegepond_received_at != null
-                ? "claimable"
-                : "pending";
-        invoice = c.invoice_item[0]?.invoice ?? null;
-      }
-
-      const claimable = share(claimableGross);
+      // Legacy (pre-tranche) commissions read as a single tranche.
+      const legacyState: PartnerTrancheState =
+        c.partner_paid_at != null
+          ? "paid"
+          : c.invoice_item.length > 0
+            ? "claimed"
+            : c.collegepond_received_at != null
+              ? "claimable"
+              : "pending";
+      const tranches =
+        c.commission_tranche.length > 0
+          ? c.commission_tranche.map((t) => {
+              const state = partnerTrancheState(t.status, t.invoice_item != null);
+              const collected = state !== "pending";
+              const rate = t.vendor_payment_id != null ? (rates.get(t.vendor_payment_id) ?? null) : legacyRate;
+              const amountInr = collected ? share(num(t.amount_inr)) : 0;
+              return {
+                seq: t.seq,
+                name: t.name ?? `Tranche ${t.seq}`,
+                state,
+                amountInr,
+                // The foreign amount behind the INR, at the rate it was booked.
+                foreign: collected && rate ? { amount: round2(amountInr / rate), currency: fxCurrency, rate } : null,
+                plannedForeign: share(round2(num(t.amount) * cpFrac)),
+                invoiceNumber: t.invoice_item?.invoice.invoice_number ?? null,
+                invoiceStatus: t.invoice_item?.invoice.status ?? null,
+                paidAt: t.disbursed_at,
+              };
+            })
+          : [
+              {
+                seq: 1,
+                name: "Full commission",
+                state: legacyState,
+                amountInr: legacyState === "pending" ? 0 : share(num(c.claimable_inr)),
+                foreign:
+                  legacyState !== "pending" && legacyRate
+                    ? { amount: round2(share(num(c.claimable_inr)) / legacyRate), currency: fxCurrency, rate: legacyRate }
+                    : null,
+                plannedForeign: share(round2(gross * cpFrac)),
+                invoiceNumber: c.invoice_item[0]?.invoice.invoice_number ?? null,
+                invoiceStatus: c.invoice_item[0]?.invoice.status ?? null,
+                paidAt: c.partner_paid_at,
+              },
+            ];
+      const sum = (pred: (s: PartnerTrancheState) => boolean) =>
+        round2(tranches.filter((t) => pred(t.state)).reduce((s, t) => s + t.amountInr, 0));
+      const status = partnerCommissionState(tranches.map((t) => t.state));
+      const paidCount = tranches.filter((t) => t.state === "paid").length;
+      const received = tranches.filter((t) => t.state !== "pending");
+      // Blended rate across the collected tranches, for the headline FX line.
+      const receivedForeign = received.reduce((s, t) => s + (t.foreign?.amount ?? 0), 0);
       const intake =
         [c.application.course.intake_month, c.application.course.intake_year]
           .filter(Boolean)
           .join(" ") || null;
+      const isFlat = num(c.commision_rate) === 0;
+      const lastPaid = tranches.map((t) => t.paidAt).filter((d): d is Date => d != null).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
       return {
         commissionId: c.id,
         universityStudentId: c.application.university_app_id,
@@ -236,29 +348,35 @@ export const partnerCommissionRouter = createTRPCRouter({
         program: c.application.course.name,
         intake,
         currency: c.currency,
+        tuitionCurrency: c.tuition_currency ?? c.currency,
         tuition: num(c.tuition_fee),
+        isFlat,
         commissionRate: num(c.commision_rate),
-        commissionAmount: num(c.commision_amount),
+        commissionAmount: gross,
         partnerSharePct,
-        claimableInr: claimable,
-        cpCommissionInr: partnerSharePct == null ? 0 : round2(claimableGross - claimable),
         sharePending: partnerSharePct == null,
+        // Your share of what Collegepond will receive, in the commission currency.
+        shareAmount: share(round2(gross * cpFrac)),
+        // The partner's share, INR: collected by Collegepond (approved),
+        // claimable now, on a claim not yet paid, and paid.
+        receivedInr: sum((s) => s !== "pending"),
+        receivedFx:
+          receivedForeign > 0 && received.every((t) => t.foreign)
+            ? {
+                amount: round2(receivedForeign),
+                currency: fxCurrency,
+                rate: round2((sum((s) => s !== "pending") / receivedForeign) * 100) / 100,
+              }
+            : null,
+        claimableInr: sum((s) => s === "claimable"),
+        claimedInr: sum((s) => s === "claimed"),
+        paidInr: sum((s) => s === "paid"),
         receivedAt: c.collegepond_received_at,
-        paidAt: c.partner_paid_at,
-        // Per-tranche breakdown for the UI (empty for legacy commissions). Both
-        // amounts are the partner's share: amountInr is the realised INR (known
-        // only once collected); plannedForeign is the commission-currency slice
-        // shown for not-yet-collected tranches (INR isn't locked until the FX hits).
-        tranches: tranches.map((t) => ({
-          seq: t.seq,
-          name: t.name,
-          status: t.status,
-          amountInr: share(num(t.amount_inr)),
-          plannedForeign: share(num(t.amount)),
-          claimed: t.invoice_item != null,
-        })),
-        invoiceNumber: invoice?.invoice_number ?? null,
-        invoiceStatus: invoice?.status ?? null,
+        // Paid to partner: every tranche paid → the last payout date.
+        paidAt: status === "paid" ? lastPaid : null,
+        paidCount,
+        trancheCount: tranches.length,
+        tranches,
         status,
         selectable: status === "claimable" && partnerSharePct != null,
       };
@@ -276,6 +394,8 @@ export const partnerCommissionRouter = createTRPCRouter({
     return {
       hasAccount: acct != null,
       region: acct?.region === 1 ? ("international" as const) : ("domestic" as const),
+      // What claims are paid out in (INR for a domestic account).
+      payoutCurrency: acct ? payoutCurrencyOf(acct) : "INR",
       accountHolder: acct?.account_holder ?? null,
       // Partners only ever see the last 4 digits.
       accountNumberLast4: acct?.account_number_last4 ?? null,
@@ -329,6 +449,8 @@ export const partnerCommissionRouter = createTRPCRouter({
           branch: z.string().trim().max(150).optional(),
           bankCountry: z.string().trim().toUpperCase().length(2).optional(),
           bankAddress: z.string().trim().max(255).optional(),
+          // International accounts: the currency the partner is paid in.
+          payoutCurrency: z.enum(FINANCE_CURRENCIES).optional(),
           accountType: z.string().trim().max(30).optional(),
           // Key from /api/upload (folder bank-proofs).
           proofUrl: z
@@ -355,6 +477,9 @@ export const partnerCommissionRouter = createTRPCRouter({
             if (!v.bankAddress?.trim()) {
               ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bankAddress"], message: "Enter the bank's address" });
             }
+            if (!v.payoutCurrency) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payoutCurrency"], message: "Pick the currency you want to be paid in" });
+            }
           }
         }),
     )
@@ -365,6 +490,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       const last4 = input.accountNumber.slice(-4);
       const data = {
         region: intl ? 1 : 0,
+        payout_currency: intl ? (input.payoutCurrency ?? null) : "INR",
         account_holder: input.accountHolder,
         account_number_enc: encryptSecret(input.accountNumber),
         account_number_last4: last4,
@@ -396,7 +522,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       };
       const existing = await db.partner_bank_account.findFirst({
         where: payeeWhere(payee),
-        select: { id: true, account_number_last4: true, is_verified: true, rejected_at: true },
+        select: { id: true, account_number_last4: true, is_verified: true, rejected_at: true, region: true, payout_currency: true },
       });
       const savedSelect = { id: true, org_id: true, payee_user_id: true } as const;
       const saved = existing
@@ -410,6 +536,8 @@ export const partnerCommissionRouter = createTRPCRouter({
           oldLast4: existing?.account_number_last4 ?? null,
           newLast4: last4,
           region: data.region === 1 ? "international" : "domestic",
+          oldPayoutCurrency: existing ? payoutCurrencyOf(existing) : null,
+          newPayoutCurrency: data.payout_currency,
           previousStatus: existing ? bankStatusOf(existing) : null,
         },
         ctx.cpPartner.id,
@@ -442,7 +570,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       const bank = await db.partner_bank_account.findFirst({
         where: payeeWhere(payee),
         orderBy: { id: "desc" },
-        select: { id: true, account_number_last4: true, ifsc: true, bank_name: true, account_holder: true, proof_url: true, rejected_at: true, rejection_reason: true },
+        select: { id: true, account_number_last4: true, ifsc: true, swift: true, region: true, payout_currency: true, bank_name: true, account_holder: true, proof_url: true, rejected_at: true, rejection_reason: true },
       });
       // A claim is paid into the account on file, so it needs one — with the
       // cheque / bank letter finance will check before paying.
@@ -458,6 +586,14 @@ export const partnerCommissionRouter = createTRPCRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `Our finance team couldn't verify your bank details${bank.rejection_reason ? ` (${bank.rejection_reason})` : ""}. Update them in My Account before submitting a claim.`,
+        });
+      }
+      // The claim is paid in the account's currency (a snapshot on the invoice).
+      const payoutCurrency = payoutCurrencyOf(bank);
+      if (!payoutCurrency) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Choose the currency you're paid in (My Account → Bank Details) before submitting a claim.",
         });
       }
 
@@ -507,7 +643,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       });
       const subtotal = round2(lineItems.reduce((s, l) => s + l.amount, 0));
       const partnerGstin = orNull(input.gstin);
-      const tax = computeTax(subtotal, partnerGstin);
+      const tax = computeTax(subtotal, partnerGstin, payoutCurrency);
 
       const taken = await db.invoice.findUnique({
         where: { invoice_number: input.invoiceNumber },
@@ -520,7 +656,9 @@ export const partnerCommissionRouter = createTRPCRouter({
             invoice_number: input.invoiceNumber,
             invoice_date: new Date(input.invoiceDate),
             total_amount: subtotal,
+            // Amounts are INR; payout_currency is what it's paid out in.
             currency: "INR",
+            payout_currency: payoutCurrency,
             status: PartnerInvoiceStatus.SUBMITTED,
             ...payeeData(payee),
             gstin: partnerGstin,
@@ -538,7 +676,7 @@ export const partnerCommissionRouter = createTRPCRouter({
             notes: orNull(input.notes),
             bank_account_id: bank?.id ?? null,
             bank_details: bank
-              ? `${bank.bank_name ?? ""} ${bank.ifsc ?? ""} ****${bank.account_number_last4 ?? ""}`.trim()
+              ? `${bank.bank_name ?? ""} ${(bank.region === 1 ? bank.swift : bank.ifsc) ?? ""} ****${bank.account_number_last4 ?? ""}`.trim()
               : null,
           },
         });
@@ -564,7 +702,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         }
         throw e;
       });
-      return { invoiceId: created.id, netPayable: tax.netPayable };
+      return { invoiceId: created.id, netPayable: tax.netPayable, payoutCurrency };
     }),
 
   // Tax preview for the wizard (no write).
@@ -572,17 +710,25 @@ export const partnerCommissionRouter = createTRPCRouter({
     .input(z.object({ commissionIds: z.array(z.number().int().positive()), gstin: z.string().optional() }))
     .query(async ({ ctx, input }) => {
       const payee = payeeFromSession(ctx.payee);
-      const comms = await db.commission.findMany({
-        where: { id: { in: input.commissionIds }, ...payeeWhere(payee) },
-        select: {
-          partner_share_pct: true,
-          commission_tranche: {
-            where: { status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
-            select: { amount_inr: true },
+      const [comms, bank] = await Promise.all([
+        db.commission.findMany({
+          where: { id: { in: input.commissionIds }, ...payeeWhere(payee) },
+          select: {
+            partner_share_pct: true,
+            commission_tranche: {
+              where: { status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
+              select: { amount_inr: true },
+            },
           },
-        },
-      });
+        }),
+        db.partner_bank_account.findFirst({
+          where: payeeWhere(payee),
+          orderBy: { id: "desc" },
+          select: { region: true, payout_currency: true },
+        }),
+      ]);
       refuseUnsetShare(comms);
+      const payoutCurrency = bank ? payoutCurrencyOf(bank) : "INR";
       const subtotal = round2(
         comms.reduce((s, c) => {
           const sharePct = num(c.partner_share_pct);
@@ -592,7 +738,9 @@ export const partnerCommissionRouter = createTRPCRouter({
       );
       return {
         subtotal,
-        ...computeTax(subtotal, orNull(input.gstin)),
+        ...computeTax(subtotal, orNull(input.gstin), payoutCurrency ?? "INR"),
+        // Non-INR: no GST / TDS; the foreign amount is fixed when it's paid.
+        payoutCurrency,
         cpName: CP.name,
         cpAddress: CP.address,
         cpGstin: CP.gstin,
@@ -600,7 +748,11 @@ export const partnerCommissionRouter = createTRPCRouter({
       };
     }),
 
-  // Per-commission detail for the student modal: payment timeline + its invoice.
+  // Per-commission detail for the student modal: the milestones and EVERY
+  // invoice that claims part of it (one per claimed tranche), newest first,
+  // each with this student's lines and — once paid — the payment reference,
+  // date and any foreign amount. Rejected claims' lines were released, so
+  // they no longer appear here (the partner sees them in Invoice History).
   studentDetail: payeeProcedure
     .input(z.object({ commissionId: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
@@ -610,14 +762,21 @@ export const partnerCommissionRouter = createTRPCRouter({
         include: {
           application: { select: { created_at: true } },
           invoice_item: {
+            orderBy: { id: "asc" },
             select: {
+              amount: true,
+              commission_tranche: { select: { seq: true, name: true } },
               invoice: {
                 select: {
+                  id: true,
                   invoice_number: true,
                   invoice_date: true,
+                  created_at: true,
                   total_amount: true,
                   net_payable: true,
                   status: true,
+                  payout_currency: true,
+                  partner_payout: { select: payoutSelect },
                 },
               },
             },
@@ -625,24 +784,49 @@ export const partnerCommissionRouter = createTRPCRouter({
         },
       });
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Commission not found" });
-      // A commission can now span several invoices (one per claimed tranche) —
-      // show the most recent for the detail view.
-      const inv = c.invoice_item.at(-1)?.invoice ?? null;
+      const byInvoice = new Map<
+        number,
+        {
+          id: number;
+          number: string;
+          date: Date;
+          submittedAt: Date;
+          status: number;
+          payoutCurrency: string;
+          totalAmount: number;
+          netPayable: number;
+          studentAmount: number;
+          tranches: string[];
+          payout: ReturnType<typeof partnerPayoutView>;
+        }
+      >();
+      for (const it of c.invoice_item) {
+        const inv = it.invoice;
+        const e = byInvoice.get(inv.id) ?? {
+          id: inv.id,
+          number: inv.invoice_number,
+          date: inv.invoice_date,
+          submittedAt: inv.created_at,
+          status: inv.status,
+          payoutCurrency: inv.payout_currency ?? "INR",
+          totalAmount: num(inv.total_amount),
+          netPayable: inv.net_payable == null ? num(inv.total_amount) : num(inv.net_payable),
+          studentAmount: 0,
+          tranches: [],
+          payout: partnerPayoutView(inv.partner_payout),
+        };
+        e.studentAmount = round2(e.studentAmount + num(it.amount));
+        e.tranches.push(it.commission_tranche?.name ?? (it.commission_tranche ? `Tranche ${it.commission_tranche.seq}` : "Full commission"));
+        byInvoice.set(inv.id, e);
+      }
+      const invoices = Array.from(byInvoice.values()).sort(
+        (a, b) => b.date.getTime() - a.date.getTime() || b.id - a.id,
+      );
       return {
         appSubmittedAt: c.application.created_at,
         commissionCreatedAt: c.created_at,
         receivedAt: c.collegepond_received_at,
-        invoicedAt: inv?.invoice_date ?? null,
-        paidAt: c.partner_paid_at,
-        invoice: inv
-          ? {
-              number: inv.invoice_number,
-              date: inv.invoice_date,
-              amount: num(inv.total_amount),
-              netPayable: inv.net_payable == null ? num(inv.total_amount) : num(inv.net_payable),
-              status: inv.status,
-            }
-          : null,
+        invoices,
       };
     }),
 
@@ -693,22 +877,30 @@ export const partnerCommissionRouter = createTRPCRouter({
       .sort((a, b) => a.fy - b.fy);
   }),
 
+  // Every claim, newest first, with how and when it was paid: the payment
+  // reference / UTR to quote to the bank, the date, and — for a foreign
+  // payout — the amount sent and the rate.
   invoiceHistory: payeeProcedure.query(async ({ ctx }) => {
     const payee = payeeFromSession(ctx.payee);
     const invoices = await db.invoice.findMany({
       where: payeeWhere(payee),
-      orderBy: { invoice_date: "desc" },
-      include: { invoice_item: { select: { id: true } } },
+      orderBy: [{ invoice_date: "desc" }, { id: "desc" }],
+      include: {
+        invoice_item: { select: { commission_id: true } },
+        partner_payout: { select: payoutSelect },
+      },
     });
     return invoices.map((inv) => ({
       id: inv.id,
       invoiceNumber: inv.invoice_number,
       invoiceDate: inv.invoice_date,
-      students: inv.invoice_item.length,
+      students: new Set(inv.invoice_item.map((it) => it.commission_id)).size,
       totalAmount: num(inv.total_amount),
       netPayable: inv.net_payable == null ? num(inv.total_amount) : num(inv.net_payable),
+      payoutCurrency: inv.payout_currency ?? "INR",
       status: inv.status,
       rejectionReason: inv.rejection_reason,
+      payout: partnerPayoutView(inv.partner_payout),
     }));
   }),
 });

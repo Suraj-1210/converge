@@ -18,6 +18,7 @@ import {
   VendorTypeLabel,
   CommissionType,
 } from "~/server/db/enums";
+import { CURRENCY_OPTIONS, currencySymbol, isFinanceCurrency, money, type FinanceCurrency } from "~/lib/currency";
 
 type RO = inferRouterOutputs<AppRouter>;
 type ContractRow = RO["commissionRates"]["listContracts"][number];
@@ -29,9 +30,9 @@ type TrancheRow = ContractRow["tranches"][number];
 type ModalState =
   | { kind: "vendor"; vendor?: VendorRow }
   | { kind: "contract"; presetVendorId: number | null; contract?: ContractRow }
-  | { kind: "rate"; contractId: number; universityId: number; rate?: RateRow }
-  | { kind: "bonus"; contractId: number; tier?: BonusRow }
-  | { kind: "tranche"; contractId: number; nextSeq: number; tranche?: TrancheRow }
+  | { kind: "rate"; contract: ContractRow; rate?: RateRow }
+  | { kind: "bonus"; contract: ContractRow; tier?: BonusRow }
+  | { kind: "tranche"; contract: ContractRow; tranche?: TrancheRow }
   | null;
 
 // ---- small helpers ----------------------------------------------------------
@@ -40,12 +41,17 @@ const toDateInput = (d: Date | string | null | undefined): string => {
   const t = typeof d === "string" ? new Date(d) : d;
   return Number.isNaN(t.getTime()) ? "" : t.toISOString().slice(0, 10);
 };
-const rateLabel = (r: { commissionType: number; rate: number | null }): string => {
+// A flat amount in the contract currency. Contracts made before contracts had
+// a currency applied flat amounts in the course's currency, so say that.
+const flatLabel = (amount: number, currency: string | null): string =>
+  currency ? money(amount, currency) : `${amount.toLocaleString()} (course currency)`;
+const rateLabel = (r: { commissionType: number; rate: number | null }, currency: string | null): string => {
   if (r.rate == null) return "—";
-  return r.commissionType === CommissionType.FLAT
-    ? `$${r.rate.toLocaleString()}`
-    : `${r.rate}%`;
+  return r.commissionType === CommissionType.FLAT ? flatLabel(r.rate, currency) : `${r.rate}%`;
 };
+// "Amount (€)" — a form label in the contract currency.
+const amountLabel = (base: string, currency: string | null) =>
+  currency ? `${base} (${currencySymbol(currency).trim()})` : `${base} (course currency)`;
 // The headline (university-wide) rate, falling back to the first program rate.
 const headlineRate = (c: ContractRow): RateRow | null =>
   c.rates.find((r) => r.courseId === null) ?? c.rates[0] ?? null;
@@ -116,7 +122,7 @@ function TypeToggle({
 }) {
   const opts = [
     { v: CommissionType.PERCENTAGE, label: "Percentage (%)" },
-    { v: CommissionType.FLAT, label: "Flat Amount ($)" },
+    { v: CommissionType.FLAT, label: "Flat Amount" },
   ];
   return (
     <div>
@@ -154,6 +160,7 @@ const CSV_EXPORT_HEADERS = [
   "VendorName",
   "CommissionRate",
   "CommissionType",
+  "Currency",
   "CpShare",
   "IsDefault",
   "EffectiveDate",
@@ -164,6 +171,7 @@ const CSV_TEMPLATE_HEADERS = [
   "VendorId",
   "CommissionRate",
   "CommissionType",
+  "Currency",
   "CpShare",
   "IsDefault",
   "EffectiveDate",
@@ -221,6 +229,8 @@ type PreviewRow = {
   vendorName: string;
   commissionType: number;
   rate: number | null;
+  // Optional column; null = unchanged (new contracts take the vendor's).
+  currency: FinanceCurrency | null;
   cpSharePct: number | null;
   isDefault: boolean;
   effectiveDate: string | null;
@@ -254,6 +264,7 @@ function buildPreview(
       skipped: 0,
     };
   const iType = idx("commissiontype");
+  const iCcy = idx("currency");
   const iCp = idx("cpshare");
   const iDef = idx("isdefault");
   const iEff = idx("effectivedate");
@@ -293,6 +304,12 @@ function buildPreview(
     const commissionType = /^(flat|1|\$)/.test(typeRaw)
       ? CommissionType.FLAT
       : CommissionType.PERCENTAGE;
+    const ccyRaw = iCcy >= 0 ? (cells[iCcy] ?? "").trim().toUpperCase() : "";
+    if (ccyRaw !== "" && !isFinanceCurrency(ccyRaw)) {
+      skipped++;
+      continue;
+    }
+    const currency = ccyRaw === "" ? null : ccyRaw;
     const cpRaw = iCp >= 0 ? (cells[iCp] ?? "").trim() : "";
     const cpSharePct = cpRaw === "" ? null : Number(cpRaw);
     const defRaw = iDef >= 0 ? (cells[iDef] ?? "").trim().toLowerCase() : "";
@@ -312,7 +329,8 @@ function buildPreview(
         (rate ?? null) !== exRate ||
         (cpSharePct ?? 0) !== exCp ||
         isDefault !== ex.isDefault ||
-        commissionType !== exType;
+        commissionType !== exType ||
+        (currency != null && currency !== ex.currency);
       status = changed ? "changed" : "nochange";
     }
     rows.push({
@@ -324,6 +342,7 @@ function buildPreview(
         vendorId == null ? "Direct" : (venName.get(vendorId) ?? `#${vendorId}`),
       commissionType,
       rate,
+      currency,
       cpSharePct,
       isDefault,
       effectiveDate,
@@ -468,6 +487,7 @@ export default function CommissionRatesPage() {
         c.vendorName ?? "Direct",
         head?.rate != null ? String(head.rate) : "",
         csvTypeWord(head?.commissionType),
+        c.currency ?? "",
         c.cpSharePct != null ? String(c.cpSharePct) : "",
         c.isDefault ? "true" : "false",
         c.effectiveDate ? toDateInput(c.effectiveDate) : "",
@@ -481,8 +501,8 @@ export default function CommissionRatesPage() {
   const handleTemplate = () => {
     downloadCsv("commission-rates-template.csv", [
       CSV_TEMPLATE_HEADERS,
-      ["12", "DIRECT", "12", "percentage", "", "false", "2024-04-15", "Standard direct rate"],
-      ["12", "34", "15", "percentage", "80", "true", "2024-04-15", "Third-party via vendor"],
+      ["12", "DIRECT", "12", "percentage", "GBP", "", "false", "2024-04-15", "Standard direct rate"],
+      ["12", "34", "2000", "flat", "EUR", "80", "true", "2024-04-15", "Third-party via vendor, EUR flat fee"],
     ]);
     showToast("Template downloaded");
   };
@@ -518,6 +538,7 @@ export default function CommissionRatesPage() {
         vendorId: r.vendorId,
         commissionType: r.commissionType,
         rate: r.rate,
+        currency: r.currency,
         cpSharePct: r.cpSharePct,
         isDefault: r.isDefault,
         effectiveDate: r.effectiveDate,
@@ -538,9 +559,7 @@ export default function CommissionRatesPage() {
         {canEdit && (
           <button
             className={TEXT_BTN}
-            onClick={() =>
-              setModal({ kind: "rate", contractId: c.id, universityId: c.universityId })
-            }
+            onClick={() => setModal({ kind: "rate", contract: c })}
           >
             + Add Program
           </button>
@@ -577,14 +596,12 @@ export default function CommissionRatesPage() {
                   <td className={TD}>
                     <Pill>{typeText(r.commissionType)}</Pill>
                   </td>
-                  <td className={TD}>{rateLabel(r)}</td>
+                  <td className={TD}>{rateLabel(r, c.currency)}</td>
                   {canEdit && (
                     <td className={`${TD} text-right`}>
                       <button
                         className={`${TEXT_BTN} mr-3`}
-                        onClick={() =>
-                          setModal({ kind: "rate", contractId: c.id, universityId: c.universityId, rate: r })
-                        }
+                        onClick={() => setModal({ kind: "rate", contract: c, rate: r })}
                       >
                         Edit
                       </button>
@@ -606,7 +623,7 @@ export default function CommissionRatesPage() {
       <div className="flex items-center justify-between px-3.5 py-2">
         <span className="text-xs font-semibold text-[#475467]">🎁 Volume Bonus Tiers</span>
         {canEdit && (
-          <button className={TEXT_BTN} onClick={() => setModal({ kind: "bonus", contractId: c.id })}>
+          <button className={TEXT_BTN} onClick={() => setModal({ kind: "bonus", contract: c })}>
             + Add Tier
           </button>
         )}
@@ -629,12 +646,12 @@ export default function CommissionRatesPage() {
                   {b.minStudents}
                   {b.maxStudents ? `–${b.maxStudents}` : "+"} students
                 </td>
-                <td className={TD}>${(b.amountPerStudent ?? 0).toLocaleString()}</td>
+                <td className={TD}>{flatLabel(b.amountPerStudent ?? 0, c.currency)}</td>
                 {canEdit && (
                   <td className={`${TD} text-right`}>
                     <button
                       className={`${TEXT_BTN} mr-3`}
-                      onClick={() => setModal({ kind: "bonus", contractId: c.id, tier: b })}
+                      onClick={() => setModal({ kind: "bonus", contract: c, tier: b })}
                     >
                       Edit
                     </button>
@@ -651,6 +668,7 @@ export default function CommissionRatesPage() {
     </div>
   );
 
+  // Direct and third-party vendor contracts alike (testers, 29 Oct 2026).
   const renderTrancheSubTable = (c: ContractRow) => (
     <div className="rounded-lg border border-[#E4E7EC]">
       <div className="flex items-center justify-between px-3.5 py-2">
@@ -661,14 +679,17 @@ export default function CommissionRatesPage() {
           ) : (
             <button
               className={TEXT_BTN}
-              onClick={() =>
-                setModal({ kind: "tranche", contractId: c.id, nextSeq: c.tranches.length + 1 })
-              }
+              onClick={() => setModal({ kind: "tranche", contract: c })}
             >
               + Add Tranche
             </button>
           ))}
       </div>
+      {c.trancheIssue && (
+        <p className="mx-3.5 mb-2 rounded-md bg-[#FFFAEB] px-3 py-2 text-xs font-medium text-[#B54708]">
+          ⚠ {c.trancheIssue} Commissions on this contract can&apos;t be approved until it does.
+        </p>
+      )}
       {c.tranches.length === 0 ? (
         <p className="px-3.5 pb-3 text-xs text-[#98A2B3]">No tranche payments — commission paid in full.</p>
       ) : (
@@ -676,9 +697,8 @@ export default function CommissionRatesPage() {
           <thead>
             <tr>
               <th className={TH}>Tranche</th>
-              <th className={TH}>Amount</th>
-              <th className={TH}>% of Total</th>
-              <th className={TH}>Timing / Trigger</th>
+              <th className={TH}>Share of Commission</th>
+              <th className={TH}>Condition</th>
               {canEdit && <th className={TH}></th>}
             </tr>
           </thead>
@@ -686,16 +706,15 @@ export default function CommissionRatesPage() {
             {c.tranches.map((t) => (
               <tr key={t.id} className="border-b border-[#F2F4F7] last:border-0">
                 <td className={TD}>{t.name}</td>
-                <td className={TD}>{t.amount == null ? "—" : `$${t.amount.toLocaleString()}`}</td>
-                <td className={TD}>{t.pct == null ? "—" : `${t.pct}%`}</td>
+                <td className={TD}>
+                  {t.pct != null ? `${t.pct}%` : t.amount != null ? flatLabel(t.amount, c.currency) : "—"}
+                </td>
                 <td className={TD}>{t.timing ?? "—"}</td>
                 {canEdit && (
                   <td className={`${TD} text-right`}>
                     <button
                       className={`${TEXT_BTN} mr-3`}
-                      onClick={() =>
-                        setModal({ kind: "tranche", contractId: c.id, nextSeq: t.seq, tranche: t })
-                      }
+                      onClick={() => setModal({ kind: "tranche", contract: c, tranche: t })}
                     >
                       Edit
                     </button>
@@ -732,7 +751,10 @@ export default function CommissionRatesPage() {
           <td className={TD}>
             {headline ? <Pill>{typeText(headline.commissionType)}</Pill> : <span className="text-[#98A2B3]">—</span>}
           </td>
-          <td className={TD}>{headline ? rateLabel(headline) : <span className="text-[#98A2B3]">—</span>}</td>
+          <td className={TD}>
+            {headline ? rateLabel(headline, c.currency) : <span className="text-[#98A2B3]">—</span>}
+            <span className="block text-[11px] text-[#98A2B3]">{c.currency ?? "No currency set"}</span>
+          </td>
           {isVendor && (
             <td className={TD}>
               {c.cpSharePct == null ? (
@@ -764,17 +786,18 @@ export default function CommissionRatesPage() {
               )}
             </td>
           )}
-          {!isVendor && (
-            <td className={TD}>
-              {c.tranches.length > 0 ? (
-                <button onClick={() => toggle(c.id)}>
-                  <Pill tone="blue">💳 {c.tranches.length} Tranches</Pill>
-                </button>
-              ) : (
-                <span className="text-[#98A2B3]">—</span>
-              )}
-            </td>
-          )}
+          <td className={TD}>
+            {c.tranches.length > 0 ? (
+              <button onClick={() => toggle(c.id)} title={c.trancheIssue ?? undefined}>
+                <Pill tone={c.trancheIssue ? "orange" : "blue"}>
+                  💳 {c.tranches.length} {c.tranches.length === 1 ? "Tranche" : "Tranches"}
+                  {c.trancheIssue ? " ⚠" : ""}
+                </Pill>
+              </button>
+            ) : (
+              <span className="text-[#98A2B3]">—</span>
+            )}
+          </td>
           <td className={TD}>{c.effectiveDate ? formatDate(c.effectiveDate) : "—"}</td>
           <td className={TD}>
             {canEdit ? (
@@ -820,7 +843,7 @@ export default function CommissionRatesPage() {
               <div className="space-y-3">
                 {renderRatesSubTable(c)}
                 {!isVendor && renderBonusSubTable(c)}
-                {!isVendor && renderTrancheSubTable(c)}
+                {renderTrancheSubTable(c)}
               </div>
             </td>
           </tr>
@@ -854,7 +877,7 @@ export default function CommissionRatesPage() {
   }
 
   const directCols = canEdit ? 11 : 10;
-  const vendorCols = canEdit ? 11 : 10;
+  const vendorCols = canEdit ? 12 : 11;
 
   return (
     <div>
@@ -979,8 +1002,7 @@ export default function CommissionRatesPage() {
       )}
       {modal?.kind === "rate" && (
         <RateModal
-          contractId={modal.contractId}
-          universityId={modal.universityId}
+          contract={modal.contract}
           rate={modal.rate}
           onClose={() => setModal(null)}
           onToast={showToast}
@@ -988,7 +1010,7 @@ export default function CommissionRatesPage() {
       )}
       {modal?.kind === "bonus" && (
         <BonusModal
-          contractId={modal.contractId}
+          contract={modal.contract}
           tier={modal.tier}
           onClose={() => setModal(null)}
           onToast={showToast}
@@ -996,8 +1018,7 @@ export default function CommissionRatesPage() {
       )}
       {modal?.kind === "tranche" && (
         <TrancheModal
-          contractId={modal.contractId}
-          nextSeq={modal.nextSeq}
+          contract={modal.contract}
           tranche={modal.tranche}
           onClose={() => setModal(null)}
           onToast={showToast}
@@ -1040,6 +1061,7 @@ export default function CommissionRatesPage() {
             <Pill tone={v.type === VendorType.DIRECT ? "gray" : "green"}>
               {VendorTypeLabel[(v.type as 0 | 1) ?? VendorType.THIRD_PARTY]}
             </Pill>
+            {v.currency ? <Pill tone="blue">{v.currency}</Pill> : <Pill tone="orange">No currency</Pill>}
           </div>
           <span className="text-xs text-[#98A2B3]">
             {uniN} {uniN === 1 ? "university" : "universities"} · {list.length}{" "}
@@ -1088,6 +1110,7 @@ export default function CommissionRatesPage() {
                     <th className={TH}>Rate</th>
                     <th className={TH}>CP Share %</th>
                     <th className={TH}>Programs</th>
+                    <th className={TH}>Tranches</th>
                     <th className={TH}>Effective Date</th>
                     <th className={TH}>Default</th>
                     <th className={TH}>Notes</th>
@@ -1154,7 +1177,7 @@ export default function CommissionRatesPage() {
                   onChange={(e) => setCsvText(e.target.value)}
                   rows={4}
                   placeholder={
-                    "UniversityId,VendorId,CommissionRate,CommissionType,CpShare,IsDefault,EffectiveDate,Notes\n12,DIRECT,12,percentage,,false,2024-04-15,Standard rate"
+                    "UniversityId,VendorId,CommissionRate,CommissionType,Currency,CpShare,IsDefault,EffectiveDate,Notes\n12,DIRECT,12,percentage,GBP,,false,2024-04-15,Standard rate"
                   }
                   className="w-full rounded-lg border border-[#D0D5DD] px-3 py-2 font-mono text-xs text-[#344054] focus:border-[#1570EF] focus:outline-none"
                 />
@@ -1192,6 +1215,7 @@ export default function CommissionRatesPage() {
                           <th className={TH}>Vendor</th>
                           <th className={TH}>Type</th>
                           <th className={TH}>Rate</th>
+                          <th className={TH}>Currency</th>
                           <th className={TH}>CP Share</th>
                           <th className={TH}>Default</th>
                         </tr>
@@ -1214,8 +1238,9 @@ export default function CommissionRatesPage() {
                               <Pill>{typeText(r.commissionType)}</Pill>
                             </td>
                             <td className={TD}>
-                              {r.rate == null ? "—" : rateLabel({ commissionType: r.commissionType, rate: r.rate })}
+                              {r.rate == null ? "—" : rateLabel({ commissionType: r.commissionType, rate: r.rate }, r.currency)}
                             </td>
+                            <td className={TD}>{r.currency ?? <span className="text-[#98A2B3]">unchanged</span>}</td>
                             <td className={TD}>{r.vendorId == null ? "—" : r.cpSharePct == null ? "—" : `${r.cpSharePct}%`}</td>
                             <td className={TD}>{r.isDefault ? "★" : ""}</td>
                           </tr>
@@ -1379,9 +1404,7 @@ function SummaryTab({
                       <td className={TD}>
                         {def?.defaultRate == null
                           ? "—"
-                          : def.commissionType === CommissionType.FLAT
-                            ? `$${def.defaultRate.toLocaleString()}`
-                            : `${def.defaultRate}%`}
+                          : rateLabel({ commissionType: def.commissionType ?? CommissionType.PERCENTAGE, rate: def.defaultRate }, def.currency)}
                       </td>
                       <td className={TD}>
                         <div className="flex gap-1">
@@ -1444,9 +1467,7 @@ function SummaryTab({
                                     <td className={TD}>
                                       {s.defaultRate == null
                                         ? "—"
-                                        : s.commissionType === CommissionType.FLAT
-                                          ? `$${s.defaultRate.toLocaleString()}`
-                                          : `${s.defaultRate}%`}
+                                        : rateLabel({ commissionType: s.commissionType ?? CommissionType.PERCENTAGE, rate: s.defaultRate }, s.currency)}
                                     </td>
                                     <td className={TD}>{s.cpSharePct == null ? "—" : `${s.cpSharePct}%`}</td>
                                     <td className={TD}>{s.effectiveDate ? formatDate(s.effectiveDate) : "—"}</td>
@@ -1512,6 +1533,7 @@ function VendorModal({
   const [contactEmail, setContactEmail] = useState(vendor?.contactEmail ?? "");
   const [contactPhone, setContactPhone] = useState(vendor?.contactPhone ?? "");
   const [address, setAddress] = useState(vendor?.address ?? "");
+  const [currency, setCurrency] = useState<string>(vendor?.currency ?? "");
   const [err, setErr] = useState("");
 
   const done = () => {
@@ -1525,9 +1547,11 @@ function VendorModal({
 
   const save = () => {
     if (!name.trim()) return setErr("Vendor name is required");
+    if (!isFinanceCurrency(currency)) return setErr("Pick the currency of the vendor agreement");
     const payload = {
       name: name.trim(),
       type: Number(type),
+      currency,
       contactName: contactName || undefined,
       contactEmail: contactEmail || undefined,
       contactPhone: contactPhone || undefined,
@@ -1554,6 +1578,17 @@ function VendorModal({
         value={type}
         onChange={(e) => setType(e.target.value)}
       />
+      <FormSelect
+        label="Agreement Currency"
+        required
+        placeholder="Select a currency"
+        options={CURRENCY_OPTIONS}
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value)}
+      />
+      <p className="-mt-2 text-xs text-[#667085]">
+        The vendor pays in this currency. New contracts with this vendor start in it; flat amounts are recorded in it.
+      </p>
       <p className="text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">Contact Details</p>
       <div className="flex gap-3">
         <FormInput label="Contact Person" value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="e.g. John Smith" />
@@ -1604,6 +1639,8 @@ function ContractModal({
   const [cpShare, setCpShare] = useState<string>(
     contract?.cpSharePct != null ? String(contract.cpSharePct) : "",
   );
+  const vendorCurrency = (id: string) => vendors.find((v) => String(v.id) === id)?.currency ?? "";
+  const [currency, setCurrency] = useState<string>(contract?.currency ?? vendorCurrency(vendorId));
   const [effectiveDate, setEffectiveDate] = useState(toDateInput(contract?.effectiveDate));
   const [notes, setNotes] = useState(contract?.notes ?? "");
   const [isDefault, setIsDefault] = useState(contract?.isDefault ?? false);
@@ -1633,12 +1670,14 @@ function ContractModal({
     const cp = cpShare.trim() === "" ? null : Number(cpShare);
     if (isVendor && cp == null) return setErr("CP share is required for third-party vendors");
     if (cp != null && (Number.isNaN(cp) || cp < 0 || cp > 100)) return setErr("CP share must be 0–100");
+    if (!isFinanceCurrency(currency)) return setErr("Pick the contract currency");
 
     if (editing && contract) {
       update.mutate({
         id: contract.id,
         vendorId: vendorId === "" ? null : Number(vendorId),
         cpSharePct: cp,
+        currency,
         effectiveDate: effectiveDate || null,
         notes,
         isDefault,
@@ -1653,6 +1692,7 @@ function ContractModal({
       universityId: Number(universityId),
       vendorId: vendorId === "" ? null : Number(vendorId),
       cpSharePct: cp,
+      currency,
       effectiveDate: effectiveDate || undefined,
       notes: notes || undefined,
       isDefault,
@@ -1708,12 +1748,31 @@ function ContractModal({
         label="Vendor"
         options={vendorOptions}
         value={vendorId}
-        onChange={(e) => setVendorId(e.target.value)}
+        onChange={(e) => {
+          setVendorId(e.target.value);
+          // A vendor contract starts in the vendor's agreement currency.
+          const vc = vendorCurrency(e.target.value);
+          if (vc) setCurrency(vc);
+        }}
+      />
+      <FormSelect
+        label="Contract Currency"
+        required
+        placeholder="Select a currency"
+        options={CURRENCY_OPTIONS}
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value)}
       />
       <TypeToggle value={commissionType} onChange={setCommissionType} />
+      {isFlat && (
+        <p className="-mt-2 text-xs text-[#667085]">
+          A flat commission is recorded in the contract currency, even when the course is priced in another — a{" "}
+          {currency ? money(2000, currency) : "2,000"} flat fee stays {currency ? money(2000, currency) : "2,000"}.
+        </p>
+      )}
       <div className="flex gap-3">
         <FormInput
-          label={isFlat ? "Commission Amount ($)" : "Commission Rate (%)"}
+          label={isFlat ? amountLabel("Commission Amount", isFinanceCurrency(currency) ? currency : null) : "Commission Rate (%)"}
           required
           type="number"
           step="0.1"
@@ -1753,20 +1812,19 @@ function ContractModal({
 }
 
 function RateModal({
-  contractId,
-  universityId,
+  contract,
   rate,
   onClose,
   onToast,
 }: {
-  contractId: number;
-  universityId: number;
+  contract: ContractRow;
   rate?: RateRow;
   onClose: () => void;
   onToast: (m: string) => void;
 }) {
   const utils = api.useUtils();
-  const coursesQ = api.commissionRates.coursesForUniversity.useQuery({ universityId });
+  const contractId = contract.id;
+  const coursesQ = api.commissionRates.coursesForUniversity.useQuery({ universityId: contract.universityId });
   const [courseId, setCourseId] = useState<string>(rate?.courseId != null ? String(rate.courseId) : "");
   const [level, setLevel] = useState<string>(rate?.level != null ? String(rate.level) : "0");
   const [commissionType, setCommissionType] = useState<number>(rate?.commissionType ?? CommissionType.PERCENTAGE);
@@ -1821,7 +1879,7 @@ function RateModal({
       />
       <TypeToggle value={commissionType} onChange={setCommissionType} />
       <FormInput
-        label={isFlat ? "Commission Amount ($)" : "Commission Rate (%)"}
+        label={isFlat ? amountLabel("Commission Amount", contract.currency) : "Commission Rate (%)"}
         required
         type="number"
         step="0.1"
@@ -1835,17 +1893,18 @@ function RateModal({
 }
 
 function BonusModal({
-  contractId,
+  contract,
   tier,
   onClose,
   onToast,
 }: {
-  contractId: number;
+  contract: ContractRow;
   tier?: BonusRow;
   onClose: () => void;
   onToast: (m: string) => void;
 }) {
   const utils = api.useUtils();
+  const contractId = contract.id;
   const [minS, setMinS] = useState(tier ? String(tier.minStudents) : "");
   const [maxS, setMaxS] = useState(tier?.maxStudents != null ? String(tier.maxStudents) : "");
   const [amt, setAmt] = useState(tier?.amountPerStudent != null ? String(tier.amountPerStudent) : "");
@@ -1886,7 +1945,7 @@ function BonusModal({
         <FormInput label="Max Students" type="number" value={maxS} onChange={(e) => setMaxS(e.target.value)} placeholder="(no cap)" />
       </div>
       <FormInput
-        label="Amount Per Student ($)"
+        label={amountLabel("Amount Per Student", contract.currency)}
         required
         type="number"
         step="1"
@@ -1899,26 +1958,42 @@ function BonusModal({
   );
 }
 
+// A tranche is a % of the commission or — on a FLAT deal — a fixed amount in
+// the contract currency, plus its condition. The schedule must add up to 100% /
+// the flat amount; the server refuses an overshoot.
 function TrancheModal({
-  contractId,
-  nextSeq,
+  contract,
   tranche,
   onClose,
   onToast,
 }: {
-  contractId: number;
-  nextSeq: number;
+  contract: ContractRow;
   tranche?: TrancheRow;
   onClose: () => void;
   onToast: (m: string) => void;
 }) {
   const utils = api.useUtils();
-  const seq = tranche?.seq ?? nextSeq;
-  const [name, setName] = useState(tranche?.name ?? `Tranche ${seq}`);
+  const contractId = contract.id;
+  const headline = headlineRate(contract);
+  const flatDeal = headline?.commissionType === CommissionType.FLAT;
+  const position = tranche ? contract.tranches.findIndex((t) => t.id === tranche.id) + 1 : contract.tranches.length + 1;
+  const others = contract.tranches.filter((t) => t.id !== tranche?.id);
+  const [name, setName] = useState(tranche?.name ?? `Tranche ${position}`);
+  const [mode, setMode] = useState<"pct" | "amount">(
+    tranche ? (tranche.pct != null ? "pct" : "amount") : others.some((t) => t.amount != null && t.pct == null) ? "amount" : "pct",
+  );
   const [amount, setAmount] = useState(tranche?.amount != null ? String(tranche.amount) : "");
   const [pct, setPct] = useState(tranche?.pct != null ? String(tranche.pct) : "");
   const [timing, setTiming] = useState(tranche?.timing ?? "");
   const [err, setErr] = useState("");
+  const usedPct = others.reduce((s, t) => s + (t.pct ?? 0), 0);
+  const usedAmt = others.reduce((s, t) => s + (t.pct == null ? (t.amount ?? 0) : 0), 0);
+  const remaining =
+    mode === "pct"
+      ? `${Math.max(0, 100 - usedPct).toLocaleString()}% of the commission left to schedule`
+      : headline?.rate != null
+        ? `${flatLabel(Math.max(0, headline.rate - usedAmt), contract.currency)} of the ${flatLabel(headline.rate, contract.currency)} flat commission left to schedule`
+        : null;
 
   const done = () => {
     void utils.commissionRates.invalidate();
@@ -1929,13 +2004,17 @@ function TrancheModal({
 
   const save = () => {
     if (!name.trim()) return setErr("Tranche name is required");
+    const value = Number(mode === "pct" ? pct : amount);
+    if ((mode === "pct" ? pct : amount).trim() === "" || Number.isNaN(value) || value <= 0) {
+      return setErr(mode === "pct" ? "Enter the tranche's percentage of the commission" : "Enter the tranche amount");
+    }
+    if (mode === "pct" && value > 100) return setErr("A tranche can't be more than 100%");
     upsert.mutate({
       id: tranche?.id,
       contractId,
-      seq,
       name: name.trim(),
-      amount: amount.trim() === "" ? null : Number(amount),
-      pct: pct.trim() === "" ? null : Number(pct),
+      amount: mode === "amount" ? value : null,
+      pct: mode === "pct" ? value : null,
       timing: timing || undefined,
     });
   };
@@ -1943,17 +2022,41 @@ function TrancheModal({
   return (
     <Modal
       open
-      title={`${tranche ? "Edit" : "Add"} Tranche Payment (Tranche ${seq} of max 4)`}
+      title={`${tranche ? "Edit" : "Add"} Tranche Payment (Tranche ${position} of max 4)`}
       onClose={onClose}
       footer={<ModalFooter onClose={onClose} onSave={save} saving={upsert.isPending} saveLabel="Save Tranche" />}
     >
       <FormInput label="Tranche Name" required value={name} onChange={(e) => setName(e.target.value)} error={!!err} errorMessage={err} placeholder="e.g. Tranche 1 — On Enrollment" />
-      <div className="flex gap-3">
-        <FormInput label="Amount ($)" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
-        <FormInput label="Percentage of Total (%)" type="number" step="0.1" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="Optional" />
-      </div>
+      {flatDeal && (
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-[#344054]">Tranche is</label>
+          <div className="flex gap-2">
+            {([
+              { v: "pct", label: "% of commission" },
+              { v: "amount", label: `Fixed amount (${contract.currency ?? "course currency"})` },
+            ] as const).map((o) => (
+              <button
+                key={o.v}
+                type="button"
+                onClick={() => setMode(o.v)}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                  mode === o.v ? "border-[#1570EF] bg-[#EFF8FF] text-[#1570EF]" : "border-[#D0D5DD] text-[#344054] hover:bg-[#F9FAFB]"
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {mode === "pct" ? (
+        <FormInput label="Percentage of Commission (%)" required type="number" step="0.1" value={pct} onChange={(e) => setPct(e.target.value)} />
+      ) : (
+        <FormInput label={amountLabel("Amount", contract.currency)} required type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      )}
+      {remaining && <p className="-mt-2 text-xs text-[#667085]">{remaining}. The tranches must add up to the whole commission.</p>}
       <FormInput
-        label="Timing / Trigger"
+        label="Condition"
         value={timing}
         onChange={(e) => setTiming(e.target.value)}
         placeholder="e.g. On enrollment, After semester 1, On completion"

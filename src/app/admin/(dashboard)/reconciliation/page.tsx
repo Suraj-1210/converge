@@ -18,6 +18,7 @@ import {
   EmptyState,
 } from "~/components/dashboard/widgets";
 import { formatINR, formatDate } from "~/components/dashboard/format";
+import { currencySymbol, fxLine } from "~/lib/currency";
 import {
   AdminRole,
   PayoutStatus,
@@ -150,12 +151,12 @@ export default function ReconciliationPage() {
   const exportCompleted = () => {
     if (allCompleted.length === 0) { showToast("No completed payments to export."); return; }
     const header = [
-      "Partner", "Invoice #", "Amount (INR)", "Student", "University", "Payment Method", "Reference #",
+      "Partner", "Invoice #", "Amount (INR)", "Paid In", "Amount Sent", "Exchange Rate", "Student", "University", "Payment Method", "Reference #",
       "Payment Date", "Bank", "Account", "IFSC/SWIFT", "Approved By", "Approved Date", "Verified By",
       "Verified Date", "Released By", "Released Date", "Notes",
     ];
     const body = allCompleted.map((p) => [
-      p.partner, p.invoiceNumber, p.amountInr,
+      p.partner, p.invoiceNumber, p.amountInr, p.currency, p.amountForeign ?? "", p.exchangeRate ?? "",
       p.students.map((st) => st.name).join("; "),
       p.students.map((st) => st.university).join("; "),
       p.method == null ? "" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4],
@@ -273,7 +274,10 @@ export default function ReconciliationPage() {
                         <PayeeTags partnerType={p.partnerType} payeeInactive={p.payeeInactive} panReview={p.panReview} />
                       </td>
                       <td className={`${TD} font-mono text-[13px] text-[#1570EF]`}>{p.invoiceNumber}</td>
-                      <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
+                      <td className={`${TD} font-semibold text-[#101828]`}>
+                        {inr(p.amountInr)}
+                        {p.payoutCurrency !== "INR" && <span className="block text-[11px] font-medium text-[#B54708]">Paid in {p.payoutCurrency} · no GST/TDS</span>}
+                      </td>
                       <td className={TD}>{p.approvedBy ?? "—"}</td>
                       <td className={TD}>{p.opsApprovedAt ? formatDate(p.opsApprovedAt) : "—"}</td>
                       <td className={TD}><StatusPill status={p.status} /></td>
@@ -359,7 +363,12 @@ export default function ReconciliationPage() {
                         <PayeeTags partnerType={p.partnerType} />
                       </td>
                       <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}</td>
-                      <td className={`${TD} font-semibold text-[#101828]`}>{inr(p.amountInr)}</td>
+                      <td className={`${TD} font-semibold text-[#101828]`}>
+                        {inr(p.amountInr)}
+                        {p.currency !== "INR" && p.amountForeign != null && p.exchangeRate != null && (
+                          <span className="block text-[11px] font-normal text-[#667085]">{fxLine(p.amountForeign, p.currency, p.exchangeRate, p.amountInr)}</span>
+                        )}
+                      </td>
                       <td className={TD}>{p.method == null ? "—" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4]}</td>
                       <td className={TD}>{p.reference ?? "—"}</td>
                       <td className={TD}>{p.paymentDate ? formatDate(p.paymentDate) : "—"}</td>
@@ -423,7 +432,7 @@ function ReconPanel({
   verifying: boolean;
   releasing: boolean;
   onVerify: (checks: { bankConfirmed: boolean; invoiceVerified: boolean; commissionVerified: boolean; duplicateCheck: boolean }) => void;
-  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; notes?: string; inactivePayeeDecision?: string }) => void;
+  onRelease: (payment: { method: number; bankName?: string; accountNumber?: string; ifsc?: string; swift?: string; referenceNumber?: string; paymentDate: string; amountInr?: number; exchangeRate?: number; amountForeign?: number; notes?: string; inactivePayeeDecision?: string }) => void;
   onHold: () => void;
   onSendBack: () => void;
 }) {
@@ -432,13 +441,21 @@ function ReconPanel({
   const [commissionVerified, setCommissionVerified] = useState(payout.checks.commissionVerified);
   const [duplicateCheck, setDuplicateCheck] = useState(payout.checks.duplicateCheck);
 
-  const [method, setMethod] = useState<number>(PayoutMethod.NEFT);
+  // A claim paid in a foreign currency goes by international wire, recorded
+  // by hand with the bank's rate (no RazorpayX; no GST / TDS on it).
+  const foreign = payout.payoutCurrency !== "INR";
+  const [method, setMethod] = useState<number>(foreign ? PayoutMethod.INTERNATIONAL_WIRE : PayoutMethod.NEFT);
   const [bankName, setBankName] = useState(payout.bank?.bankName ?? "");
   const [accountNumber, setAccountNumber] = useState(payout.bank?.last4 ? `****${payout.bank.last4}` : "");
-  const [ifscSwift, setIfscSwift] = useState(payout.bank?.ifsc ?? "");
+  const [ifscSwift, setIfscSwift] = useState((foreign ? payout.bank?.swift : payout.bank?.ifsc) ?? "");
   const [reference, setReference] = useState("");
   const [date, setDate] = useState(todayInput());
   const [amount, setAmount] = useState(String(payout.amountInr));
+  const [fxRate, setFxRate] = useState("");
+  // Blank = INR ÷ rate.
+  const [amountForeign, setAmountForeign] = useState("");
+  const rateN = Number(fxRate);
+  const autoForeign = foreign && rateN > 0 && Number(amount) > 0 ? Math.round((Number(amount) / rateN) * 100) / 100 : null;
   const [notes, setNotes] = useState("");
   // A suspended / deleted independent: Finance's recorded decision to pay anyway.
   const [inactiveDecision, setInactiveDecision] = useState("");
@@ -459,9 +476,11 @@ function ReconPanel({
   // Pay via RazorpayX when it's configured, the bank account is verified, and the
   // method maps to a RazorpayX mode (international wire stays manual).
   const bankVerified = payout.bank?.verified ?? false;
-  const payVia = payments.configured && bankVerified && !isWire;
+  const payVia = payments.configured && bankVerified && !isWire && !foreign;
   const doRelease = () => {
     if (!payVia && !reference.trim()) return setErr("Enter a Payment Reference # (or verify the bank to pay via RazorpayX).");
+    if (foreign && !(rateN > 0)) return setErr(`Enter the exchange rate the bank used (₹ per 1 ${payout.payoutCurrency}).`);
+    if (foreign && amountForeign.trim() !== "" && !(Number(amountForeign) > 0)) return setErr(`Enter the amount sent in ${payout.payoutCurrency}.`);
     if (!bankVerified) return setErr("Verify the partner's bank account first.");
     if (payout.payeeInactive && inactiveDecision.trim().length < 10) {
       return setErr("This independent counsellor is " + payout.payeeInactive + ". Record Finance's decision to pay anyway (at least 10 characters), or reactivate them first.");
@@ -475,6 +494,8 @@ function ReconPanel({
       referenceNumber: reference.trim() || undefined,
       paymentDate: date,
       amountInr: amount.trim() === "" ? undefined : Number(amount),
+      exchangeRate: foreign ? rateN : undefined,
+      amountForeign: foreign && amountForeign.trim() !== "" ? Number(amountForeign) : undefined,
       notes: notes || undefined,
       inactivePayeeDecision: payout.payeeInactive ? inactiveDecision.trim() : undefined,
     });
@@ -581,8 +602,31 @@ function ReconPanel({
             </div>
             <div className="flex gap-3">
               <FormInput label="Payment Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              <FormInput label="Amount (₹)" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <FormInput label={foreign ? "Amount (₹ equivalent)" : "Amount (₹)"} type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
+            {foreign && (
+              <div className="rounded-lg border border-[#B2DDFF] bg-[#EFF8FF] p-3">
+                <p className="mb-2 text-xs font-semibold text-[#175CD3]">
+                  Paid in {payout.payoutCurrency} — no GST or TDS. Enter the rate the bank used; the {payout.payoutCurrency} amount sent defaults to ₹ ÷ rate.
+                </p>
+                <div className="flex gap-3">
+                  <FormInput label={`Exchange Rate (₹ per 1 ${payout.payoutCurrency})`} required type="number" step="0.0001" value={fxRate} onChange={(e) => setFxRate(e.target.value)} placeholder="e.g. 92.10" />
+                  <FormInput
+                    label={`Amount Sent (${currencySymbol(payout.payoutCurrency).trim()})`}
+                    type="number"
+                    step="0.01"
+                    value={amountForeign}
+                    onChange={(e) => setAmountForeign(e.target.value)}
+                    placeholder={autoForeign != null ? String(autoForeign) : "₹ ÷ rate"}
+                  />
+                </div>
+                {rateN > 0 && Number(amount) > 0 && (
+                  <p className="mt-1.5 text-xs text-[#175CD3]">
+                    {fxLine(amountForeign.trim() !== "" ? Number(amountForeign) : (autoForeign ?? 0), payout.payoutCurrency, rateN, Number(amount))}
+                  </p>
+                )}
+              </div>
+            )}
             <FormTextarea label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             {payout.payeeInactive && (
               <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-3">
@@ -681,6 +725,9 @@ function AuditTrail({ p }: { p: Completed }) {
           <Row k="Reference" v={p.reference ?? "—"} />
           <Row k="Payment Date" v={p.paymentDate ? formatDate(p.paymentDate) : "—"} />
           <Row k="Amount" v={inr(p.amountInr)} />
+          {p.currency !== "INR" && p.amountForeign != null && p.exchangeRate != null && (
+            <Row k={`Sent in ${p.currency}`} v={fxLine(p.amountForeign, p.currency, p.exchangeRate, p.amountInr)} />
+          )}
           {p.notes && <Row k="Notes" v={p.notes} />}
         </dl>
         <div className="mt-3 border-t border-[#F2F4F7] pt-3">
