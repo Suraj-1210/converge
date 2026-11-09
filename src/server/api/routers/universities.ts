@@ -34,6 +34,9 @@ const LIST_CAP = 500;
 // The page warns if the catalog ever outgrows this.
 export const CATALOG_CAP = 5000;
 
+// Partner Uni Assist loads results a page at a time ("Load more").
+const SEARCH_PAGE = 50;
+
 // Two-letter ISO code for the university's country. We accept either an ISO2
 // code or a longer name and normalize to ISO2 server-side, but the form is
 // expected to send ISO2 directly.
@@ -530,6 +533,9 @@ export const universitiesRouter = createTRPCRouter({
           sortBy: z
             .enum(["relevance", "tuition-asc", "tuition-desc", "uni-az"])
             .default("relevance"),
+          // Offset of the page to load ("Load more"). Results come a page
+          // at a time so the whole catalog is reachable without a cap.
+          cursor: z.number().int().min(0).nullish(),
         })
         .default({ sortBy: "relevance", currency: HOME_CURRENCY }),
     )
@@ -560,23 +566,38 @@ export const universitiesRouter = createTRPCRouter({
       const tuitionSort =
         input.sortBy === "tuition-asc" || input.sortBy === "tuition-desc";
 
+      // A shortlist download wants every listed program in one go.
+      const offset = input.courseIds ? 0 : (input.cursor ?? 0);
+      const take = input.courseIds ? input.courseIds.length : SEARCH_PAGE;
+      const page = (items: ReturnType<typeof toCourseApi>[], total: number) => ({
+        items,
+        total,
+        nextCursor: offset + take < total ? offset + take : null,
+      });
+
       if (!bracketActive && !tuitionSort) {
-        const rows = await ctx.db.course.findMany({
-          where,
-          orderBy: [{ university: { name: "asc" } }, { name: "asc" }],
-          take: LIST_CAP,
-          include,
-        });
-        return rows.map(toCourseApi);
+        const [total, rows] = await Promise.all([
+          ctx.db.course.count({ where }),
+          ctx.db.course.findMany({
+            where,
+            orderBy: [{ university: { name: "asc" } }, { name: "asc" }, { id: "asc" }],
+            skip: offset,
+            take,
+            include,
+          }),
+        ]);
+        return page(rows.map(toCourseApi), total);
       }
 
       // Courses are priced in different currencies, so the bracket and the
       // sort run on converted fees: rank every match on a light select, then
-      // load the top LIST_CAP in full. A fee with no rate can't be placed: it
-      // fails a bracket and sorts last.
+      // load the requested page in full. A fee with no rate can't be placed:
+      // it fails a bracket and sorts last.
       const { rates } = await loadInrRates();
       const light = await ctx.db.course.findMany({
         where,
+        // Fixed order so ties rank the same on every page.
+        orderBy: { id: "asc" },
         select: {
           id: true,
           name: true,
@@ -607,14 +628,14 @@ export const universitiesRouter = createTRPCRouter({
       } else {
         ranked.sort(byName);
       }
-      const ids = ranked.slice(0, LIST_CAP).map((c) => c.id);
+      const ids = ranked.slice(offset, offset + take).map((c) => c.id);
       const rows = await ctx.db.course.findMany({
         where: { id: { in: ids } },
         include,
       });
       const pos = new Map(ids.map((id, i) => [id, i]));
       rows.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
-      return rows.map(toCourseApi);
+      return page(rows.map(toCourseApi), ranked.length);
     }),
 
   // Exchange rates + tuition brackets for Uni Assist's currency picker,

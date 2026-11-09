@@ -22,7 +22,7 @@ import { HOME_CURRENCY, bracketsFor, formatMoney } from "~/lib/fx-convert";
 import { ShortlistApproval } from "~/server/db/enums";
 import { api, type RouterOutputs } from "~/trpc/react";
 
-type Program = RouterOutputs["universities"]["searchPrograms"][number];
+type Program = RouterOutputs["universities"]["searchPrograms"]["items"][number];
 
 // ----- Constants ----------------------------------------------------------
 
@@ -160,20 +160,24 @@ export default function PartnerUniAssistPage() {
   );
   // The server converts each course's fee to `currency` before bracketing
   // and sorting, so mixed-currency results compare correctly.
-  const programs = api.universities.searchPrograms.useQuery({
-    query: applied.query.trim() || undefined,
-    country: applied.country || undefined,
-    intakeYear: applied.intakeYear ? Number(applied.intakeYear) : undefined,
-    intakeMonth: applied.intakeMonth || undefined,
-    degreeLevel:
-      applied.degreeLevel === "" ? undefined : Number(applied.degreeLevel),
-    fasterTat: applied.fasterTat ? Number(applied.fasterTat) : undefined,
-    moi: applied.moi || undefined,
-    currency: applied.currency,
-    tuitionMin: applied.tuitionMin ? Number(applied.tuitionMin) : undefined,
-    tuitionMax: applied.tuitionMax ? Number(applied.tuitionMax) : undefined,
-    sortBy,
-  });
+  // Pages of 50 ("Load more"), so the whole catalog is reachable.
+  const programs = api.universities.searchPrograms.useInfiniteQuery(
+    {
+      query: applied.query.trim() || undefined,
+      country: applied.country || undefined,
+      intakeYear: applied.intakeYear ? Number(applied.intakeYear) : undefined,
+      intakeMonth: applied.intakeMonth || undefined,
+      degreeLevel:
+        applied.degreeLevel === "" ? undefined : Number(applied.degreeLevel),
+      fasterTat: applied.fasterTat ? Number(applied.fasterTat) : undefined,
+      moi: applied.moi || undefined,
+      currency: applied.currency,
+      tuitionMin: applied.tuitionMin ? Number(applied.tuitionMin) : undefined,
+      tuitionMax: applied.tuitionMax ? Number(applied.tuitionMax) : undefined,
+      sortBy,
+    },
+    { getNextPageParam: (last) => last.nextCursor },
+  );
 
   const handleSearch = () => setApplied(form);
   const handleReset = () => {
@@ -247,12 +251,12 @@ export default function PartnerUniAssistPage() {
       return;
     }
     try {
-      const rows = await utils.universities.searchPrograms.fetch({
+      const res = await utils.universities.searchPrograms.fetch({
         courseIds: ids,
         currency: applied.currency,
         sortBy: "relevance",
       });
-      setDownloadPrograms(rows);
+      setDownloadPrograms(res.items);
       setDownloadOpen(true);
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Couldn't load the shortlist");
@@ -323,7 +327,8 @@ export default function PartnerUniAssistPage() {
     { value: "uni-az", label: "University A–Z" },
   ];
 
-  const rows = programs.data ?? [];
+  const rows = programs.data?.pages.flatMap((pg) => pg.items) ?? [];
+  const total = programs.data?.pages[0]?.total ?? 0;
 
   return (
     <>
@@ -471,7 +476,9 @@ export default function PartnerUniAssistPage() {
         <div className="text-sm font-semibold text-[#344054]">
           {programs.isLoading
             ? "Searching…"
-            : `Showing ${rows.length} program${rows.length === 1 ? "" : "s"}`}
+            : rows.length < total
+              ? `Showing ${rows.length} of ${total} programs`
+              : `Showing ${rows.length} program${rows.length === 1 ? "" : "s"}`}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -543,6 +550,18 @@ export default function PartnerUniAssistPage() {
               rates={rates}
             />
           ))}
+          {programs.hasNextPage && (
+            <button
+              type="button"
+              onClick={() => void programs.fetchNextPage()}
+              disabled={programs.isFetchingNextPage}
+              className="mx-auto mt-1 cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-4 py-2 text-sm font-semibold text-[#344054] hover:border-[#1570EF] hover:text-[#1570EF] disabled:cursor-default disabled:opacity-60"
+            >
+              {programs.isFetchingNextPage
+                ? "Loading…"
+                : `Load more (${total - rows.length} more)`}
+            </button>
+          )}
         </div>
       )}
 
