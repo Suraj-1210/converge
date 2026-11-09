@@ -28,6 +28,12 @@ import { moiFromDb, moiToDb } from "~/lib/moi";
 // Generous (won't bite at test-data scale); documented in the README notes.
 const LIST_CAP = 500;
 
+// The admin catalog (Universities page, admin Uni Assist) loads every program
+// and filters in the browser, so its cap has to cover the whole catalog: at
+// 500, programs of the newest university silently went missing (ASU, 9 Nov).
+// The page warns if the catalog ever outgrows this.
+export const CATALOG_CAP = 5000;
+
 // Two-letter ISO code for the university's country. We accept either an ISO2
 // code or a longer name and normalize to ISO2 server-side, but the form is
 // expected to send ISO2 directly.
@@ -352,7 +358,7 @@ export const universitiesRouter = createTRPCRouter({
         .object({
           universityId: z.number().int().positive().optional(),
           // Exact programs (a student's shortlist for download), so they
-          // load even past LIST_CAP.
+          // load even past CATALOG_CAP.
           ids: z.array(z.number().int().positive()).max(MAX_IDS).optional(),
         })
         .optional(),
@@ -364,7 +370,7 @@ export const universitiesRouter = createTRPCRouter({
           ...(input?.ids ? { id: { in: input.ids } } : {}),
         },
         orderBy: [{ university_id: "asc" }, { name: "asc" }],
-        take: LIST_CAP,
+        take: CATALOG_CAP,
         include: {
           university: {
             select: {

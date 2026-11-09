@@ -371,11 +371,13 @@ export default function AdminUniversitiesPage() {
     const distinctCountries = new Set(allUnis.map((u) => u.country));
     return {
       totalUni: allUnis.length,
-      totalPrograms: allCourses.length,
+      // From the per-university counts, not the loaded list, so a capped
+      // list can't make the total look smaller than the catalog.
+      totalPrograms: allUnis.reduce((n, u) => n + u.courseCount, 0),
       inactiveUni: allUnis.filter((u) => !u.isOpen).length,
       countries: [...distinctCountries],
     };
-  }, [allUnis, allCourses]);
+  }, [allUnis]);
 
   // ---- Handlers ----
   function openAddUni() {
@@ -637,6 +639,14 @@ export default function AdminUniversitiesPage() {
           />
         </FadeUp>
       </Stagger>
+
+      {courses.data && allCourses.length < stats.totalPrograms && (
+        <div className="mb-5 rounded-lg border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm text-[#B54708]">
+          Only {allCourses.length.toLocaleString("en-IN")} of{" "}
+          {stats.totalPrograms.toLocaleString("en-IN")} programs are loaded, so some
+          programs are missing from this page and from Uni Assist. Tell the tech team.
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="mb-5 flex gap-0 border-b-2 border-[#E4E7EC]">
