@@ -23,6 +23,13 @@ import { FINANCE_CURRENCIES } from "~/lib/currency";
 import { createNotifications } from "~/server/notify";
 import { appUrl, commissionClaimableEmail } from "~/server/email";
 import { emailPartners, payeeRecipients } from "~/server/email/partners";
+import {
+  TRANCHE_LINKS_SELECT,
+  type TrancheLinks,
+  isWholeCommissionLine,
+  lineForTranche,
+  lineTrancheShares,
+} from "~/server/vendor-invoice-tranches";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -164,6 +171,75 @@ const isCollected = (status: number) =>
   status === TrancheStatus.COLLECTED ||
   status === TrancheStatus.RECEIVED ||
   status === TrancheStatus.PAID;
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// A vendor invoice line with what's needed to split it into the instalments it
+// bills (see ~/server/vendor-invoice-tranches).
+type CollectLine = TrancheLinks & {
+  expected_amount: Decimalish;
+  commission: {
+    commision_amount: Decimalish;
+    collegepond_received_at: Date | null;
+    commission_tranche: { id: number; seq: number; name: string | null; status: number; amount: Decimalish }[];
+  };
+};
+
+// An invoice's instalments by seq — only the tranches its lines bill — with
+// what's invoiced and still to collect (invoice currency), plus the invoice's
+// outstanding and collected totals. A pre-tranche commission (no tranche rows)
+// counts as collected once its commission-level stamp is set.
+function invoiceCollection(items: CollectLine[]) {
+  const bySeq = new Map<
+    number,
+    { seq: number; name: string | null; students: number; uncollected: number; expected: number; uncollectedExpected: number }
+  >();
+  let outstanding = 0;
+  let collected = 0;
+  for (const it of items) {
+    const expected = num(it.expected_amount);
+    const ts = it.commission.commission_tranche;
+    if (ts.length === 0) {
+      if (it.commission.collegepond_received_at == null) outstanding += expected;
+      else collected += expected;
+      continue;
+    }
+    for (const { tranche: t, fraction } of lineTrancheShares(it, ts, num(it.commission.commision_amount))) {
+      const slice = expected * fraction;
+      const e = bySeq.get(t.seq) ?? { seq: t.seq, name: t.name, students: 0, uncollected: 0, expected: 0, uncollectedExpected: 0 };
+      // Students whose instalments are named differently share a neutral
+      // label ("Instalment <seq>") rather than the first student's name.
+      if (e.students > 0 && e.name !== t.name) e.name = null;
+      e.students += 1;
+      e.expected += slice;
+      if (isCollected(t.status)) {
+        collected += slice;
+      } else {
+        e.uncollected += 1;
+        e.uncollectedExpected += slice;
+        outstanding += slice;
+      }
+      bySeq.set(t.seq, e);
+    }
+  }
+  const tranches = Array.from(bySeq.values())
+    .sort((a, b) => a.seq - b.seq)
+    .map((t) => ({ ...t, expected: round2(t.expected), uncollectedExpected: round2(t.uncollectedExpected) }));
+  return { tranches, outstanding: round2(outstanding), collected: round2(collected) };
+}
+
+const COLLECT_LINE_SELECT = {
+  ...TRANCHE_LINKS_SELECT,
+  expected_amount: true,
+} as const;
+const COLLECT_COMMISSION_SELECT = {
+  commision_amount: true,
+  collegepond_received_at: true,
+  commission_tranche: {
+    orderBy: { seq: "asc" as const },
+    select: { id: true, seq: true, name: true, status: true, amount: true, amount_inr: true },
+  },
+} as const;
 
 // Gross commission for a tuition under a rate (percentage of tuition, or flat).
 function grossCommission(
@@ -477,13 +553,18 @@ export const universityBillingRouter = createTRPCRouter({
         },
         ...PAYEE_LABEL_SELECT,
         vendor_invoice_item: {
+          orderBy: { id: "asc" },
           select: {
+            ...TRANCHE_LINKS_SELECT,
             vendor_invoice: {
               select: { id: true, invoice_number: true, status: true },
             },
           },
         },
-        commission_tranche: { select: { status: true } },
+        commission_tranche: {
+          orderBy: { seq: "asc" },
+          select: { id: true, seq: true, name: true, amount: true, status: true },
+        },
       },
     });
 
@@ -504,7 +585,6 @@ export const universityBillingRouter = createTRPCRouter({
     }
 
     return comms.map((c) => {
-      const inv = c.vendor_invoice_item?.vendor_invoice ?? null;
       const uniId = c.application.course.university.id;
       const courseId = c.application.course.id;
       // Tranche collection progress: how many of this commission's tranches CP has
@@ -513,6 +593,39 @@ export const universityBillingRouter = createTRPCRouter({
       const trancheCollected = c.commission_tranche.filter((t) => isCollected(t.status)).length;
       const gross = num(c.commision_amount);
       const cpSharePct = c.cp_share_pct == null ? null : num(c.cp_share_pct);
+      const lines = c.vendor_invoice_item;
+      // Every vendor invoice this commission is on (one per instalment, or a
+      // single whole-commission invoice).
+      const invoices = lines.map((l) => ({
+        id: l.vendor_invoice.id,
+        number: l.vendor_invoice.invoice_number,
+        status: l.vendor_invoice.status,
+      }));
+      // The instalment structure, each with the invoice that bills it (if any).
+      // amount is the commission-currency slice; cpAmount is what CP bills the
+      // vendor for it (its CP share).
+      const instalments = c.commission_tranche.map((t) => {
+        const line = lineForTranche(lines, t.id);
+        return {
+          id: t.id,
+          seq: t.seq,
+          name: t.name ?? `Instalment ${t.seq}`,
+          amount: num(t.amount),
+          cpAmount: cpReceivable(num(t.amount), cpSharePct),
+          status: t.status,
+          invoice: line
+            ? { id: line.vendor_invoice.id, number: line.vendor_invoice.invoice_number, status: line.vendor_invoice.status }
+            : null,
+        };
+      });
+      // Still to invoice: any instalment not on an invoice, or (no tranche
+      // rows) the commission itself.
+      const uninvoiced =
+        instalments.length > 0
+          ? instalments.filter((t) => t.invoice == null).length
+          : lines.length === 0
+            ? 1
+            : 0;
       return {
         commissionId: c.id,
         vendorId: c.vendor_id,
@@ -538,9 +651,12 @@ export const universityBillingRouter = createTRPCRouter({
         rateType: specificByUni.get(uniId)?.has(courseId)
           ? "Program-specific"
           : "Unified",
-        invoice: inv
-          ? { id: inv.id, number: inv.invoice_number, status: inv.status }
-          : null,
+        invoices,
+        instalments,
+        // Instalments (or the whole commission) not yet on a vendor invoice; a
+        // student counts as "not yet invoiced" while this is above 0.
+        uninvoiced,
+        fullyInvoiced: uninvoiced === 0,
         tranches: { total: trancheTotal, collected: trancheCollected },
       };
     });
@@ -559,6 +675,10 @@ export const universityBillingRouter = createTRPCRouter({
           .array(
             z.object({
               commissionId: z.number().int().positive(),
+              // The instalments (tranche seqs) this line bills. Required when
+              // the commission has tranche rows; a commission without any is
+              // billed whole, as before.
+              trancheSeqs: z.array(z.number().int().min(1).max(255)).max(50).default([]),
               tuitionAmount: z.number().min(0),
               expectedAmount: z.number().min(0),
               varianceReason: varianceReason,
@@ -570,56 +690,10 @@ export const universityBillingRouter = createTRPCRouter({
     )
     .mutation(async ({ input, ctx }) => {
       const ids = input.lines.map((l) => l.commissionId);
-      const comms = await db.commission.findMany({
-        where: { id: { in: ids } },
-        include: { vendor_invoice_item: { select: { id: true } } },
-      });
-      if (comms.length !== ids.length) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Some students no longer exist." });
+      if (new Set(ids).size !== ids.length) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "A student appears twice on this invoice." });
       }
-      for (const c of comms) {
-        if (c.vendor_invoice_item) {
-          throw new TRPCError({ code: "CONFLICT", message: "A student is already invoiced." });
-        }
-        if (c.vendor_id !== input.vendorId) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "All students on an invoice must share the same vendor.",
-          });
-        }
-      }
-      const byId = new Map(comms.map((c) => [c.id, c]));
       const fy = financialYearOf(new Date(input.invoiceDate));
-
-      const items = input.lines.map((l) => {
-        const c = byId.get(l.commissionId)!;
-        const rate = num(c.commision_rate);
-        // Percentage deals recompute from the entered tuition; flat deals keep
-        // the stored gross commission. Either way CP bills its CP share of it.
-        const gross =
-          rate > 0
-            ? grossCommission(l.tuitionAmount, rate, CommissionType.PERCENTAGE)
-            : num(c.commision_amount);
-        const calc = cpReceivable(gross, c.cp_share_pct == null ? null : num(c.cp_share_pct));
-        const variance = Math.round((l.expectedAmount - calc) * 100) / 100;
-        if (variance !== 0 && l.varianceReason === 0) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "A variance reason is required when expected ≠ calculated.",
-          });
-        }
-        return {
-          commission_id: l.commissionId,
-          tuition_amount: l.tuitionAmount,
-          calculated_commission: calc,
-          expected_amount: l.expectedAmount,
-          variance,
-          variance_reason: l.varianceReason,
-          variance_note: orNull(l.varianceNote),
-        };
-      });
-      const totalExpected =
-        Math.round(items.reduce((s, i) => s + i.expected_amount, 0) * 100) / 100;
 
       const duplicateNumber = () =>
         new TRPCError({
@@ -631,7 +705,128 @@ export const universityBillingRouter = createTRPCRouter({
         select: { id: true },
       });
       if (taken) throw duplicateNumber();
+
       const invoice = await db.$transaction(async (tx) => {
+        // Lock the commissions so two invoices can't bill the same commission
+        // or instalment at once. The DB also refuses an instalment billed
+        // twice (UNIQUE vendor_invoice_item_tranche.commission_tranche_id);
+        // the lock covers whole-commission lines, which have no tranche link.
+        await tx.$queryRawUnsafe(
+          `SELECT id FROM commission WHERE id IN (${ids.map(() => "?").join(", ")}) FOR UPDATE`,
+          ...ids,
+        );
+        const comms = await tx.commission.findMany({
+          where: { id: { in: ids } },
+          include: {
+            application: { select: { student: { select: { first_name: true, last_name: true } } } },
+            commission_tranche: {
+              orderBy: { seq: "asc" },
+              select: { id: true, seq: true, name: true, amount: true },
+            },
+            vendor_invoice_item: {
+              select: { ...TRANCHE_LINKS_SELECT, vendor_invoice: { select: { invoice_number: true } } },
+            },
+          },
+        });
+        if (comms.length !== ids.length) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Some students no longer exist." });
+        }
+        const byId = new Map(comms.map((c) => [c.id, c]));
+
+        const items = input.lines.map((l) => {
+          const c = byId.get(l.commissionId)!;
+          const who = `${c.application.student.first_name} ${c.application.student.last_name}`.trim();
+          if (c.vendor_id !== input.vendorId) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "All students on an invoice must share the same vendor.",
+            });
+          }
+          const storedGross = num(c.commision_amount);
+          const whole = c.vendor_invoice_item.find(isWholeCommissionLine);
+          let fraction = 1;
+          let trancheIds: number[] = [];
+          if (c.commission_tranche.length === 0) {
+            // No instalment structure: the commission is billed whole, once.
+            if (l.trancheSeqs.length > 0) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: `${who}'s commission has no instalments to pick.` });
+            }
+            if (c.vendor_invoice_item.length > 0) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: `${who} is already invoiced (${c.vendor_invoice_item[0]!.vendor_invoice.invoice_number}).`,
+              });
+            }
+          } else {
+            if (whole) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: `${who}'s whole commission is already on invoice ${whole.vendor_invoice.invoice_number}.`,
+              });
+            }
+            const seqs = Array.from(new Set(l.trancheSeqs));
+            if (seqs.length === 0) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: `Pick the instalment(s) to invoice for ${who}.` });
+            }
+            const billedOn = new Map(
+              c.vendor_invoice_item.flatMap((it) =>
+                it.vendor_invoice_item_tranche.map((x) => [x.commission_tranche_id, it.vendor_invoice.invoice_number] as const),
+              ),
+            );
+            const picked = seqs.map((seq) => {
+              const t = c.commission_tranche.find((x) => x.seq === seq);
+              if (!t) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: `${who} has no instalment ${seq}.` });
+              }
+              const on = billedOn.get(t.id);
+              if (on) {
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message: `${t.name ?? `Instalment ${seq}`} for ${who} is already on invoice ${on}.`,
+                });
+              }
+              return t;
+            });
+            trancheIds = picked.map((t) => t.id);
+            // The picked instalments' share of the gross — the same fraction
+            // listVendorInvoices / recordVendorPayment split collections by.
+            const pickedAmount = picked.reduce((s, t) => s + num(t.amount), 0);
+            fraction =
+              storedGross > 0 ? pickedAmount / storedGross : picked.length / c.commission_tranche.length;
+          }
+          const rate = num(c.commision_rate);
+          // Percentage deals recompute from the entered tuition; flat deals keep
+          // the stored gross commission. Either way CP bills its CP share of
+          // the instalments' slice of it.
+          const gross =
+            rate > 0
+              ? grossCommission(l.tuitionAmount, rate, CommissionType.PERCENTAGE)
+              : storedGross;
+          const billedGross = Math.round(gross * fraction * 100) / 100;
+          const calc = cpReceivable(billedGross, c.cp_share_pct == null ? null : num(c.cp_share_pct));
+          const variance = Math.round((l.expectedAmount - calc) * 100) / 100;
+          if (variance !== 0 && l.varianceReason === 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A variance reason is required when expected ≠ calculated.",
+            });
+          }
+          return {
+            trancheIds,
+            data: {
+              commission_id: l.commissionId,
+              tuition_amount: l.tuitionAmount,
+              calculated_commission: calc,
+              expected_amount: l.expectedAmount,
+              variance,
+              variance_reason: l.varianceReason,
+              variance_note: orNull(l.varianceNote),
+            },
+          };
+        });
+        const totalExpected =
+          Math.round(items.reduce((s, i) => s + i.data.expected_amount, 0) * 100) / 100;
+
         const inv = await tx.vendor_invoice.create({
           data: {
             invoice_number: input.invoiceNumber,
@@ -646,13 +841,27 @@ export const universityBillingRouter = createTRPCRouter({
             created_by_cp_user_id: ctx.cpUser.id,
           },
         });
-        await tx.vendor_invoice_item.createMany({
-          data: items.map((i) => ({ ...i, vendor_invoice_id: inv.id })),
-        });
+        for (const i of items) {
+          await tx.vendor_invoice_item.create({
+            data: {
+              ...i.data,
+              vendor_invoice_id: inv.id,
+              vendor_invoice_item_tranche: {
+                create: i.trancheIds.map((id) => ({ commission_tranche_id: id })),
+              },
+            },
+          });
+        }
         return inv;
       }).catch((e: unknown) => {
-        // Lost a race with another invoice taking the same number.
-        if (prismaCode(e) === "P2002") throw duplicateNumber();
+        if (prismaCode(e) === "P2002") {
+          // An instalment already billed elsewhere (a race the lock should
+          // prevent), or another invoice took the same number.
+          if (JSON.stringify((e as { meta?: unknown }).meta ?? "").includes("tranche")) {
+            throw new TRPCError({ code: "CONFLICT", message: "One of these instalments was just invoiced elsewhere." });
+          }
+          throw duplicateNumber();
+        }
         throw e;
       });
       return { vendorInvoiceId: invoice.id };
@@ -667,19 +876,23 @@ export const universityBillingRouter = createTRPCRouter({
       include: {
         vendor: true,
         vendor_invoice_item: {
-          include: {
+          select: {
+            ...COLLECT_LINE_SELECT,
+            id: true,
+            tuition_amount: true,
+            calculated_commission: true,
+            variance: true,
+            variance_reason: true,
+            variance_note: true,
             commission: {
-              include: {
+              select: {
+                ...COLLECT_COMMISSION_SELECT,
                 application: {
                   select: {
                     university_app_id: true,
                     course: { select: { name: true, university: { select: { name: true } } } },
                     student: { select: { first_name: true, last_name: true } },
                   },
-                },
-                commission_tranche: {
-                  orderBy: { seq: "asc" },
-                  select: { seq: true, name: true, status: true, amount: true },
                 },
               },
             },
@@ -691,28 +904,10 @@ export const universityBillingRouter = createTRPCRouter({
 
     return invoices.map((inv) => {
       const paidInr = inv.vendor_payment.reduce((s, p) => s + num(p.amount_inr), 0);
-      // The invoice's tranche schedule across its students, by seq: what's
-      // still to collect (in the invoice currency, each line's expected amount
-      // split like its commission's tranches). Drives Record Payment.
-      const bySeq = new Map<
-        number,
-        { seq: number; name: string | null; students: number; uncollected: number; uncollectedExpected: number }
-      >();
-      for (const it of inv.vendor_invoice_item) {
-        const gross = num(it.commission.commision_amount);
-        for (const t of it.commission.commission_tranche) {
-          const e = bySeq.get(t.seq) ?? { seq: t.seq, name: t.name, students: 0, uncollected: 0, uncollectedExpected: 0 };
-          e.students += 1;
-          if (!isCollected(t.status)) {
-            e.uncollected += 1;
-            e.uncollectedExpected += num(it.expected_amount) * (gross > 0 ? num(t.amount) / gross : 1);
-          }
-          bySeq.set(t.seq, e);
-        }
-      }
-      const tranches = Array.from(bySeq.values())
-        .sort((a, b) => a.seq - b.seq)
-        .map((t) => ({ ...t, uncollectedExpected: Math.round(t.uncollectedExpected * 100) / 100 }));
+      // The instalments THIS invoice bills, by seq: what's invoiced and still
+      // to collect (invoice currency, each line's expected amount split over
+      // the tranches it bills). Drives Record Payment and "Outstanding".
+      const { tranches, outstanding, collected } = invoiceCollection(inv.vendor_invoice_item);
       return {
         id: inv.id,
         invoiceNumber: inv.invoice_number,
@@ -725,6 +920,11 @@ export const universityBillingRouter = createTRPCRouter({
         paidInr: Math.round(paidInr * 100) / 100,
         notes: inv.notes,
         tranches,
+        // Invoice total − what its collected instalments account for
+        // (invoice currency). Recorded part-payments that complete no
+        // instalment don't reduce it.
+        outstanding,
+        collected,
         // Money still to collect against a tranche. Also true on an invoice
         // marked fully paid before collection was tranche-aware, so its
         // remaining tranches can still be recorded.
@@ -742,6 +942,17 @@ export const universityBillingRouter = createTRPCRouter({
           variance: num(it.variance),
           varianceReason: it.variance_reason,
           varianceNote: it.variance_note,
+          // The instalments this line bills (all of them on a whole-commission
+          // line), each with its slice of the line's expected amount.
+          wholeCommission: isWholeCommissionLine(it),
+          instalments: lineTrancheShares(it, it.commission.commission_tranche, num(it.commission.commision_amount)).map(
+            ({ tranche: t, fraction }) => ({
+              seq: t.seq,
+              name: t.name ?? `Instalment ${t.seq}`,
+              expected: round2(num(it.expected_amount) * fraction),
+              status: t.status,
+            }),
+          ),
         })),
         payments: inv.vendor_payment.map((p) => ({
           id: p.id,
@@ -792,26 +1003,23 @@ export const universityBillingRouter = createTRPCRouter({
         include: {
           vendor_invoice_item: {
             select: {
+              ...COLLECT_LINE_SELECT,
               commission_id: true,
-              expected_amount: true,
-              commission: {
-                select: {
-                  commision_amount: true,
-                  collegepond_received_at: true,
-                  commission_tranche: {
-                    orderBy: { seq: "asc" },
-                    select: { id: true, seq: true, status: true, amount: true, amount_inr: true },
-                  },
-                },
-              },
+              commission: { select: COLLECT_COMMISSION_SELECT },
             },
           },
         },
       });
       if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
-      const items = inv.vendor_invoice_item;
+      // Each line with only the tranches THIS invoice bills (all of them on a
+      // whole-commission line) and each one's slice of the line's expected
+      // amount. Another invoice's instalments are never touched here.
+      const items = inv.vendor_invoice_item.map((it) => ({
+        ...it,
+        billed: lineTrancheShares(it, it.commission.commission_tranche, num(it.commission.commision_amount)),
+      }));
       const outstanding = items.flatMap((it) =>
-        it.commission.commission_tranche.filter((t) => !isCollected(t.status)),
+        it.billed.map((b) => b.tranche).filter((t) => !isCollected(t.status)),
       );
       // Pre-tranche commissions (no tranche rows) are collected by their
       // commission-level stamp.
@@ -833,10 +1041,12 @@ export const universityBillingRouter = createTRPCRouter({
       const seqs = input.isFinal ? Array.from(new Set(outstanding.map((t) => t.seq))).sort((a, b) => a - b) : requested;
       const collectNow = new Set(outstanding.filter((t) => seqs.includes(t.seq)).map((t) => t.id));
 
-      // After this payment: is each commission fully collected, and so the invoice?
+      // After this payment: has each line collected every tranche it bills,
+      // and so the invoice? (An instalment invoice is FULLY_PAID once its own
+      // instalments are in, even while later instalments are still to bill.)
       const fullyCollected = (it: (typeof items)[number]) =>
         it.commission.commission_tranche.length > 0
-          ? it.commission.commission_tranche.every((t) => isCollected(t.status) || collectNow.has(t.id))
+          ? it.billed.every(({ tranche: t }) => isCollected(t.status) || collectNow.has(t.id))
           : it.commission.collegepond_received_at != null || input.isFinal;
       const invoiceDone = items.every(fullyCollected);
       const maxTranches = Math.max(0, ...items.map((it) => it.commission.commission_tranche.length));
@@ -848,9 +1058,8 @@ export const universityBillingRouter = createTRPCRouter({
       // "claimed" side of the collection record.
       let expected = 0;
       for (const it of items) {
-        const gross = num(it.commission.commision_amount);
-        for (const t of it.commission.commission_tranche) {
-          if (collectNow.has(t.id)) expected += num(it.expected_amount) * (gross > 0 ? num(t.amount) / gross : 1);
+        for (const { tranche: t, fraction } of it.billed) {
+          if (collectNow.has(t.id)) expected += num(it.expected_amount) * fraction;
         }
         if (it.commission.commission_tranche.length === 0 && it.commission.collegepond_received_at == null && input.isFinal) {
           expected += num(it.expected_amount);
@@ -890,10 +1099,8 @@ export const universityBillingRouter = createTRPCRouter({
         // realised rate. It becomes claimable (RECEIVED) on approval, which
         // also stamps the commission-level "fully collected" milestone.
         for (const it of items) {
-          const gross = num(it.commission.commision_amount);
-          for (const t of it.commission.commission_tranche) {
+          for (const { tranche: t, fraction } of it.billed) {
             if (!collectNow.has(t.id)) continue;
-            const fraction = gross > 0 ? num(t.amount) / gross : 1;
             const amountInr =
               Math.round(num(it.expected_amount) * fraction * input.exchangeRate * 100) / 100;
             await tx.commission_tranche.update({
@@ -954,6 +1161,7 @@ export const universityBillingRouter = createTRPCRouter({
             where: { vendor_payment_id: { in: ids } },
             orderBy: [{ commission_id: "asc" }, { seq: "asc" }],
             select: {
+              id: true,
               vendor_payment_id: true,
               seq: true,
               name: true,
@@ -965,7 +1173,12 @@ export const universityBillingRouter = createTRPCRouter({
                   id: true,
                   commision_amount: true,
                   ...PAYEE_LABEL_SELECT,
-                  vendor_invoice_item: { select: { expected_amount: true } },
+                  // Every line the commission is on; the one on this
+                  // payment's invoice is the one the tranche was collected by.
+                  vendor_invoice_item: {
+                    select: { ...TRANCHE_LINKS_SELECT, vendor_invoice_id: true, expected_amount: true },
+                  },
+                  commission_tranche: { select: { id: true, amount: true } },
                   application: {
                     select: {
                       university_app_id: true,
@@ -1000,8 +1213,12 @@ export const universityBillingRouter = createTRPCRouter({
         .filter((t) => t.vendor_payment_id === p.id)
         .map((t) => {
           const c = t.commission;
-          const gross = num(c.commision_amount);
-          const expectedLine = num(c.vendor_invoice_item?.expected_amount ?? null);
+          // A commission is on an invoice at most once, so this is the line
+          // the tranche was billed and collected by.
+          const line = c.vendor_invoice_item.find((it) => it.vendor_invoice_id === p.vendor_invoice.id);
+          const share = line
+            ? lineTrancheShares(line, c.commission_tranche, num(c.commision_amount)).find((s) => s.tranche.id === t.id)
+            : undefined;
           return {
             commissionId: c.id,
             studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
@@ -1013,7 +1230,7 @@ export const universityBillingRouter = createTRPCRouter({
             tranche: t.name ?? `Tranche ${t.seq}`,
             trancheStatus: t.status,
             // This tranche's slice of the line's invoiced amount (invoice currency).
-            expected: Math.round(expectedLine * (gross > 0 ? num(t.amount) / gross : 1) * 100) / 100,
+            expected: line && share ? round2(num(line.expected_amount) * share.fraction) : 0,
             amountInr: num(t.amount_inr),
           };
         });
@@ -1189,8 +1406,10 @@ export const universityBillingRouter = createTRPCRouter({
           vendor: true,
           vendor_invoice_item: {
             select: {
+              ...COLLECT_LINE_SELECT,
               commission: {
                 select: {
+                  ...COLLECT_COMMISSION_SELECT,
                   application: {
                     select: {
                       course: { select: { university: { select: { name: true } } } },
@@ -1200,7 +1419,6 @@ export const universityBillingRouter = createTRPCRouter({
               },
             },
           },
-          vendor_payment: { select: { amount_foreign: true } },
         },
       });
       const today = new Date();
@@ -1208,12 +1426,10 @@ export const universityBillingRouter = createTRPCRouter({
         const daysOverdue = inv.due_date
           ? Math.floor((today.getTime() - inv.due_date.getTime()) / 86_400_000)
           : 0;
-        const paidForeign = inv.vendor_payment.reduce(
-          (s, p) => s + num(p.amount_foreign),
-          0,
-        );
-        const outstanding =
-          Math.round((num(inv.total_expected_amount) - paidForeign) * 100) / 100;
+        // What's still to collect on the instalments this invoice bills
+        // (invoice total − its collected instalments), not the commission's
+        // full gross.
+        const { outstanding } = invoiceCollection(inv.vendor_invoice_item);
         const unis = Array.from(
           new Set(
             inv.vendor_invoice_item.map(

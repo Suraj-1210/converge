@@ -35,7 +35,8 @@ const WIPE_TABLES = [
   "student_test_score", "student_work_experience", "shortlist", "whatsapp_message",
   "application", "application_stage_history", "application_portal_credential",
   "commission", "commission_tranche", "invoice", "invoice_item", "partner_payout",
-  "partner_bank_account", "vendor_invoice", "vendor_invoice_item", "vendor_payment",
+  "partner_bank_account", "vendor_invoice", "vendor_invoice_item",
+  "vendor_invoice_item_tranche", "vendor_payment",
   "bdm_prospect", "bdm_prospect_stage_history", "bdm_activity", "bdm_task",
 ];
 

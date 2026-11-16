@@ -23,6 +23,7 @@ import {
   financialYearOf,
 } from "~/server/db/enums";
 import { FINANCE_CURRENCIES } from "~/lib/currency";
+import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -236,9 +237,12 @@ export const partnerCommissionRouter = createTRPCRouter({
             },
           },
         },
-        // The vendor invoice's currency: what a collected tranche's foreign
-        // amount is in.
-        vendor_invoice_item: { select: { vendor_invoice: { select: { currency: true } } } },
+        // The vendor invoices' currency: what a collected tranche's foreign
+        // amount is in. One line per instalment invoice, or a whole line.
+        vendor_invoice_item: {
+          orderBy: { id: "asc" },
+          select: { ...TRANCHE_LINKS_SELECT, vendor_invoice: { select: { currency: true } } },
+        },
         // Legacy single-invoice rows (no tranche) — kept for pre-tranche commissions.
         invoice_item: {
           where: { commission_tranche_id: null },
@@ -248,6 +252,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         commission_tranche: {
           orderBy: { seq: "asc" },
           select: {
+            id: true,
             seq: true,
             name: true,
             status: true,
@@ -284,7 +289,10 @@ export const partnerCommissionRouter = createTRPCRouter({
       // the partner's share is of that.
       const cpFrac = c.cp_share_pct == null ? 1 : num(c.cp_share_pct) / 100;
       const gross = num(c.commision_amount);
-      const fxCurrency = c.vendor_invoice_item?.vendor_invoice.currency ?? c.currency;
+      const fxCurrency = c.vendor_invoice_item[0]?.vendor_invoice.currency ?? c.currency;
+      // A tranche's foreign amount is in the currency of the invoice billing it.
+      const fxCurrencyFor = (trancheId: number) =>
+        lineForTranche(c.vendor_invoice_item, trancheId)?.vendor_invoice.currency ?? fxCurrency;
       const legacyRate = c.received_fx_rate == null ? null : num(c.received_fx_rate);
 
       // Legacy (pre-tranche) commissions read as a single tranche.
@@ -309,7 +317,7 @@ export const partnerCommissionRouter = createTRPCRouter({
                 state,
                 amountInr,
                 // The foreign amount behind the INR, at the rate it was booked.
-                foreign: collected && rate ? { amount: round2(amountInr / rate), currency: fxCurrency, rate } : null,
+                foreign: collected && rate ? { amount: round2(amountInr / rate), currency: fxCurrencyFor(t.id), rate } : null,
                 plannedForeign: share(round2(num(t.amount) * cpFrac)),
                 invoiceNumber: t.invoice_item?.invoice.invoice_number ?? null,
                 invoiceStatus: t.invoice_item?.invoice.status ?? null,

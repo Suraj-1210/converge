@@ -215,7 +215,8 @@ model commission {
   payee_user              user?                @relation("commission_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_commission_payee_user")
   invoice_item            invoice_item[]
   vendor                  vendor?              @relation(fields: [vendor_id], references: [id], onDelete: SetNull, map: "fk_commission_vendor")
-  vendor_invoice_item     vendor_invoice_item?
+  // Several lines once a commission is invoiced instalment by instalment.
+  vendor_invoice_item     vendor_invoice_item[]
   commission_tranche      commission_tranche[]
   partner_tier            partner_tier?        @relation(fields: [partner_tier_id], references: [id], onDelete: Restrict, map: "fk_commission_partner_tier")
 
@@ -1173,6 +1174,8 @@ model commission_tranche {
   updated_at    DateTime      @default(now()) @db.Timestamp(0)
   commission    commission    @relation(fields: [commission_id], references: [id], onDelete: Cascade, map: "fk_commission_tranche_commission")
   invoice_item  invoice_item?
+  // The vendor invoice line that bills this instalment (at most one).
+  vendor_invoice_item_tranche vendor_invoice_item_tranche?
 
   @@unique([commission_id, seq], map: "uq_commission_tranche_seq")
   @@index([commission_id], map: "fk_commission_tranche_commission_idx")
@@ -1214,7 +1217,7 @@ model vendor_invoice {
 model vendor_invoice_item {
   id                    Int            @id @default(autoincrement())
   vendor_invoice_id     Int
-  commission_id         Int            @unique(map: "uq_vendor_invoice_item_commission")
+  commission_id         Int
   tuition_amount        Decimal        @db.Decimal(12, 2)
   calculated_commission Decimal        @db.Decimal(12, 2)
   expected_amount       Decimal        @db.Decimal(12, 2)
@@ -1224,8 +1227,24 @@ model vendor_invoice_item {
   created_at            DateTime       @default(now()) @db.Timestamp(0)
   vendor_invoice        vendor_invoice @relation(fields: [vendor_invoice_id], references: [id], onDelete: Cascade, map: "fk_vendor_invoice_item_invoice")
   commission            commission     @relation(fields: [commission_id], references: [id], onDelete: Restrict, map: "fk_vendor_invoice_item_commission")
+  // The instalments this line bills; none = the whole commission.
+  vendor_invoice_item_tranche vendor_invoice_item_tranche[]
 
+  @@index([commission_id], map: "fk_vendor_invoice_item_commission_idx")
   @@index([vendor_invoice_id], map: "fk_vendor_invoice_item_invoice_idx")
+}
+
+// Links a vendor invoice line to an instalment (commission_tranche) it bills.
+// UNIQUE on the tranche: an instalment is invoiced at most once.
+model vendor_invoice_item_tranche {
+  id                     Int                 @id @default(autoincrement())
+  vendor_invoice_item_id Int
+  commission_tranche_id  Int                 @unique(map: "uq_vendor_invoice_item_tranche_tranche")
+  created_at             DateTime            @default(now()) @db.Timestamp(0)
+  vendor_invoice_item    vendor_invoice_item @relation(fields: [vendor_invoice_item_id], references: [id], onDelete: Cascade, map: "fk_vendor_invoice_item_tranche_item")
+  commission_tranche     commission_tranche  @relation(fields: [commission_tranche_id], references: [id], onDelete: Restrict, map: "fk_vendor_invoice_item_tranche_tranche")
+
+  @@index([vendor_invoice_item_id], map: "fk_vendor_invoice_item_tranche_item_idx")
 }
 
 // A foreign payment received against a vendor invoice. amount_inr is the actual

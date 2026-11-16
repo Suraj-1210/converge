@@ -28,6 +28,8 @@ import {
   VARIANCE_REASON_CODES,
   financialYearLabel,
   toINR,
+  TrancheStatus,
+  TrancheStatusLabel,
 } from "~/server/db/enums";
 import { FINANCE_CURRENCIES, money as fmtMoney } from "~/lib/currency";
 
@@ -102,6 +104,41 @@ function TrancheCollection({ tranches }: { tranches: { total: number; collected:
     </div>
   );
 }
+
+// Per-commission invoice progress by instalment, e.g. "Instalment 1 · INV-001"
+// then "Instalment 2 · not invoiced", so Finance can come back and bill the
+// next instalment when it falls due.
+function InstalmentInvoicing({
+  instalments,
+  currency,
+  onJumpToInvoice,
+}: {
+  instalments: BillingStudent["instalments"];
+  currency: string;
+  onJumpToInvoice: (id: number) => void;
+}) {
+  return (
+    <ul className="mt-1.5 space-y-0.5">
+      {instalments.map((t) => (
+        <li key={t.seq} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="font-medium text-[#475467]">{t.name}</span>
+          <span className="text-[#98A2B3]">{money(t.cpAmount, currency)}</span>
+          {t.invoice ? (
+            <button className="font-semibold text-[#1570EF] hover:underline" onClick={() => onJumpToInvoice(t.invoice!.id)}>
+              {t.invoice.number}
+            </button>
+          ) : (
+            <span className="font-semibold text-[#B42318]">not invoiced</span>
+          )}
+          {isTrancheCollected(t.status) && <span className="text-[#067647]">· collected</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const isTrancheCollected = (s: number) =>
+  s === TrancheStatus.COLLECTED || s === TrancheStatus.RECEIVED || s === TrancheStatus.PAID;
 
 // Deposit slip state for "Approve commission": only a verified slip allows it.
 const SLIP: Record<DepositSlip, { label: string; tone: string; hint: string }> = {
@@ -738,8 +775,9 @@ function VendorBillingTab({
   const [jumpTo, setJumpTo] = useState<number | null>(null);
 
   // Stat-card aggregates.
-  const invoicedStudents = students.filter((s) => s.invoice != null).length;
-  const notInvoiced = students.filter((s) => s.invoice == null).length;
+  // On at least one invoice / with an instalment (or all of it) still to bill.
+  const invoicedStudents = students.filter((s) => s.invoices.length > 0).length;
+  const notInvoiced = students.filter((s) => !s.fullyInvoiced).length;
   const outstandingInvoices = invoices.filter(
     (i) => i.status === VendorInvoiceStatus.SENT || i.status === VendorInvoiceStatus.PARTIAL_PAYMENT,
   );
@@ -845,7 +883,7 @@ function BillingStudentsView({
 }) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const rows = useMemo(
-    () => (onlyNotInvoiced ? students.filter((s) => s.invoice == null) : students),
+    () => (onlyNotInvoiced ? students.filter((s) => !s.fullyInvoiced) : students),
     [students, onlyNotInvoiced],
   );
   const groups = useMemo(() => groupByVendorUni(rows), [rows]);
@@ -899,7 +937,7 @@ function BillingStudentsView({
             <VendorHeader g={g} />
           </div>
           {g.unis.map((u) => {
-            const billable = u.students.filter((st) => st.invoice == null).map((st) => st.commissionId);
+            const billable = u.students.filter((st) => !st.fullyInvoiced).map((st) => st.commissionId);
             const allSelected = billable.length > 0 && billable.every((id) => selected.has(id));
             return (
               <div key={u.universityId}>
@@ -932,7 +970,9 @@ function BillingStudentsView({
                   </thead>
                   <tbody>
                     {u.students.map((st) => {
-                      const invoiced = st.invoice != null;
+                      // Nothing left to bill (every instalment is on an invoice).
+                      const invoiced = st.fullyInvoiced;
+                      const multi = st.instalments.length > 1;
                       return (
                         <tr key={st.commissionId} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#FCFCFD]">
                           <td className={`${TD} w-10`}>
@@ -963,15 +1003,30 @@ function BillingStudentsView({
                             </span>
                           </td>
                           <td className={TD}>
-                            {invoiced ? (
-                              <div className="flex items-center gap-2">
-                                <button className="text-[13px] font-semibold text-[#1570EF] hover:underline" onClick={() => onJumpToInvoice(st.invoice!.id)}>
-                                  {st.invoice!.number}
-                                </button>
-                                <InvoiceStatusPill status={st.invoice!.status} />
-                              </div>
-                            ) : (
+                            {st.invoices.length === 0 ? (
                               <span className="rounded-[10px] bg-[#FEF3F2] px-2 py-0.5 text-[11px] font-semibold text-[#B42318]">Not Invoiced</span>
+                            ) : multi ? (
+                              invoiced ? (
+                                <span className="rounded-[10px] bg-[#EFF8FF] px-2 py-0.5 text-[11px] font-semibold text-[#1570EF]">All instalments invoiced</span>
+                              ) : (
+                                <span className="rounded-[10px] bg-[#FFF6ED] px-2 py-0.5 text-[11px] font-semibold text-[#B54708]">
+                                  {st.uninvoiced} instalment{st.uninvoiced === 1 ? "" : "s"} to invoice
+                                </span>
+                              )
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-2">
+                                {st.invoices.map((inv) => (
+                                  <Fragment key={inv.id}>
+                                    <button className="text-[13px] font-semibold text-[#1570EF] hover:underline" onClick={() => onJumpToInvoice(inv.id)}>
+                                      {inv.number}
+                                    </button>
+                                    <InvoiceStatusPill status={inv.status} />
+                                  </Fragment>
+                                ))}
+                              </div>
+                            )}
+                            {multi && (
+                              <InstalmentInvoicing instalments={st.instalments} currency={st.currency} onJumpToInvoice={onJumpToInvoice} />
                             )}
                             {st.tranches.total > 1 && <TrancheCollection tranches={st.tranches} />}
                           </td>
@@ -1047,15 +1102,17 @@ function InvoicesView({
 
   const downloadInvoice = (inv: Invoice) => {
     const paid = Math.round(inv.payments.reduce((s, p) => s + p.amountForeign, 0) * 100) / 100;
-    const header = ["Student Name", "University Student ID", "Program", "Calculated Amount", "Expected Amount", "Variance", "Variance Reason"];
+    const header = ["Student Name", "University Student ID", "Program", "Instalments", "Calculated Amount", "Expected Amount", "Variance", "Variance Reason"];
     const body = inv.items.map((it) => [
-      it.student, it.universityStudentId ?? "", it.program, it.calculated, it.expected, it.variance,
+      it.student, it.universityStudentId ?? "", it.program,
+      it.wholeCommission ? "Whole commission" : it.instalments.map((t) => t.name).join(" + "),
+      it.calculated, it.expected, it.variance,
       it.varianceReason === VarianceReason.NONE ? "" : VarianceReasonLabel[it.varianceReason as 0 | 1 | 2 | 3 | 4],
     ]);
     const footer = [
       [],
       ["Invoice", inv.invoiceNumber, "Vendor", inv.vendorName, "University", invUniversity(inv)],
-      ["Currency", inv.currency, "Total Expected", inv.totalExpected, "Total Paid (≈)", paid, "Status", VendorInvoiceStatusLabel[inv.status as 0 | 1 | 2 | 3]],
+      ["Currency", inv.currency, "Total Expected", inv.totalExpected, "Total Paid (≈)", paid, "Outstanding", inv.outstanding, "Status", VendorInvoiceStatusLabel[inv.status as 0 | 1 | 2 | 3]],
     ];
     downloadCsv(`${inv.invoiceNumber}.csv`, [header, ...body, ...footer]);
     logExport(`Vendor invoice ${inv.invoiceNumber} CSV`, body.length);
@@ -1077,23 +1134,23 @@ function InvoicesView({
   return (
     <div className="space-y-3">
       {/* Header row */}
-      <div className="hidden grid-cols-[24px_1.3fr_1.2fr_1.3fr_60px_1fr_70px_110px_90px] gap-3 px-5 text-[11px] font-semibold tracking-wider text-[#667085] uppercase lg:grid">
-        <span></span><span>Invoice #</span><span>Vendor</span><span>University</span><span>Students</span><span>Expected</span><span>Currency</span><span>Status</span><span>Date</span>
+      <div className="hidden grid-cols-[24px_1.3fr_1.2fr_1.3fr_60px_1fr_1fr_110px_90px] gap-3 px-5 text-[11px] font-semibold tracking-wider text-[#667085] uppercase lg:grid">
+        <span></span><span>Invoice #</span><span>Vendor</span><span>University</span><span>Students</span><span>Expected</span><span>Outstanding</span><span>Status</span><span>Date</span>
       </div>
       {rows.map((inv) => {
         const isOpen = open.has(inv.id);
-        const paidForeign = Math.round(inv.payments.reduce((s, p) => s + p.amountForeign, 0) * 100) / 100;
-        const remaining = Math.max(0, Math.round((inv.totalExpected - paidForeign) * 100) / 100);
+        // Invoice total − its collected instalments.
+        const remaining = inv.outstanding;
         return (
           <div key={inv.id} id={`inv-${inv.id}`} className="overflow-hidden rounded-xl border border-[#E4E7EC] bg-white">
-            <button onClick={() => toggle(inv.id)} className="grid w-full grid-cols-[24px_1.3fr_1.2fr_1.3fr_60px_1fr_70px_110px_90px] items-center gap-3 px-5 py-4 text-left">
+            <button onClick={() => toggle(inv.id)} className="grid w-full grid-cols-[24px_1.3fr_1.2fr_1.3fr_60px_1fr_1fr_110px_90px] items-center gap-3 px-5 py-4 text-left">
               <span className="text-[#667085]"><Chevron open={isOpen} /></span>
               <span className="font-semibold text-[#101828]">{inv.invoiceNumber}</span>
               <span className="text-sm text-[#344054]">{inv.vendorName}</span>
               <span className="text-sm text-[#344054]">{invUniversity(inv)}</span>
               <span className="text-sm text-[#344054]">{inv.items.length}</span>
               <span className="text-sm font-semibold text-[#101828]">{money(inv.totalExpected, inv.currency)}</span>
-              <span className="text-sm text-[#344054]">{inv.currency}</span>
+              <span className={`text-sm font-semibold ${inv.outstanding > 0 ? "text-[#B42318]" : "text-[#067647]"}`}>{money(inv.outstanding, inv.currency)}</span>
               <span><InvoiceStatusPill status={inv.status} /></span>
               <span className="text-xs text-[#98A2B3]">{formatDate(inv.invoiceDate)}</span>
             </button>
@@ -1101,11 +1158,11 @@ function InvoicesView({
               <div className="space-y-4 border-t border-[#E4E7EC] px-5 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-[#667085]">
-                    received ₹{inv.paidInr.toLocaleString()} · remaining {money(remaining, inv.currency)}
-                    {inv.tranches.length > 1 && (
+                    received ₹{inv.paidInr.toLocaleString()} · collected {money(inv.collected, inv.currency)} · outstanding {money(remaining, inv.currency)}
+                    {inv.tranches.length > 0 && (
                       <span className="ml-2">
-                        · tranches:{" "}
-                        {inv.tranches.map((t) => `${t.name ?? t.seq} ${t.uncollected === 0 ? "✓" : "pending"}`).join(", ")}
+                        · instalments:{" "}
+                        {inv.tranches.map((t) => `${t.name ?? `Instalment ${t.seq}`} ${money(t.expected, inv.currency)} ${t.uncollected === 0 ? "✓" : "outstanding"}`).join(", ")}
                       </span>
                     )}
                   </div>
@@ -1124,6 +1181,7 @@ function InvoicesView({
                         <th className={TH}>Student</th>
                         <th className={TH}>University ID</th>
                         <th className={TH}>Program</th>
+                        <th className={TH}>Instalments</th>
                         <th className={TH}>Calculated</th>
                         <th className={TH}>Expected</th>
                         <th className={TH}>Variance</th>
@@ -1136,6 +1194,26 @@ function InvoicesView({
                           <td className={`${TD} font-medium text-[#101828]`}>{it.student}</td>
                           <td className={TD}>{it.universityStudentId ?? "—"}</td>
                           <td className={TD}>{it.program}</td>
+                          <td className={TD}>
+                            {it.instalments.length === 0 ? (
+                              <span className="text-[#98A2B3]">Whole commission</span>
+                            ) : (
+                              <ul className="space-y-0.5 text-xs">
+                                {it.instalments.map((t) => (
+                                  <li key={t.seq}>
+                                    <span className="font-medium text-[#344054]">{t.name}</span>{" "}
+                                    <span className="text-[#98A2B3]">{money(t.expected, inv.currency)}</span>{" "}
+                                    <span className={isTrancheCollected(t.status) ? "text-[#067647]" : "text-[#B54708]"}>
+                                      {isTrancheCollected(t.status) ? "collected" : "outstanding"}
+                                    </span>
+                                  </li>
+                                ))}
+                                {it.wholeCommission && it.instalments.length > 1 && (
+                                  <li className="text-[#98A2B3]">(whole commission)</li>
+                                )}
+                              </ul>
+                            )}
+                          </td>
                           <td className={TD}>{money(it.calculated, inv.currency)}</td>
                           <td className={TD}>{money(it.expected, inv.currency)}</td>
                           <td className={`${TD} ${it.variance < 0 ? "text-[#B42318]" : it.variance > 0 ? "text-[#067647]" : ""}`}>
@@ -1145,7 +1223,7 @@ function InvoicesView({
                         </tr>
                       ))}
                       <tr className="bg-[#F9FAFB] font-semibold text-[#101828]">
-                        <td className={TD} colSpan={4}>Totals</td>
+                        <td className={TD} colSpan={5}>Totals</td>
                         <td className={TD}>{money(inv.totalExpected, inv.currency)}</td>
                         <td className={TD} colSpan={2}></td>
                       </tr>
@@ -1197,7 +1275,7 @@ function InvoicesView({
                             <td className={TD}>Total Paid</td>
                             <td className={TD}>₹{inv.paidInr.toLocaleString()}</td>
                             <td className={TD} colSpan={6}>
-                              <span className="text-[#667085]">Remaining: </span>{money(remaining, inv.currency)}
+                              <span className="text-[#667085]">Outstanding: </span>{money(remaining, inv.currency)}
                             </td>
                           </tr>
                         </tbody>
@@ -1352,14 +1430,36 @@ type Line = {
   program: string;
   rate: number;
   cpSharePct: number | null;
-  storedCalc: number;
+  // The commission's stored gross (commission currency).
+  grossAmount: number;
   tuitionCurrency: string;
   commissionCurrency: string;
+  // The commission's instalment structure; empty = billed whole.
+  instalments: BillingStudent["instalments"];
+  // Ticked instalment seqs.
+  picked: number[];
   tuition: string;
   expected: string;
+  // Finance typed an expected amount: stop re-filling it from the ticks.
+  expectedTouched: boolean;
   reason: number;
   note: string;
 };
+
+// Same as the server (createVendorInvoice): the ticked instalments' share of
+// the gross — % of the entered tuition, or the stored flat amount — then the
+// vendor's CP share of it. What Collegepond bills for this line.
+function lineCalc(l: Pick<Line, "tuition" | "rate" | "cpSharePct" | "grossAmount" | "instalments" | "picked">): number {
+  let fraction = 1;
+  if (l.instalments.length > 0) {
+    const picked = l.instalments.filter((t) => l.picked.includes(t.seq));
+    const amount = picked.reduce((s, t) => s + t.amount, 0);
+    fraction = l.grossAmount > 0 ? amount / l.grossAmount : picked.length / l.instalments.length;
+  }
+  const gross = l.rate > 0 ? Math.round(((Number(l.tuition) * l.rate) / 100) * 100) / 100 : l.grossAmount;
+  const billed = Math.round(gross * fraction * 100) / 100;
+  return l.cpSharePct == null ? billed : Math.round(billed * l.cpSharePct) / 100;
+}
 
 function CreateInvoiceModal({
   vendorId,
@@ -1375,24 +1475,34 @@ function CreateInvoiceModal({
   onToast: (m: string) => void;
 }) {
   const utils = api.useUtils();
-  const [lines, setLines] = useState<Line[]>(
-    students.map((st) => ({
-      commissionId: st.commissionId,
-      student: st.studentName,
-      cpStudentId: st.cpStudentId,
-      universityStudentId: st.universityStudentId,
-      university: st.university,
-      program: st.program,
-      rate: st.rate,
-      cpSharePct: st.cpSharePct,
-      storedCalc: st.calcAmount,
-      tuitionCurrency: st.tuitionCurrency,
-      commissionCurrency: st.currency,
-      tuition: String(st.tuition),
-      expected: String(st.calcAmount),
-      reason: VarianceReason.NONE,
-      note: "",
-    })),
+  const [lines, setLines] = useState<Line[]>(() =>
+    students.map((st) => {
+      // Default: the earliest instalment not yet on an invoice, only.
+      const next = st.instalments.find((t) => t.invoice == null);
+      const base = {
+        tuition: String(st.tuition),
+        rate: st.rate,
+        cpSharePct: st.cpSharePct,
+        grossAmount: st.grossAmount,
+        instalments: st.instalments,
+        picked: next ? [next.seq] : [],
+      };
+      return {
+        ...base,
+        commissionId: st.commissionId,
+        student: st.studentName,
+        cpStudentId: st.cpStudentId,
+        universityStudentId: st.universityStudentId,
+        university: st.university,
+        program: st.program,
+        tuitionCurrency: st.tuitionCurrency,
+        commissionCurrency: st.currency,
+        expected: String(lineCalc(base)),
+        expectedTouched: false,
+        reason: VarianceReason.NONE,
+        note: "",
+      };
+    }),
   );
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [currency, setCurrency] = useState(students[0]?.currency ?? "USD");
@@ -1412,26 +1522,36 @@ function CreateInvoiceModal({
     onError: (e) => setErr(e.message),
   });
 
-  // Same as the server: % of the entered tuition (flat: the stored amount),
-  // then the vendor's CP share of it — what Collegepond bills.
-  const calcFor = (l: Line) => {
-    const t = Number(l.tuition);
-    if (l.rate <= 0) return l.storedCalc;
-    const gross = Math.round(((t * l.rate) / 100) * 100) / 100;
-    return l.cpSharePct == null ? gross : Math.round(gross * l.cpSharePct) / 100;
-  };
+  const calcFor = lineCalc;
   // Lines whose commission isn't in the invoice currency: the calculated
   // amount is in the commission's currency, so expected needs converting.
   const otherCurrency = lines.filter((l) => l.commissionCurrency !== currency);
   const varianceFor = (l: Line) => Math.round((Number(l.expected) - calcFor(l)) * 100) / 100;
   const totalExpected = lines.reduce((sum, l) => sum + (Number(l.expected) || 0), 0);
 
+  // Changing the ticks or the tuition re-fills expected from the calculated
+  // amount until Finance types an expected amount of their own.
   const setLine = (i: number, patch: Partial<Line>) =>
-    setLines((prev) => prev.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+    setLines((prev) =>
+      prev.map((l, j) => {
+        if (j !== i) return l;
+        const next = { ...l, ...patch };
+        if (patch.expected !== undefined) return { ...next, expectedTouched: true };
+        return next.expectedTouched ? next : { ...next, expected: String(calcFor(next)) };
+      }),
+    );
+  const togglePick = (i: number, seq: number) => {
+    const l = lines[i]!;
+    setLine(i, {
+      picked: l.picked.includes(seq) ? l.picked.filter((s) => s !== seq) : [...l.picked, seq].sort((a, b) => a - b),
+    });
+  };
 
   const save = () => {
     if (!invoiceNumber.trim()) return setErr("Invoice number is required");
     for (const l of lines) {
+      if (l.instalments.length > 0 && l.picked.length === 0)
+        return setErr(`Tick the instalment(s) to invoice for ${l.student}`);
       if (l.tuition.trim() === "" || Number.isNaN(Number(l.tuition)))
         return setErr(`Enter tuition for ${l.student}`);
       if (varianceFor(l) !== 0 && l.reason === VarianceReason.NONE)
@@ -1448,6 +1568,7 @@ function CreateInvoiceModal({
       notes: notes || undefined,
       lines: lines.map((l) => ({
         commissionId: l.commissionId,
+        trancheSeqs: l.instalments.length > 0 ? l.picked : [],
         tuitionAmount: Number(l.tuition),
         expectedAmount: Number(l.expected),
         varianceReason: l.reason,
@@ -1498,7 +1619,8 @@ function CreateInvoiceModal({
             {lines.map((l, i) => {
               const v = varianceFor(l);
               return (
-                <tr key={l.commissionId} className="border-b border-[#F2F4F7] last:border-0 align-top">
+                <Fragment key={l.commissionId}>
+                <tr className={`align-top ${l.instalments.length > 0 ? "" : "border-b border-[#F2F4F7] last:border-0"}`}>
                   <td className={`${TD} font-medium text-[#101828]`}>
                     {l.student}
                     <span className="block text-xs font-normal text-[#98A2B3]">{l.universityStudentId ?? l.cpStudentId}</span>
@@ -1535,6 +1657,38 @@ function CreateInvoiceModal({
                     )}
                   </td>
                 </tr>
+                {l.instalments.length > 0 && (
+                  <tr className="border-b border-[#F2F4F7] last:border-0">
+                    <td className="px-3.5 pb-3" colSpan={9}>
+                      <div className="rounded-md bg-[#F9FAFB] px-3 py-2">
+                        <div className="mb-1 text-[11px] font-semibold tracking-wide text-[#667085] uppercase">
+                          Instalments — tick what this invoice covers
+                        </div>
+                        <div className="flex flex-wrap gap-x-5 gap-y-1">
+                          {l.instalments.map((t) => {
+                            const taken = t.invoice != null;
+                            return (
+                              <label key={t.seq} className={`flex items-center gap-2 text-sm ${taken ? "text-[#98A2B3]" : "cursor-pointer text-[#344054]"}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={taken || l.picked.includes(t.seq)}
+                                  disabled={taken}
+                                  onChange={() => togglePick(i, t.seq)}
+                                />
+                                <span className="font-medium">{t.name}</span>
+                                <span>{money(t.cpAmount, l.commissionCurrency)}</span>
+                                <span className="text-xs">
+                                  {taken ? `on ${t.invoice!.number}` : TrancheStatusLabel[t.status as TrancheStatus]}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -1566,8 +1720,9 @@ function CreateInvoiceModal({
 // =============================================================================
 // Record Payment modal (FX)
 // =============================================================================
-// Collection is tranche-aware: Finance ticks the tranche(s) this payment
-// completes (default: the next one still outstanding). Only ticked tranches
+// Collection is tranche-aware: Finance ticks the instalment(s) this payment
+// completes (default: the next one still outstanding). Only the instalments
+// THIS invoice bills are listed, each with its expected amount. Only ticked tranches
 // are collected — "awaiting approval" until a Super Admin / Finance Manager
 // approves the collection, then claimable; a payment that completes none is
 // recorded as a part-payment and unlocks nothing. "Final payment" collects
@@ -1594,8 +1749,8 @@ function RecordPaymentModal({
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState("");
 
-  const paidForeign = Math.round(invoice.payments.reduce((s, p) => s + p.amountForeign, 0) * 100) / 100;
-  const remaining = Math.max(0, Math.round((invoice.totalExpected - paidForeign) * 100) / 100);
+  // Invoice total − its collected instalments.
+  const remaining = invoice.outstanding;
   // Pre-tranche invoices have no schedule: only a final payment unlocks them.
   const hasSchedule = invoice.tranches.length > 0;
   const covered = isFinal ? outstanding : outstanding.filter((t) => picked.has(t.seq));
@@ -1671,7 +1826,7 @@ function RecordPaymentModal({
           <div className="font-semibold text-[#101828]">₹{invoice.paidInr.toLocaleString()}</div>
         </div>
         <div>
-          <div className="text-[11px] tracking-wide text-[#98A2B3] uppercase">Remaining</div>
+          <div className="text-[11px] tracking-wide text-[#98A2B3] uppercase">Outstanding</div>
           <div className="font-semibold text-[#B42318]">{money(remaining, invoice.currency)}</div>
         </div>
       </div>
@@ -1687,7 +1842,7 @@ function RecordPaymentModal({
 
       {hasSchedule && (
         <div>
-          <div className="mb-1.5 text-sm font-medium text-[#344054]">Which tranche does this payment complete?</div>
+          <div className="mb-1.5 text-sm font-medium text-[#344054]">Which instalment does this payment complete?</div>
           <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#E4E7EC]">
             {invoice.tranches.map((t) => {
               const done = t.uncollected === 0;
@@ -1699,13 +1854,20 @@ function RecordPaymentModal({
                 >
                   <span className="flex items-center gap-2">
                     <input type="checkbox" checked={checked} disabled={done || isFinal} onChange={() => toggle(t.seq)} />
-                    <span className="font-medium">{t.seq}. {t.name ?? `Tranche ${t.seq}`}</span>
+                    <span className="font-medium">{t.name ?? `Instalment ${t.seq}`}</span>
+                    <span className="text-[#667085]">{money(t.expected, invoice.currency)}</span>
                     {invoice.items.length > 1 && !done && (
                       <span className="text-xs text-[#98A2B3]">{t.uncollected} of {t.students} students</span>
                     )}
                   </span>
                   <span className="text-xs">
-                    {done ? "Collected ✓" : money(t.uncollectedExpected, invoice.currency)}
+                    {done ? (
+                      <span className="text-[#067647]">Collected ✓</span>
+                    ) : (
+                      <span className="font-medium text-[#B54708]">
+                        {t.uncollectedExpected === t.expected ? "outstanding" : `${money(t.uncollectedExpected, invoice.currency)} outstanding`}
+                      </span>
+                    )}
                   </span>
                 </label>
               );
@@ -1715,8 +1877,14 @@ function RecordPaymentModal({
       )}
       <label className="flex cursor-pointer items-center gap-2 text-sm text-[#344054]">
         <input type="checkbox" checked={isFinal} onChange={(e) => setIsFinal(e.target.checked)} />
-        This is the final payment (collects every remaining tranche → invoice fully paid)
+        This is the final payment (collects every remaining instalment on this invoice → invoice fully paid)
       </label>
+      {covered.length > 0 && (
+        <div className="flex justify-between rounded-lg border border-[#E4E7EC] px-3 py-2 text-sm">
+          <span className="text-[#475467]">Expected for the selected instalment{covered.length === 1 ? "" : "s"}</span>
+          <span className="font-semibold text-[#101828]">{money(coveredExpected, invoice.currency)}</span>
+        </div>
+      )}
       <p className="rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#475467]">
         {covered.length > 0
           ? `${covered.map((t) => t.name ?? `Tranche ${t.seq}`).join(", ")} is marked collected${completesInvoice ? " and the invoice fully paid" : ""}. The partner can claim once a Finance Manager approves the collection.`

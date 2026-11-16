@@ -13,6 +13,7 @@ import {
 } from "~/server/email";
 import { emailPartners, payeeRecipients } from "~/server/email/partners";
 import { PAYEE_LABEL_SELECT, payeeLabel } from "~/server/payee";
+import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
 import {
   PartnerInvoiceStatus,
   PayoutStatus,
@@ -64,7 +65,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           include: {
             // The tranche this line claims (pay-as-collected); null on
             // pre-tranche lines.
-            commission_tranche: { select: { name: true, status: true, amount_inr: true } },
+            commission_tranche: { select: { id: true, name: true, status: true, amount_inr: true } },
             commission: {
               select: {
                 claimable_inr: true,
@@ -74,11 +75,13 @@ export const partnerPayoutsRouter = createTRPCRouter({
                     student: { select: { first_name: true, last_name: true } },
                   },
                 },
-                // The vendor invoice CP raised to collect for this student — the
-                // "source ref" the partner's claim is cross-referenced against,
-                // plus what's needed to compute the collected ratio.
+                // The vendor invoice(s) CP raised to collect for this student —
+                // the "source ref" the partner's claim is cross-referenced
+                // against, plus what's needed to compute the collected ratio.
+                // One line per instalment invoice, or a single whole line.
                 vendor_invoice_item: {
                   select: {
+                    ...TRANCHE_LINKS_SELECT,
                     expected_amount: true,
                     vendor_invoice: {
                       select: {
@@ -102,7 +105,11 @@ export const partnerPayoutsRouter = createTRPCRouter({
       const items = inv.invoice_item.map((it) => {
         const c = it.commission;
         const claimed = num(it.amount);
-        const vii = c.vendor_invoice_item;
+        // The vendor invoice line billing this claim's tranche; a pre-tranche
+        // claim's commission has a single (whole-commission) line.
+        const vii = it.commission_tranche
+          ? lineForTranche(c.vendor_invoice_item, it.commission_tranche.id)
+          : (c.vendor_invoice_item[0] ?? null);
         const vInv = vii?.vendor_invoice ?? null;
         // A tranche line is verified once CP has collected that tranche (the
         // same rule approve() enforces). A pre-tranche line goes by how much

@@ -242,7 +242,7 @@ export default function AdminCommissionsPage() {
       r.cpStudentId, r.universityStudentId ?? "", r.studentName, r.partner, r.university, r.country, r.program, r.intake ?? "", r.vendorName,
       r.tuitionCurrency, r.tuition, r.isFlat ? "Flat" : r.rate, r.currency, r.commissionAmount, r.commissionInr, r.cpSharePct ?? "", r.partnerSharePct ?? "Not set", r.partnerShareInr,
       r.statusLabel ?? CommissionStatusLabel[r.status as CommissionStatus] ?? "", `${r.tranche.collected}/${r.tranche.total}`, `${r.tranche.paid}/${r.tranche.total}`,
-      r.vendorInvoice?.number ?? "", r.partnerInvoice?.number ?? "",
+      r.vendorInvoiceNumbers.join(" / "), r.partnerInvoice?.number ?? "",
     ]);
     downloadCsv(`commission-ledger-${stamp()}.csv`, [header, ...body]);
     logExport("Commission ledger CSV", body.length);
@@ -573,7 +573,7 @@ function CommissionDetailModal({ row, onClose }: { row: Row; onClose: () => void
           <div className="mb-3 text-xs font-semibold tracking-wide text-[#667085] uppercase">Linked Documents</div>
           <div className="space-y-2.5 text-sm">
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Commission approved</span><span className="text-right text-[#344054]">{row.approvedBy ? `${row.approvedBy}${row.approvedAt ? ` · ${formatDate(row.approvedAt)}` : ""}` : "Not recorded"}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-[#667085]">Vendor invoice</span><span className="font-medium text-[#101828]">{row.vendorInvoice?.number ?? "—"}</span></div>
+            <div className="flex justify-between gap-3"><span className="text-[#667085]">Vendor invoice{row.vendorInvoiceNumbers.length > 1 ? "s" : ""}</span><span className="font-medium text-[#101828]">{row.vendorInvoiceNumbers.length > 0 ? row.vendorInvoiceNumbers.join(", ") : "—"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Partner invoice</span><span className="font-medium text-[#101828]">{row.partnerInvoice?.number ?? "—"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Fully collected (CP)</span><span className="text-[#344054]">{row.receivedAt ? formatDate(row.receivedAt) : "—"}</span></div>
             <div className="flex justify-between gap-3"><span className="text-[#667085]">Paid to partner</span><span className="text-[#344054]">{row.paidAt ? formatDate(row.paidAt) : "—"}</span></div>

@@ -1350,13 +1350,39 @@ CREATE TABLE IF NOT EXISTS `vendor_invoice_item` (
   `variance_note`         VARCHAR(255) NULL DEFAULT NULL,
   `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `uq_vendor_invoice_item_commission` (`commission_id` ASC) VISIBLE,
+  -- Not unique: a commission can sit on several invoices, one per instalment
+  -- (vendor_invoice_item_tranche). A line with no tranche rows bills the
+  -- whole commission; createVendorInvoice keeps the two from overlapping.
+  INDEX `fk_vendor_invoice_item_commission_idx` (`commission_id` ASC) VISIBLE,
   INDEX `fk_vendor_invoice_item_invoice_idx` (`vendor_invoice_id` ASC) VISIBLE,
   CONSTRAINT `fk_vendor_invoice_item_invoice`
     FOREIGN KEY (`vendor_invoice_id`) REFERENCES `vendor_invoice` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `fk_vendor_invoice_item_commission`
     FOREIGN KEY (`commission_id`) REFERENCES `commission` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- vendor_invoice_item_tranche  (FK -> vendor_invoice_item, commission_tranche)
+-- The instalments a vendor invoice line bills. An instalment is invoiced at
+-- most once (UNIQUE commission_tranche_id). A line with no rows here bills
+-- every tranche of its commission (lines made before 16 Nov 2026).
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `vendor_invoice_item_tranche` (
+  `id`                     INT NOT NULL AUTO_INCREMENT,
+  `vendor_invoice_item_id` INT NOT NULL,
+  `commission_tranche_id`  INT NOT NULL,
+  `created_at`             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_vendor_invoice_item_tranche_tranche` (`commission_tranche_id` ASC) VISIBLE,
+  INDEX `fk_vendor_invoice_item_tranche_item_idx` (`vendor_invoice_item_id` ASC) VISIBLE,
+  CONSTRAINT `fk_vendor_invoice_item_tranche_item`
+    FOREIGN KEY (`vendor_invoice_item_id`) REFERENCES `vendor_invoice_item` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_vendor_invoice_item_tranche_tranche`
+    FOREIGN KEY (`commission_tranche_id`) REFERENCES `commission_tranche` (`id`)
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 

@@ -17,6 +17,7 @@ import {
 import { shareForConfirmation } from "~/server/partner-tiers";
 import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
 import { bdmPartners } from "~/server/staff-access";
+import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -98,13 +99,19 @@ export const commissionsRouter = createTRPCRouter({
         },
         vendor: { select: { name: true, type: true } },
         partner_tier: { select: { name: true } },
+        // One line per instalment invoice, or a single whole-commission line.
         vendor_invoice_item: {
-          select: { vendor_invoice: { select: { id: true, invoice_number: true, status: true } } },
+          orderBy: { id: "asc" },
+          select: {
+            ...TRANCHE_LINKS_SELECT,
+            vendor_invoice: { select: { id: true, invoice_number: true, status: true } },
+          },
         },
         // Per-tranche claim + payout chain (pay-as-collected).
         commission_tranche: {
           orderBy: { seq: "asc" },
           select: {
+            id: true,
             seq: true,
             name: true,
             status: true,
@@ -161,7 +168,24 @@ export const commissionsRouter = createTRPCRouter({
       const share = (gross: number) =>
         partnerSharePct == null ? 0 : round2(gross * (partnerSharePct / 100));
       const tranches = c.commission_tranche;
-      const hasVendorInvoice = c.vendor_invoice_item != null;
+      const vendorLines = c.vendor_invoice_item;
+      const hasVendorInvoice = vendorLines.length > 0;
+      // Instalment invoicing: instalments not on a vendor invoice yet, and the
+      // invoiced ones still to collect. The vendor invoice to collect on next
+      // is the one billing the earliest open instalment (else the latest).
+      const uninvoiced = tranches.filter((t) => lineForTranche(vendorLines, t.id) == null).length;
+      const openBilled = tranches.filter(
+        (t) =>
+          lineForTranche(vendorLines, t.id) != null &&
+          t.status !== TrancheStatus.COLLECTED &&
+          t.status !== TrancheStatus.RECEIVED &&
+          t.status !== TrancheStatus.PAID,
+      );
+      const collectOn =
+        (openBilled[0] ? lineForTranche(vendorLines, openBilled[0].id) : null) ??
+        vendorLines[vendorLines.length - 1] ??
+        null;
+      const vendorInvoice = collectOn?.vendor_invoice ?? null;
 
       // Distinct partner invoices covering this commission (tranche + legacy).
       type PInv = { invoice_number: string; status: number; invoice_date: Date | null; payoutStatus: number | null };
@@ -231,12 +255,18 @@ export const commissionsRouter = createTRPCRouter({
       // Some tranches already paid out, the rest still to collect from the
       // vendor: Invoiced by stage, but say so. A recorded collection waiting
       // for approval is still Invoiced by stage.
+      // Every invoiced instalment collected, more still to bill: the next
+      // move is to invoice the next instalment.
+      const nextInstalmentToBill =
+        status === CommissionStatus.INVOICED && awaiting === 0 && openBilled.length === 0 && uninvoiced > 0;
       const statusLabel =
         status === CommissionStatus.INVOICED && awaiting > 0
           ? "Collected · awaiting approval"
-          : status === CommissionStatus.INVOICED && paid > 0
-            ? "Part paid · awaiting collection"
-            : null;
+          : nextInstalmentToBill
+            ? "Part invoiced · next instalment to bill"
+            : status === CommissionStatus.INVOICED && paid > 0
+              ? "Part paid · awaiting collection"
+              : null;
 
       const commissionInr = toINR(num(c.commision_amount), c.currency);
       const intake =
@@ -292,13 +322,15 @@ export const commissionsRouter = createTRPCRouter({
         claimableInr,
         receivedAt: c.collegepond_received_at,
         paidAt: c.partner_paid_at,
-        vendorInvoice: c.vendor_invoice_item?.vendor_invoice
+        vendorInvoice: vendorInvoice
           ? {
-              id: c.vendor_invoice_item.vendor_invoice.id,
-              number: c.vendor_invoice_item.vendor_invoice.invoice_number,
-              status: c.vendor_invoice_item.vendor_invoice.status,
+              id: vendorInvoice.id,
+              number: vendorInvoice.invoice_number,
+              status: vendorInvoice.status,
             }
           : null,
+        // Every vendor invoice the commission is on (one per instalment).
+        vendorInvoiceNumbers: vendorLines.map((l) => l.vendor_invoice.invoice_number),
         partnerInvoice: latestInvoice
           ? { number: latestInvoice.invoice_number, status: latestInvoice.status }
           : null,
@@ -310,7 +342,12 @@ export const commissionsRouter = createTRPCRouter({
             : null,
         approvedAt: c.approved_at,
         next: viewOnlyStep(
-          nextStep(status, hasPendingPartnerInvoice, c.vendor_invoice_item?.vendor_invoice.id ?? null, awaiting > 0),
+          nextStep(
+            nextInstalmentToBill ? CommissionStatus.NOT_INVOICED : status,
+            hasPendingPartnerInvoice,
+            vendorInvoice?.id ?? null,
+            awaiting > 0,
+          ),
           !!bdm,
         ),
       };
