@@ -3,6 +3,7 @@ import { db } from "~/server/db";
 import { STUDENT_DOC_TYPES } from "~/server/db/enums";
 import { resolveStorageUrl, saveBuffer } from "~/server/storage";
 import { tickPendingDocs, type TickResult } from "~/server/pending-docs";
+import { closeVisaFollowUpsForDocument } from "~/server/follow-ups";
 
 // Student profile document uploads, shared by the admin route
 // (/api/admin/student-doc), the partner route (/api/partner/student-doc),
@@ -225,6 +226,9 @@ export async function saveStudentDocument(
       },
     },
   });
+
+  // A visa copy or refusal letter ends the weekly visa file follow-ups.
+  await closeVisaFollowUpsForDocument(studentId, docType.key, opts.applicationId ?? null);
 
   let ticks: TickResult[] = [];
   try {

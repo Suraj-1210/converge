@@ -1,17 +1,47 @@
-// Application follow-ups (decided with Suraj, 30 Oct 2026): shared by the
-// server (src/server/follow-ups.ts) and the admin Application tab. Dates are
-// calendar days in the TAT timezone (IST) as "YYYY-MM-DD", the same keys the
-// DATE columns come back as.
+// Application follow-ups (decided with Suraj, 30 Oct 2026; deposit and visa
+// kinds 16 Nov 2026): shared by the server (src/server/follow-ups.ts) and the
+// admin Application tab. Dates are calendar days in the TAT timezone (IST) as
+// "YYYY-MM-DD", the same keys the DATE columns come back as.
 
 import { UniApplicationStatus } from "~/server/db/enums";
 
-// The application is with the university: follow-ups can be scheduled, and
-// open ones end by themselves when it moves anywhere else.
-export const FOLLOW_UP_STAGES: number[] = [
-  UniApplicationStatus.APPLICATION_SUBMITTED,
-  UniApplicationStatus.APPLICATION_UNDER_REVIEW,
-];
-export const isFollowUpStage = (status: number) => FOLLOW_UP_STAGES.includes(status);
+// What a follow-up is about (application_follow_up.kind). Each kind has its
+// own numbering (Follow-up 1, 2 … per kind) and its own stages: a follow-up
+// can be scheduled while the application is at one of them, and open ones
+// close by themselves when it moves anywhere else.
+//   decision  the university's decision (Application Submitted / Under Review)
+//   deposit   the deposit, before its deadline (Unconditional Offer). Created
+//             automatically 7 days before application.deposit_deadline.
+//   visa      the visa file with the partner (visa documentation: Deposit
+//             Paid / Visa Filed). Weekly until the visa is in.
+export const FOLLOW_UP_KINDS = ["decision", "deposit", "visa"] as const;
+export type FollowUpKind = (typeof FOLLOW_UP_KINDS)[number];
+export const isFollowUpKind = (s: string): s is FollowUpKind => (FOLLOW_UP_KINDS as readonly string[]).includes(s);
+
+export const FOLLOW_UP_KIND_LABEL: Record<FollowUpKind, string> = {
+  decision: "University decision",
+  deposit: "Deposit",
+  visa: "Visa file",
+};
+
+export const FOLLOW_UP_KIND_STAGES: Record<FollowUpKind, number[]> = {
+  decision: [UniApplicationStatus.APPLICATION_SUBMITTED, UniApplicationStatus.APPLICATION_UNDER_REVIEW],
+  deposit: [UniApplicationStatus.UNCONDITIONAL_OFFER],
+  visa: [UniApplicationStatus.DEPOSIT_PAID, UniApplicationStatus.VISA_FILED],
+};
+export const isFollowUpKindStage = (kind: FollowUpKind, status: number) =>
+  FOLLOW_UP_KIND_STAGES[kind].includes(status);
+
+// The university-decision stages (the original follow-ups).
+export const FOLLOW_UP_STAGES: number[] = FOLLOW_UP_KIND_STAGES.decision;
+export const isFollowUpStage = (status: number) => isFollowUpKindStage("decision", status);
+
+// Deposit: the follow-up falls due this many days before the deadline.
+export const DEPOSIT_FOLLOW_UP_DAYS_BEFORE = 7;
+// Visa file: weekly, and the partner is asked to respond within N days.
+export const VISA_FOLLOW_UP_INTERVAL_DAYS = 7;
+export const MAX_RESPOND_WITHIN_DAYS = 30;
+export const MAX_FOLLOW_UP_REMARKS = 1000;
 
 // Expected decision time when the counsellor hasn't set one: a Faster TAT
 // course (course.faster_tat, at most "Within 7 days") 1 week, otherwise 4.
@@ -47,17 +77,17 @@ export function fmtDay(key: string): string {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export type FollowUpKind = "upcoming" | "today" | "overdue" | "completed" | "closed";
+export type FollowUpState = "upcoming" | "today" | "overdue" | "completed" | "closed";
 
 // Status of one follow-up on `today`.
 export function followUpStatus(
   f: { dueDate: string; completedOn: string | null; closedOn: string | null },
   today: string,
-): { kind: FollowUpKind; days: number; label: string } {
-  if (f.completedOn) return { kind: "completed", days: 0, label: `Completed ${fmtDay(f.completedOn)}` };
-  if (f.closedOn) return { kind: "closed", days: 0, label: `Closed ${fmtDay(f.closedOn)}` };
+): { state: FollowUpState; days: number; label: string } {
+  if (f.completedOn) return { state: "completed", days: 0, label: `Completed ${fmtDay(f.completedOn)}` };
+  if (f.closedOn) return { state: "closed", days: 0, label: `Closed ${fmtDay(f.closedOn)}` };
   const d = daysBetween(today, f.dueDate);
-  if (d > 0) return { kind: "upcoming", days: d, label: `Due in ${plural(d, "day")}` };
-  if (d === 0) return { kind: "today", days: 0, label: "Due today" };
-  return { kind: "overdue", days: -d, label: `Overdue ${plural(-d, "day")}` };
+  if (d > 0) return { state: "upcoming", days: d, label: `Due in ${plural(d, "day")}` };
+  if (d === 0) return { state: "today", days: 0, label: "Due today" };
+  return { state: "overdue", days: -d, label: `Overdue ${plural(-d, "day")}` };
 }

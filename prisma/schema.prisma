@@ -125,8 +125,12 @@ model application_partner_report {
 model application_follow_up {
   id                      Int         @id @default(autoincrement())
   application_id          Int
+  kind                    String      @default("decision") @db.VarChar(10)
   seq                     Int         @db.UnsignedSmallInt
   due_date                DateTime    @db.Date
+  anchor_date             DateTime?   @db.Date
+  respond_within_days     Int?        @db.UnsignedTinyInt
+  remarks                 String?     @db.VarChar(1000)
   completed_at            DateTime?   @db.Timestamp(0)
   completed_by_cp_user_id Int?
   closed_at               DateTime?   @db.Timestamp(0)
@@ -134,12 +138,15 @@ model application_follow_up {
   due_notified_at         DateTime?   @db.Timestamp(0)
   overdue_emailed_at      DateTime?   @db.Timestamp(0)
   overdue_reminded_on     DateTime?   @db.Date
+  ics_sequence            Int         @default(0) @db.UnsignedSmallInt
+  ics_sent_sequence       Int?        @db.UnsignedSmallInt
+  ics_sent_to             String?     @db.VarChar(255)
   created_by_cp_user_id   Int?
   created_at              DateTime    @default(now()) @db.Timestamp(0)
   updated_at              DateTime    @default(now()) @updatedAt @db.Timestamp(0)
   application             application @relation(fields: [application_id], references: [id], onDelete: Cascade, map: "fk_follow_up_application")
 
-  @@unique([application_id, seq], map: "uq_follow_up_application_seq")
+  @@unique([application_id, kind, seq], map: "uq_follow_up_application_kind_seq")
   @@index([completed_at, closed_at, due_date], map: "idx_follow_up_open_due")
 }
 

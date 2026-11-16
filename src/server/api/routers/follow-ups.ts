@@ -7,7 +7,13 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { requireStaffApplication } from "~/server/staff-access";
-import { isDateKey, MAX_DECISION_WEEKS } from "~/lib/follow-ups";
+import {
+  FOLLOW_UP_KINDS,
+  MAX_DECISION_WEEKS,
+  MAX_FOLLOW_UP_REMARKS,
+  MAX_RESPOND_WITHIN_DAYS,
+  isDateKey,
+} from "~/lib/follow-ups";
 import {
   completeFollowUp,
   followUpPanel,
@@ -24,6 +30,10 @@ import {
 
 const dateKey = z.string().refine(isDateKey, { message: "Invalid date" });
 const id = z.number().int().positive();
+const kind = z.enum(FOLLOW_UP_KINDS);
+// Visa file follow-ups: days the partner is asked to respond within, and notes.
+const respondWithinDays = z.number().int().min(1).max(MAX_RESPOND_WITHIN_DAYS).nullable().optional();
+const remarks = z.string().trim().max(MAX_FOLLOW_UP_REMARKS).nullable().optional();
 
 // The follow-up's application, if this staff user may see it.
 async function requireFollowUp(user: { id: number; role: number }, followUpId: number) {
@@ -44,17 +54,33 @@ export const followUpsRouter = createTRPCRouter({
     }),
 
   schedule: protectedAdminProcedure
-    .input(z.object({ applicationId: id, dueDate: dateKey }))
+    .input(
+      z.object({
+        applicationId: id,
+        // Older clients send no kind: the university-decision follow-up.
+        kind: kind.default("decision"),
+        dueDate: dateKey,
+        respondWithinDays,
+        remarks,
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       await requireStaffApplication(ctx.cpUser, input.applicationId);
-      return scheduleFollowUp(ctx.cpUser.id, input.applicationId, input.dueDate);
+      return scheduleFollowUp(ctx.cpUser.id, input.applicationId, input.kind, input.dueDate, {
+        respondWithinDays: input.respondWithinDays,
+        remarks: input.remarks,
+      });
     }),
 
+  // Change an open follow-up's date (and a visa one's response days / remarks).
   reschedule: protectedAdminProcedure
-    .input(z.object({ followUpId: id, dueDate: dateKey }))
+    .input(z.object({ followUpId: id, dueDate: dateKey, respondWithinDays, remarks }))
     .mutation(async ({ ctx, input }) => {
       await requireFollowUp(ctx.cpUser, input.followUpId);
-      return rescheduleFollowUp(ctx.cpUser.id, input.followUpId, input.dueDate);
+      return rescheduleFollowUp(ctx.cpUser.id, input.followUpId, input.dueDate, {
+        respondWithinDays: input.respondWithinDays,
+        remarks: input.remarks,
+      });
     }),
 
   complete: protectedAdminProcedure

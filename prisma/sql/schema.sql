@@ -1044,16 +1044,22 @@ CREATE TABLE IF NOT EXISTS `application_partner_report` (
 
 -- -----------------------------------------------------
 -- application_follow_up  (FK -> application)
--- Follow-ups with the university while an application is at Application
--- Submitted / Under Review (src/server/follow-ups.ts). Open until completed
--- or auto-closed; never deleted. The *_notified/emailed/reminded columns
--- keep the daily cron idempotent. cp_user ids are loose references.
+-- Application follow-ups (src/server/follow-ups.ts), by kind: 'decision'
+-- (Application Submitted / Under Review), 'deposit' (auto, 7 days before
+-- application.deposit_deadline), 'visa' (weekly from the visa documentation
+-- stage). Numbered per kind. Open until completed or auto-closed; never
+-- deleted. The *_notified/emailed/reminded columns keep the daily cron
+-- idempotent; ics_* track the calendar invite. cp_user ids are loose references.
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `application_follow_up` (
   `id`                      INT               NOT NULL AUTO_INCREMENT,
   `application_id`          INT               NOT NULL,
-  `seq`                     SMALLINT UNSIGNED NOT NULL,  -- Follow-up 1, 2, 3 … per application
+  `kind`                    VARCHAR(10)       NOT NULL DEFAULT 'decision',  -- decision | deposit | visa
+  `seq`                     SMALLINT UNSIGNED NOT NULL,  -- Follow-up 1, 2, 3 … per application and kind
   `due_date`                DATE              NOT NULL,
+  `anchor_date`             DATE              NULL DEFAULT NULL,  -- deposit: the deadline it was made for
+  `respond_within_days`     TINYINT UNSIGNED  NULL DEFAULT NULL,  -- visa: days the partner has to respond
+  `remarks`                 VARCHAR(1000)     NULL DEFAULT NULL,
   `completed_at`            TIMESTAMP         NULL DEFAULT NULL,
   `completed_by_cp_user_id` INT               NULL DEFAULT NULL,
   `closed_at`               TIMESTAMP         NULL DEFAULT NULL,  -- auto-closed (offer or later, or closed)
@@ -1061,11 +1067,14 @@ CREATE TABLE IF NOT EXISTS `application_follow_up` (
   `due_notified_at`         TIMESTAMP         NULL DEFAULT NULL,  -- due-day in-app + email sent
   `overdue_emailed_at`      TIMESTAMP         NULL DEFAULT NULL,  -- first overdue day in-app + email sent
   `overdue_reminded_on`     DATE              NULL DEFAULT NULL,  -- last daily overdue in-app reminder (IST date)
+  `ics_sequence`            SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- calendar SEQUENCE, bumped on a date change
+  `ics_sent_sequence`       SMALLINT UNSIGNED NULL DEFAULT NULL,   -- SEQUENCE last emailed as an invite
+  `ics_sent_to`             VARCHAR(255)      NULL DEFAULT NULL,   -- address holding the invite
   `created_by_cp_user_id`   INT               NULL DEFAULT NULL,
   `created_at`              TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`              TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `uq_follow_up_application_seq` (`application_id` ASC, `seq` ASC) VISIBLE,
+  UNIQUE INDEX `uq_follow_up_application_kind_seq` (`application_id` ASC, `kind` ASC, `seq` ASC) VISIBLE,
   INDEX `idx_follow_up_open_due` (`completed_at` ASC, `closed_at` ASC, `due_date` ASC) VISIBLE,
   CONSTRAINT `fk_follow_up_application`
     FOREIGN KEY (`application_id`) REFERENCES `application` (`id`)

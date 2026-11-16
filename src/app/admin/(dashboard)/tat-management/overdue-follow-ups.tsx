@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { api } from "~/trpc/react";
 import { AdminRole } from "~/server/db/enums";
-import { fmtDay } from "~/lib/follow-ups";
+import { fmtDay, type FollowUpKind } from "~/lib/follow-ups";
 
 // TAT Management → Overdue follow-ups (src/server/follow-ups.ts): application
-// follow-ups past their date and not done. Rows follow the viewer's
+// follow-ups of every kind (university decision, deposit, visa file) past
+// their date and not done. Rows follow the viewer's
 // application scope: a counsellor sees their own, a Counsellor Lead their
 // team's and their own, a Super Admin everyone's. A Super Admin can also run
 // the daily reminders on demand (it never sends anything twice a day).
@@ -15,6 +16,11 @@ import { fmtDay } from "~/lib/follow-ups";
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
 const TD = "px-3.5 py-3 text-[13px] text-[#344054]";
 const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
+const KIND_TONE: Record<FollowUpKind, string> = {
+  decision: "bg-[#EFF8FF] text-[#175CD3]",
+  deposit: "bg-[#FFFAEB] text-[#B54708]",
+  visa: "bg-[#F4F3FF] text-[#5925DC]",
+};
 
 export function OverdueFollowUps() {
   const q = api.followUps.overdue.useQuery(undefined, { refetchInterval: 5 * 60_000, retry: false });
@@ -23,7 +29,7 @@ export function OverdueFollowUps() {
   const run = api.followUps.runNow.useMutation({
     onSuccess: (r) => {
       setRan(
-        `Reminders run for ${fmtDay(r.today)}: ${r.due} due, ${r.overdueFirst} first overdue (with email), ${r.overdueDaily} daily overdue, ${r.closed} auto-closed${r.noRecipient ? `, ${r.noRecipient} with no counsellor to tell` : ""}.`,
+        `Reminders run for ${fmtDay(r.today)}: ${r.due} due, ${r.overdueFirst} first overdue (with email), ${r.overdueDaily} daily overdue, ${r.closed} auto-closed, ${r.created} created (deposit / weekly visa), ${r.invites} calendar invites${r.noRecipient ? `, ${r.noRecipient} with no counsellor to tell` : ""}.`,
       );
       void q.refetch();
     },
@@ -93,7 +99,12 @@ export function OverdueFollowUps() {
                       </div>
                     </td>
                     <td className={TD}>{r.counsellor ?? <span className="text-[#98A2B3]">Unassigned</span>}</td>
-                    <td className={TD}>Follow-up {r.seq}</td>
+                    <td className={TD}>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${KIND_TONE[r.kind]}`}>
+                        {r.kindLabel}
+                      </span>
+                      <div className="mt-1 text-[12px] text-[#667085]">Follow-up {r.seq}</div>
+                    </td>
                     <td className={`${TD} whitespace-nowrap`}>{fmtDay(r.dueDate)}</td>
                     <td className={`${TD} whitespace-nowrap font-semibold text-[#B42318]`}>
                       {r.daysOverdue} day{r.daysOverdue === 1 ? "" : "s"}

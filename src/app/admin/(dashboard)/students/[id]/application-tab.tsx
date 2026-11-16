@@ -1572,15 +1572,36 @@ function DepositDetails({
     a.depositAmount === null ? "" : String(a.depositAmount),
   );
 
+  const utils = api.useUtils();
   const saveMut = api.students.setDepositDetails.useMutation({
     onSuccess: () => {
       invalidate();
+      // The deadline drives the automatic deposit follow-up.
+      void utils.followUps.forApplication.invalidate({ applicationId: a.id });
+      void utils.followUps.overdue.invalidate();
       onToast("Deposit details saved");
     },
     onError: (err) => onToast(err.message),
   });
 
+  // Typing a date fires a change per digit (0002, 0020 … 2026): the deadline
+  // is saved once the field settles, since each save can move the deposit
+  // follow-up and email its calendar invite.
+  // A pending save still goes out on blur or when the card unmounts.
+  const dateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSave = useRef<(() => void) | null>(null);
+  const flushDate = () => {
+    if (dateTimer.current) clearTimeout(dateTimer.current);
+    dateTimer.current = null;
+    const save = pendingSave.current;
+    pendingSave.current = null;
+    save?.();
+  };
+  useEffect(() => () => flushDate(), []);
   const persist = (d: string, c: string, amt: string) => {
+    if (dateTimer.current) clearTimeout(dateTimer.current);
+    dateTimer.current = null;
+    pendingSave.current = null;
     const parsed = amt.trim() === "" ? null : Number(amt);
     if (parsed !== null && (Number.isNaN(parsed) || parsed < 0)) return;
     saveMut.mutate({
@@ -1629,9 +1650,13 @@ function DepositDetails({
             type="date"
             value={deadline}
             onChange={(e) => {
-              setDeadline(e.target.value);
-              persist(e.target.value, currency, amount);
+              const v = e.target.value;
+              setDeadline(v);
+              if (dateTimer.current) clearTimeout(dateTimer.current);
+              pendingSave.current = () => persist(v, currency, amount);
+              dateTimer.current = setTimeout(flushDate, 800);
             }}
+            onBlur={flushDate}
             className="h-[34px] w-full cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
           />
         </DepositField>

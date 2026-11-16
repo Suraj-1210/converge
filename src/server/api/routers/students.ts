@@ -12,6 +12,7 @@ import {
   notifyColleagueCourseAction,
   notifyCounsellorAssignment,
 } from "~/server/counsellor-notify";
+import { syncDepositFollowUp } from "~/server/follow-ups";
 import {
   hasPartnerSide,
   notifyCollegepondOfDecision,
@@ -2230,6 +2231,9 @@ export const studentsRouter = createTRPCRouter({
           deposit_amount: input.amount,
         },
       });
+      // A new, changed or removed deadline creates, moves or closes the
+      // automatic deposit follow-up (7 days before it).
+      await syncDepositFollowUp(input.applicationId, ctx.cpUser.id);
       void notifyColleagueApplicationAction(input.applicationId, ctx.cpUser.id, "Updated the deposit details");
       return { ok: true };
     }),
