@@ -24,12 +24,23 @@ import { createNotifications } from "~/server/notify";
 import { appUrl, commissionClaimableEmail } from "~/server/email";
 import { emailPartners, payeeRecipients } from "~/server/email/partners";
 import {
+  COLLECT_COMMISSION_SELECT,
+  COLLECT_LINE_SELECT,
   TRANCHE_LINKS_SELECT,
-  type TrancheLinks,
+  invoiceCollection,
+  isCollected,
   isWholeCommissionLine,
   lineForTranche,
   lineTrancheShares,
 } from "~/server/vendor-invoice-tranches";
+import {
+  applyStandingAdjustmentsToInvoice,
+  commissionUniversityAdjustments,
+  invoiceAdjustmentLines,
+  invoiceAdjustmentTotals,
+  netOutstanding,
+  standingUniversityBalances,
+} from "~/server/adjustments";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -164,82 +175,7 @@ function prismaCode(e: unknown): string | undefined {
   return typeof e === "object" && e !== null ? (e as { code?: string }).code : undefined;
 }
 
-// A tranche counts as collected once Finance has recorded the vendor's
-// payment for it — awaiting approval (COLLECTED) or approved and claimable
-// (RECEIVED) — and stays so once it's paid out to the partner.
-const isCollected = (status: number) =>
-  status === TrancheStatus.COLLECTED ||
-  status === TrancheStatus.RECEIVED ||
-  status === TrancheStatus.PAID;
-
 const round2 = (n: number) => Math.round(n * 100) / 100;
-
-// A vendor invoice line with what's needed to split it into the instalments it
-// bills (see ~/server/vendor-invoice-tranches).
-type CollectLine = TrancheLinks & {
-  expected_amount: Decimalish;
-  commission: {
-    commision_amount: Decimalish;
-    collegepond_received_at: Date | null;
-    commission_tranche: { id: number; seq: number; name: string | null; status: number; amount: Decimalish }[];
-  };
-};
-
-// An invoice's instalments by seq — only the tranches its lines bill — with
-// what's invoiced and still to collect (invoice currency), plus the invoice's
-// outstanding and collected totals. A pre-tranche commission (no tranche rows)
-// counts as collected once its commission-level stamp is set.
-function invoiceCollection(items: CollectLine[]) {
-  const bySeq = new Map<
-    number,
-    { seq: number; name: string | null; students: number; uncollected: number; expected: number; uncollectedExpected: number }
-  >();
-  let outstanding = 0;
-  let collected = 0;
-  for (const it of items) {
-    const expected = num(it.expected_amount);
-    const ts = it.commission.commission_tranche;
-    if (ts.length === 0) {
-      if (it.commission.collegepond_received_at == null) outstanding += expected;
-      else collected += expected;
-      continue;
-    }
-    for (const { tranche: t, fraction } of lineTrancheShares(it, ts, num(it.commission.commision_amount))) {
-      const slice = expected * fraction;
-      const e = bySeq.get(t.seq) ?? { seq: t.seq, name: t.name, students: 0, uncollected: 0, expected: 0, uncollectedExpected: 0 };
-      // Students whose instalments are named differently share a neutral
-      // label ("Instalment <seq>") rather than the first student's name.
-      if (e.students > 0 && e.name !== t.name) e.name = null;
-      e.students += 1;
-      e.expected += slice;
-      if (isCollected(t.status)) {
-        collected += slice;
-      } else {
-        e.uncollected += 1;
-        e.uncollectedExpected += slice;
-        outstanding += slice;
-      }
-      bySeq.set(t.seq, e);
-    }
-  }
-  const tranches = Array.from(bySeq.values())
-    .sort((a, b) => a.seq - b.seq)
-    .map((t) => ({ ...t, expected: round2(t.expected), uncollectedExpected: round2(t.uncollectedExpected) }));
-  return { tranches, outstanding: round2(outstanding), collected: round2(collected) };
-}
-
-const COLLECT_LINE_SELECT = {
-  ...TRANCHE_LINKS_SELECT,
-  expected_amount: true,
-} as const;
-const COLLECT_COMMISSION_SELECT = {
-  commision_amount: true,
-  collegepond_received_at: true,
-  commission_tranche: {
-    orderBy: { seq: "asc" as const },
-    select: { id: true, seq: true, name: true, status: true, amount: true, amount_inr: true },
-  },
-} as const;
 
 // Gross commission for a tuition under a rate (percentage of tuition, or flat).
 function grossCommission(
@@ -584,6 +520,9 @@ export const universityBillingRouter = createTRPCRouter({
       specificByUni.set(ct.university_id, set);
     }
 
+    // University-side adjustments per commission (Finance › Adjustments).
+    const adjByCommission = await commissionUniversityAdjustments(comms.map((c) => c.id));
+
     return comms.map((c) => {
       const uniId = c.application.course.university.id;
       const courseId = c.application.course.id;
@@ -658,9 +597,16 @@ export const universityBillingRouter = createTRPCRouter({
         uninvoiced,
         fullyInvoiced: uninvoiced === 0,
         tranches: { total: trancheTotal, collected: trancheCollected },
+        // Approved deductions / credits against this student's receivable
+        // (their own lines on the invoice), and drafts awaiting a Super Admin.
+        adjustments: adjByCommission.get(c.id) ?? null,
       };
     });
   }),
+
+  // Standing university credits / deductions not yet on any invoice, per
+  // vendor (or direct university) and currency: applied to its next invoice.
+  standingAdjustments: financeProcedure.query(() => standingUniversityBalances()),
 
   createVendorInvoice: financeManagerProcedure
     .input(
@@ -852,6 +798,9 @@ export const universityBillingRouter = createTRPCRouter({
             },
           });
         }
+        // A standing credit for this vendor (a clawback on money already
+        // collected) lands on its next invoice: this one.
+        await applyStandingAdjustmentsToInvoice(tx, inv.id, ctx.cpUser.id);
         return inv;
       }).catch((e: unknown) => {
         if (prismaCode(e) === "P2002") {
@@ -901,13 +850,19 @@ export const universityBillingRouter = createTRPCRouter({
         vendor_payment: { orderBy: { payment_date: "asc" } },
       },
     });
+    // Approved adjustments applied to each invoice (their own lines).
+    const adjLines = await invoiceAdjustmentLines(invoices.map((i) => i.id));
 
     return invoices.map((inv) => {
       const paidInr = inv.vendor_payment.reduce((s, p) => s + num(p.amount_inr), 0);
       // The instalments THIS invoice bills, by seq: what's invoiced and still
       // to collect (invoice currency, each line's expected amount split over
       // the tranches it bills). Drives Record Payment and "Outstanding".
-      const { tranches, outstanding, collected } = invoiceCollection(inv.vendor_invoice_item);
+      const { tranches, outstanding: instalmentOutstanding, collected } = invoiceCollection(inv.vendor_invoice_item);
+      const adjustments = adjLines.get(inv.id) ?? [];
+      const deducted = round2(adjustments.filter((a) => a.direction === "deduction").reduce((s, a) => s + a.amount, 0));
+      const credited = round2(adjustments.filter((a) => a.direction === "credit").reduce((s, a) => s + a.amount, 0));
+      const outstanding = netOutstanding(instalmentOutstanding, { deducted, credited });
       return {
         id: inv.id,
         invoiceNumber: inv.invoice_number,
@@ -921,10 +876,13 @@ export const universityBillingRouter = createTRPCRouter({
         notes: inv.notes,
         tranches,
         // Invoice total − what its collected instalments account for
-        // (invoice currency). Recorded part-payments that complete no
-        // instalment don't reduce it.
+        // (invoice currency) − approved deductions + credits applied to it.
+        // Recorded part-payments that complete no instalment don't reduce it.
         outstanding,
         collected,
+        // Deductions / credits applied to this invoice, each its own line.
+        adjustments,
+        adjustmentNet: round2(credited - deducted),
         // Money still to collect against a tranche. Also true on an invoice
         // marked fully paid before collection was tranche-aware, so its
         // remaining tranches can still be recorded.
@@ -1422,6 +1380,7 @@ export const universityBillingRouter = createTRPCRouter({
         },
       });
       const today = new Date();
+      const adj = await invoiceAdjustmentTotals(invoices.map((i) => i.id));
       const rows = invoices.map((inv) => {
         const daysOverdue = inv.due_date
           ? Math.floor((today.getTime() - inv.due_date.getTime()) / 86_400_000)
@@ -1429,7 +1388,8 @@ export const universityBillingRouter = createTRPCRouter({
         // What's still to collect on the instalments this invoice bills
         // (invoice total − its collected instalments), not the commission's
         // full gross.
-        const { outstanding } = invoiceCollection(inv.vendor_invoice_item);
+        // Less approved deductions (plus credits) applied to it.
+        const outstanding = netOutstanding(invoiceCollection(inv.vendor_invoice_item).outstanding, adj.get(inv.id));
         const unis = Array.from(
           new Set(
             inv.vendor_invoice_item.map(
@@ -1452,7 +1412,7 @@ export const universityBillingRouter = createTRPCRouter({
             daysOverdue <= 30 ? 0 : daysOverdue <= 60 ? 1 : daysOverdue <= 90 ? 2 : 3,
           status: inv.status,
         };
-      });
+      }).filter((r) => r.outstanding > 0); // fully offset by adjustments: nothing to chase
       const buckets = [0, 1, 2, 3].map((b) => {
         const inBucket = rows.filter((r) => r.bucket === b);
         return {
@@ -1474,12 +1434,24 @@ export const universityBillingRouter = createTRPCRouter({
       const invoices = await db.vendor_invoice.findMany({
         where,
         select: {
+          id: true,
           status: true,
           currency: true,
           total_expected_amount: true,
           due_date: true,
         },
       });
+      // Approved adjustments applied to these invoices (INR, indicative rate).
+      const adjTotals = await invoiceAdjustmentTotals(invoices.map((i) => i.id));
+      const curOf = new Map(invoices.map((i) => [i.id, i.currency]));
+      let deductionsInr = 0;
+      let creditsInr = 0;
+      for (const [id, t] of adjTotals) {
+        deductionsInr += toINR(t.deducted, curOf.get(id));
+        creditsInr += toINR(t.credited, curOf.get(id));
+      }
+      deductionsInr = round2(deductionsInr);
+      creditsInr = round2(creditsInr);
       const payments = await db.vendor_payment.findMany({
         where: input?.fy ? { fy: input.fy } : {},
         select: { amount_inr: true },
@@ -1496,7 +1468,7 @@ export const universityBillingRouter = createTRPCRouter({
         Math.round(payments.reduce((s, p) => s + num(p.amount_inr), 0) * 100) / 100;
       const outstandingInr = Math.max(
         0,
-        Math.round((expectedInr - receivedInr) * 100) / 100,
+        Math.round((expectedInr - receivedInr - deductionsInr + creditsInr) * 100) / 100,
       );
       const overdueCount = invoices.filter(
         (i) =>
@@ -1509,7 +1481,7 @@ export const universityBillingRouter = createTRPCRouter({
         expectedInr > 0
           ? Math.min(100, Math.round((receivedInr / expectedInr) * 100))
           : 0;
-      return { expectedInr, receivedInr, outstandingInr, overdueCount, collectionRate };
+      return { expectedInr, receivedInr, outstandingInr, overdueCount, collectionRate, deductionsInr, creditsInr };
     }),
 
   // Financial years present in the data, for the stats dropdown.

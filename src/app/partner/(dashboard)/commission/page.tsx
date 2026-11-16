@@ -5,6 +5,7 @@ import { useUrlState } from "~/lib/url-state";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
+import { AdjustmentsCard, ClaimAdjustmentNotice, PayoutsPausedBanner } from "./adjustments-card";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
@@ -196,6 +197,21 @@ function PayoutLine({ payout }: { payout: HistoryRow["payout"] }) {
           ? ` · ${fxLine(payout.amountForeign, payout.currency, payout.exchangeRate, payout.amountInr)}`
           : ""}
       </span>
+      {/* Adjustments netted off this payment (labelled "Adjustment" only). */}
+      {payout.adjustments.length > 0 && (
+        <span className="block text-[11px] text-[#B54708]">
+          Claim {inr(payout.claimInr)}
+          {payout.adjustments.map((a, i) => (
+            <span key={i}>
+              {" · "}
+              {a.label} {a.amountInr < 0 ? "−" : "+"}
+              {inr(Math.abs(a.amountInr))}
+              {a.noteNumber ? ` (${a.noteNumber})` : ""}
+            </span>
+          ))}
+          {` · paid ${inr(payout.amountInr)}`}
+        </span>
+      )}
     </span>
   );
 }
@@ -343,6 +359,8 @@ function CommissionContent() {
         </button>
       )}
 
+      <PayoutsPausedBanner />
+
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#101828]">💰 Commission &amp; Payments</h1>
@@ -450,6 +468,8 @@ function CommissionContent() {
           </div>
         )}
       </DashboardCard>
+
+      <AdjustmentsCard />
 
       <DashboardCard title="Invoice History" bodyClassName="p-0">
         {historyQ.isLoading ? (
@@ -970,6 +990,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                   You&apos;re paid in {previewQ.data.payoutCurrency}: no GST or TDS applies. The amount above is in INR; it&apos;s converted to {previewQ.data.payoutCurrency} at the exchange rate on the day the payment is sent, and you&apos;ll see the {previewQ.data.payoutCurrency} amount and rate in your invoice history.
                 </p>
               )}
+              <ClaimAdjustmentNotice />
               {notes && <p className="mt-3 text-[11px] text-[#667085]"><span className="font-semibold">Notes:</span> {notes}</p>}
               <p className="mt-3 text-[11px] text-[#98A2B3]">Authorized signatory: {signatory} ({designation}){signedAt ? ` · signed ${signedAt}` : ""}</p>
             </div>

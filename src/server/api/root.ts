@@ -7,6 +7,8 @@ import { adminAuthRouter } from "~/server/api/routers/admin-auth";
 import { usersRouter } from "~/server/api/routers/users";
 import { departmentsRouter } from "~/server/api/routers/departments";
 import { trancheConditionsRouter } from "~/server/api/routers/tranche-conditions";
+import { adjustmentsRouter } from "~/server/api/routers/adjustments";
+import { adjustmentReasonsRouter } from "~/server/api/routers/adjustment-reasons";
 import { partnerTiersRouter } from "~/server/api/routers/partner-tiers";
 import { counsellingTeamsRouter } from "~/server/api/routers/counselling-teams";
 import { partnersRouter } from "~/server/api/routers/partners";
@@ -54,6 +56,8 @@ export const appRouter = createTRPCRouter({
   users: usersRouter,
   departments: departmentsRouter,
   trancheConditions: trancheConditionsRouter,
+  adjustments: adjustmentsRouter,
+  adjustmentReasons: adjustmentReasonsRouter,
   partnerTiers: partnerTiersRouter,
   counsellingTeams: counsellingTeamsRouter,
   partners: partnersRouter,

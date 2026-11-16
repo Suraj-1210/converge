@@ -7,6 +7,7 @@ import {
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
+  AdjustmentDirection,
   PartnerInvoiceStatus,
   PayoutStatus,
   PayoutMethodLabel,
@@ -17,7 +18,14 @@ import {
 } from "~/server/db/enums";
 import { appUrl, payoutSentEmail } from "~/server/email";
 import { emailPartners, payeeRecipients } from "~/server/email/partners";
-import { PAYEE_LABEL_SELECT, independentInactiveReason, payeeLabel } from "~/server/payee";
+import { PAYEE_LABEL_SELECT, independentInactiveReason, payeeLabel, payeeOf } from "~/server/payee";
+import {
+  activeHolds,
+  applyPartnerNetting,
+  assertNoPayoutHold,
+  payeeKey,
+  previewPartnerNetting,
+} from "~/server/adjustments";
 import { razorpayConfigured, razorpayMode, createPayout } from "~/server/razorpayx";
 import { adminBankSelect, bankActorNames, toAdminBankView } from "~/server/bank-accounts";
 
@@ -74,6 +82,8 @@ export const reconciliationRouter = createTRPCRouter({
             created_at: true,
             gstin: true,
             pan: true,
+            org_id: true,
+            payee_user_id: true,
             net_payable: true,
             total_amount: true,
             payout_currency: true,
@@ -106,11 +116,16 @@ export const reconciliationRouter = createTRPCRouter({
         },
       },
     });
-    const [names, bankNames] = await Promise.all([
+    const [names, bankNames, holds] = await Promise.all([
       userNameMap(payouts.map((p) => p.ops_approved_by_cp_user_id)),
       bankActorNames(payouts.flatMap((p) => (p.invoice.bank_account ? [p.invoice.bank_account] : []))),
+      activeHolds(),
     ]);
-    return payouts.map((p) => ({
+    // What release would net off each payout right now (Finance > Adjustments).
+    // Two pending payouts of one payee each show the payee's whole balance;
+    // whichever is released first takes it.
+    const netting = await Promise.all(payouts.map((p) => previewPartnerNetting(payeeOf(p.invoice), num(p.amount_inr))));
+    return payouts.map((p, i) => ({
       id: p.id,
       // payeeInactive: a suspended / deleted independent. Release needs a
       // recorded Finance decision until an admin reactivates them.
@@ -141,6 +156,13 @@ export const reconciliationRouter = createTRPCRouter({
       },
       holdReason: p.hold_reason,
       sentBackReason: p.sent_back_reason,
+      // The payee is on payout hold (Finance > Adjustments): no release.
+      payeeHold: holds.get(payeeKey(p.invoice)) ?? null,
+      adjustment: {
+        deductionInr: netting[i]!.deductionInr,
+        creditInr: netting[i]!.creditInr,
+        toPayInr: netting[i]!.toPay,
+      },
       students: p.invoice.invoice_item.map((it) => ({
         name: `${it.commission.application.student.first_name} ${it.commission.application.student.last_name}`.trim(),
         university: it.commission.application.course.university.name,
@@ -245,6 +267,8 @@ export const reconciliationRouter = createTRPCRouter({
           message: "Complete the verification checklist before releasing payment.",
         });
       }
+      const payee = payeeOf(payout.invoice);
+      await assertNoPayoutHold(payee, "release");
 
       // Execute a real RazorpayX payout when configured + the linked bank account is
       // verified + the method maps to a RazorpayX mode. Otherwise fall back to manual
@@ -254,14 +278,20 @@ export const reconciliationRouter = createTRPCRouter({
       const foreign = payoutCurrency !== "INR";
       // RazorpayX pays INR only; a foreign payout is recorded by hand.
       const mode = foreign ? undefined : RZP_MODE[input.method]; // undefined for International Wire (no RazorpayX mode)
-      const amountInr = input.amountInr ?? num(payout.amount_inr);
-      if (foreign && !input.exchangeRate) {
+      // The claim's amount (as entered at release), netted against the payee's
+      // approved adjustments: deductions recovered (any excess carries
+      // forward), credits added. amountInr is what actually goes out.
+      const claimInr = input.amountInr ?? num(payout.amount_inr);
+      const netting = await previewPartnerNetting(payee, claimInr);
+      const amountInr = netting.toPay;
+      const setOff = amountInr <= 0; // wholly set off: no bank transfer
+      if (foreign && !setOff && !input.exchangeRate) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `This claim is paid in ${payoutCurrency}. Enter the exchange rate the bank used (₹ per 1 ${payoutCurrency}).`,
         });
       }
-      const fx = foreign
+      const fx = foreign && !setOff
         ? {
             currency: payoutCurrency,
             rate: input.exchangeRate!,
@@ -273,19 +303,19 @@ export const reconciliationRouter = createTRPCRouter({
         : null;
       // Payouts go only to an account finance has verified (cheque / bank
       // letter checked by hand, or RazorpayX penny-drop).
-      if (!bank) {
+      if (!bank && !setOff) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This claim has no bank account to pay into." });
       }
-      if (bank.is_verified !== 1) {
+      if (bank && !setOff && bank.is_verified !== 1) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Verify the partner's bank account (check the cancelled cheque / bank letter) before releasing payment.",
         });
       }
-      const bankVerified = bank.is_verified === 1 && Boolean(bank.provider_fund_account_id);
+      const bankVerified = bank?.is_verified === 1 && Boolean(bank.provider_fund_account_id);
       let provider: { id: string; status: string; utr?: string | null } | null = null;
 
-      if (razorpayConfigured() && mode && bankAccountId && bankVerified && bank?.provider_fund_account_id) {
+      if (!setOff && razorpayConfigured() && mode && bankAccountId && bankVerified && bank?.provider_fund_account_id) {
         try {
           provider = await createPayout({
             fundAccountId: bank.provider_fund_account_id,
@@ -299,7 +329,9 @@ export const reconciliationRouter = createTRPCRouter({
         }
       }
 
-      const reference = provider ? (provider.utr ?? provider.id) : input.referenceNumber?.trim();
+      let reference = provider ? (provider.utr ?? provider.id) : input.referenceNumber?.trim();
+      // Wholly set off against adjustments: no transfer, so no bank reference.
+      if (!reference && setOff) reference = "Set off against adjustment";
       if (!reference) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a payment reference, or verify the bank account to pay via RazorpayX." });
       }
@@ -307,8 +339,8 @@ export const reconciliationRouter = createTRPCRouter({
       const now = new Date();
       const releaseNotes = orNull(input.notes);
 
-      await db.$transaction([
-        db.partner_payout.update({
+      await db.$transaction(async (tx) => {
+        await tx.partner_payout.update({
           where: { id: payout.id },
           data: {
             status: PayoutStatus.RELEASED,
@@ -328,18 +360,20 @@ export const reconciliationRouter = createTRPCRouter({
             released_by_cp_user_id: ctx.cpUser.id,
             released_at: now,
             fy: financialYearOf(new Date(input.paymentDate)),
-            ...(input.amountInr != null ? { amount_inr: input.amountInr } : {}),
+            // What actually went out: the claim net of adjustments (the
+            // allocations below record the difference).
+            amount_inr: amountInr,
             currency: payoutCurrency,
             amount_foreign: fx?.amount ?? null,
             exchange_rate: fx?.rate ?? null,
           },
-        }),
-        db.invoice.update({
+        });
+        await tx.invoice.update({
           where: { id: payout.invoice_id },
           data: { status: PartnerInvoiceStatus.PAID },
-        }),
+        });
         // Pay-as-collected: mark the claimed tranches PAID + disbursed.
-        db.commission_tranche.updateMany({
+        await tx.commission_tranche.updateMany({
           where: {
             id: {
               in: payout.invoice.invoice_item
@@ -348,9 +382,9 @@ export const reconciliationRouter = createTRPCRouter({
             },
           },
           data: { status: TrancheStatus.PAID, disbursed_at: now },
-        }),
+        });
         // Legacy (pre-tranche) lines mark the commission paid directly.
-        db.commission.updateMany({
+        await tx.commission.updateMany({
           where: {
             id: {
               in: payout.invoice.invoice_item
@@ -359,8 +393,29 @@ export const reconciliationRouter = createTRPCRouter({
             },
           },
           data: { partner_paid_at: now },
-        }),
-      ]);
+        });
+        // Record what this payout recovered / added (re-checked under lock).
+        await applyPartnerNetting(tx, payee, payout.id, netting, ctx.cpUser.id);
+      });
+      if (netting.allocations.length > 0) {
+        await db.audit_log.create({
+          data: {
+            org_id: payout.invoice.org_id,
+            action: "payout.adjustments_netted",
+            entity_type: "partner_payout",
+            entity_id: payout.id,
+            metadata: {
+              byCpUserId: ctx.cpUser.id,
+              payeeUserId: payout.invoice.payee_user_id,
+              claimInr,
+              deductionInr: netting.deductionInr,
+              creditInr: netting.creditInr,
+              paidInr: amountInr,
+              allocations: netting.allocations,
+            },
+          },
+        });
+      }
       // A commission is fully disbursed once ALL its tranches are PAID — stamp
       // partner_paid_at then so downstream "disbursed" derivations stay correct.
       const trancheCommissionIds = [
@@ -415,6 +470,7 @@ export const reconciliationRouter = createTRPCRouter({
                     year: "numeric",
                   }),
                   foreign: fx,
+                  adjustment: { claimInr, deductionInr: netting.deductionInr, creditInr: netting.creditInr },
                 },
                 appUrl(),
               ),
@@ -454,6 +510,10 @@ export const reconciliationRouter = createTRPCRouter({
       where: { status: PayoutStatus.RELEASED },
       orderBy: { released_at: "desc" },
       include: {
+        // Adjustments netted off at release (Finance > Adjustments).
+        adjustment_allocation: {
+          select: { amount: true, adjustment: { select: { id: true, direction: true, note_number: true } } },
+        },
         invoice: {
           select: {
             invoice_number: true,
@@ -518,6 +578,12 @@ export const reconciliationRouter = createTRPCRouter({
         commissionVerified: p.verify_commission_verified === 1,
         duplicateCheck: p.verify_duplicate_check === 1,
       },
+      adjustments: p.adjustment_allocation.map((a) => ({
+        adjustmentId: a.adjustment.id,
+        noteNumber: a.adjustment.note_number,
+        direction: a.adjustment.direction === AdjustmentDirection.CREDIT ? ("credit" as const) : ("deduction" as const),
+        amountInr: num(a.amount),
+      })),
       bankName: p.bank_name,
       accountLast4: p.account_number_last4,
       ifsc: p.ifsc,

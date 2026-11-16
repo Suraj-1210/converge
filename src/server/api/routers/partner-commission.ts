@@ -16,6 +16,9 @@ import {
   type Payee,
 } from "~/server/payee";
 import {
+  AdjustmentDirection,
+  AdjustmentSide,
+  AdjustmentStatus,
   OrganizationType,
   PartnerInvoiceStatus,
   PayoutStatus,
@@ -24,6 +27,7 @@ import {
 } from "~/server/db/enums";
 import { FINANCE_CURRENCIES } from "~/lib/currency";
 import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
+import { activeHold } from "~/server/adjustments";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -175,6 +179,7 @@ type PayoutRow = {
   amount_foreign: { toNumber: () => number } | null;
   exchange_rate: { toNumber: () => number } | null;
   amount_inr: { toNumber: () => number };
+  adjustment_allocation: { amount: { toNumber: () => number }; adjustment: { direction: number; note_number: string | null } }[];
 };
 const payoutSelect = {
   status: true,
@@ -185,10 +190,24 @@ const payoutSelect = {
   amount_foreign: true,
   exchange_rate: true,
   amount_inr: true,
+  // Adjustments netted off at release: shown as "Adjustment" with the note
+  // number only (never the reason or Finance's internal note).
+  adjustment_allocation: {
+    select: { amount: true, adjustment: { select: { direction: true, note_number: true } } },
+  },
 } as const;
 function partnerPayoutView(p: PayoutRow | null) {
   if (p?.status !== PayoutStatus.RELEASED) return null;
+  const adjustments = p.adjustment_allocation.map((a) => ({
+    label: "Adjustment" as const,
+    noteNumber: a.adjustment.note_number,
+    // Signed as it affected the payout: a deduction is negative.
+    amountInr: a.adjustment.direction === AdjustmentDirection.CREDIT ? num(a.amount) : -num(a.amount),
+  }));
   return {
+    adjustments,
+    // The claim's amount before adjustments (amountInr is what was paid).
+    claimInr: round2(num(p.amount_inr) - adjustments.reduce((s, a) => s + a.amountInr, 0)),
     reference: p.utr ?? p.reference_number,
     paymentDate: p.payment_date,
     amountInr: num(p.amount_inr),
@@ -891,6 +910,72 @@ export const partnerCommissionRouter = createTRPCRouter({
         paid: round2(v.paid),
       }))
       .sort((a, b) => a.fy - b.fy);
+  }),
+
+  // The partner's adjustments (16 Nov 2026): every APPROVED partner-side
+  // deduction / credit, labelled "Adjustment" with Finance's partner-facing
+  // note and its Adjustment Note number, what's been recovered (or paid) so
+  // far and what's left. Never the reason category, the internal note or the
+  // evidence. payoutsPaused: the payee is on payout hold (no reason shown).
+  adjustments: payeeProcedure.query(async ({ ctx }) => {
+    const payee = payeeFromSession(ctx.payee);
+    const [rows, hold] = await Promise.all([
+      db.adjustment.findMany({
+        where: { side: AdjustmentSide.PARTNER, status: AdjustmentStatus.APPROVED, ...payeeWhere(payee) },
+        orderBy: [{ decided_at: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          direction: true,
+          amount: true,
+          decided_at: true,
+          adjustment_date: true,
+          partner_note: true,
+          note_number: true,
+          commission: {
+            select: { application: { select: { student: { select: { first_name: true, last_name: true } } } } },
+          },
+          adjustment_allocation: {
+            orderBy: { id: "asc" },
+            select: {
+              amount: true,
+              partner_payout: { select: { payment_date: true, invoice: { select: { invoice_number: true } } } },
+            },
+          },
+        },
+      }),
+      activeHold(payee),
+    ]);
+    const items = rows.map((r) => {
+      const applied = round2(r.adjustment_allocation.reduce((s, a) => s + num(a.amount), 0));
+      return {
+        id: r.id,
+        label: "Adjustment" as const,
+        kind: r.direction === AdjustmentDirection.CREDIT ? ("credit" as const) : ("deduction" as const),
+        noteNumber: r.note_number,
+        date: r.decided_at ?? r.adjustment_date,
+        amountInr: num(r.amount),
+        note: r.partner_note,
+        student: r.commission
+          ? `${r.commission.application.student.first_name} ${r.commission.application.student.last_name}`.trim()
+          : null,
+        appliedInr: applied,
+        balanceInr: round2(num(r.amount) - applied),
+        appliedTo: r.adjustment_allocation.map((a) => ({
+          amountInr: num(a.amount),
+          claim: a.partner_payout?.invoice.invoice_number ?? null,
+          date: a.partner_payout?.payment_date ?? null,
+        })),
+      };
+    });
+    const sum = (k: "deduction" | "credit") =>
+      round2(items.filter((i) => i.kind === k).reduce((s, i) => s + i.balanceInr, 0));
+    return {
+      payoutsPaused: hold != null,
+      items,
+      // Netted at your next payout.
+      toRecoverInr: sum("deduction"),
+      toAddInr: sum("credit"),
+    };
   }),
 
   // Every claim, newest first, with how and when it was paid: the payment

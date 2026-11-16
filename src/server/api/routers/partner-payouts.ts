@@ -12,7 +12,8 @@ import {
   commissionClaimRejectedEmail,
 } from "~/server/email";
 import { emailPartners, payeeRecipients } from "~/server/email/partners";
-import { PAYEE_LABEL_SELECT, payeeLabel } from "~/server/payee";
+import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
+import { activeHolds, assertNoPayoutHold, partnerAdjustmentBalances, payeeKey } from "~/server/adjustments";
 import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
 import {
   PartnerInvoiceStatus,
@@ -100,6 +101,8 @@ export const partnerPayoutsRouter = createTRPCRouter({
         },
       },
     });
+    // Payee-level: payout hold and adjustments still to net (Finance › Adjustments).
+    const [holds, adjBalances] = await Promise.all([activeHolds(), partnerAdjustmentBalances()]);
 
     return invoices.map((inv) => {
       const items = inv.invoice_item.map((it) => {
@@ -179,6 +182,10 @@ export const partnerPayoutsRouter = createTRPCRouter({
         partialCount,
         noneCount,
         hasPayout: inv.partner_payout != null,
+        // The payee is on payout hold: claims can't be approved for payment.
+        payeeOnHold: holds.has(payeeKey(inv)),
+        // Approved deductions / credits to be netted at the payee's next release.
+        payeeAdjustment: adjBalances.get(payeeKey(inv)) ?? null,
         items,
       };
     });
@@ -220,6 +227,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
       if (inv.status === PartnerInvoiceStatus.REJECTED || inv.status === PartnerInvoiceStatus.PAID) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This invoice can't be approved." });
       }
+      await assertNoPayoutHold(payeeOf(inv), "approve");
       // Every claimed line must be collected from the vendor: tranche-based lines
       // need their tranche RECEIVED; legacy (pre-tranche) lines need the commission's
       // collegepond_received_at stamp.
@@ -279,6 +287,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
       if (inv.status === PartnerInvoiceStatus.REJECTED || inv.status === PartnerInvoiceStatus.PAID) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This invoice can't be approved." });
       }
+      await assertNoPayoutHold(payeeOf(inv), "approve");
       const verified = inv.invoice_item.filter(
         (it) => it.commission.collegepond_received_at != null,
       );

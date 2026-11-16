@@ -6,6 +6,7 @@ import type { AppRouter } from "~/server/api/root";
 import { api } from "~/trpc/react";
 import { BankAccountDetails, BankDecisionControls, BankStatusPill } from "~/components/admin/bank-account-review";
 import { PayeeTags } from "~/components/admin/payee-tags";
+import Link from "next/link";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
 import { Button } from "~/components/ui/button";
@@ -272,10 +273,21 @@ export default function ReconciliationPage() {
                       <td className={`${TD} font-medium text-[#101828]`}>
                         {p.partner}
                         <PayeeTags partnerType={p.partnerType} payeeInactive={p.payeeInactive} panReview={p.panReview} />
+                        {p.payeeHold && (
+                          <span title="Payouts to this partner are on hold (Finance › Adjustments)" className="ml-1.5 inline-block rounded-[10px] bg-[#FEF3F2] px-2 py-0.5 align-middle text-[10px] font-semibold text-[#B42318]">
+                            On hold
+                          </span>
+                        )}
                       </td>
                       <td className={`${TD} font-mono text-[13px] text-[#1570EF]`}>{p.invoiceNumber}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>
                         {inr(p.amountInr)}
+                        {(p.adjustment.deductionInr > 0 || p.adjustment.creditInr > 0) && (
+                          <span className="block text-[11px] font-medium text-[#B54708]">
+                            {p.adjustment.deductionInr > 0 && `− ${inr(p.adjustment.deductionInr)} adj.`}
+                            {p.adjustment.creditInr > 0 && ` + ${inr(p.adjustment.creditInr)} adj.`} → {inr(p.adjustment.toPayInr)}
+                          </span>
+                        )}
                         {p.payoutCurrency !== "INR" && <span className="block text-[11px] font-medium text-[#B54708]">Paid in {p.payoutCurrency} · no GST/TDS</span>}
                       </td>
                       <td className={TD}>{p.approvedBy ?? "—"}</td>
@@ -368,6 +380,11 @@ export default function ReconciliationPage() {
                         {p.currency !== "INR" && p.amountForeign != null && p.exchangeRate != null && (
                           <span className="block text-[11px] font-normal text-[#667085]">{fxLine(p.amountForeign, p.currency, p.exchangeRate, p.amountInr)}</span>
                         )}
+                        {p.adjustments.map((a) => (
+                          <span key={a.adjustmentId} className="block text-[11px] font-medium text-[#B54708]">
+                            {a.direction === "deduction" ? "after −" : "incl. +"}{inr(a.amountInr)} adjustment {a.noteNumber ?? `#${a.adjustmentId}`}
+                          </span>
+                        ))}
                       </td>
                       <td className={TD}>{p.method == null ? "—" : PayoutMethodLabel[p.method as 0 | 1 | 2 | 3 | 4]}</td>
                       <td className={TD}>{p.reference ?? "—"}</td>
@@ -463,6 +480,15 @@ function ReconPanel({
 
   const readyToPay = payout.status === PayoutStatus.READY_TO_PAY;
   const isWire = method === PayoutMethod.INTERNATIONAL_WIRE;
+  // Netted at release against the payee's approved adjustments (server
+  // recomputes): credits added, deductions recovered up to what's payable.
+  const claimN = Number(amount) || 0;
+  const adjCredit = payout.adjustment.creditInr;
+  const adjDeduct = Math.min(payout.adjustment.deductionInr, claimN + adjCredit);
+  const toPay = Math.round((claimN + adjCredit - adjDeduct) * 100) / 100;
+  const hasAdj = payout.adjustment.deductionInr > 0 || adjCredit > 0;
+  const setOff = hasAdj && toPay <= 0;
+  const onHoldPayee = payout.payeeHold != null;
   const checksDisabled = !canVerify || readyToPay;
   const allChecked = bankConfirmed && invoiceVerified && commissionVerified && duplicateCheck;
 
@@ -476,12 +502,13 @@ function ReconPanel({
   // Pay via RazorpayX when it's configured, the bank account is verified, and the
   // method maps to a RazorpayX mode (international wire stays manual).
   const bankVerified = payout.bank?.verified ?? false;
-  const payVia = payments.configured && bankVerified && !isWire && !foreign;
+  const payVia = payments.configured && bankVerified && !isWire && !foreign && !setOff;
   const doRelease = () => {
-    if (!payVia && !reference.trim()) return setErr("Enter a Payment Reference # (or verify the bank to pay via RazorpayX).");
-    if (foreign && !(rateN > 0)) return setErr(`Enter the exchange rate the bank used (₹ per 1 ${payout.payoutCurrency}).`);
-    if (foreign && amountForeign.trim() !== "" && !(Number(amountForeign) > 0)) return setErr(`Enter the amount sent in ${payout.payoutCurrency}.`);
-    if (!bankVerified) return setErr("Verify the partner's bank account first.");
+    if (onHoldPayee) return setErr("This partner's payouts are on hold. Lift the hold in Finance › Adjustments first.");
+    if (!setOff && !payVia && !reference.trim()) return setErr("Enter a Payment Reference # (or verify the bank to pay via RazorpayX).");
+    if (!setOff && foreign && !(rateN > 0)) return setErr(`Enter the exchange rate the bank used (₹ per 1 ${payout.payoutCurrency}).`);
+    if (!setOff && foreign && amountForeign.trim() !== "" && !(Number(amountForeign) > 0)) return setErr(`Enter the amount sent in ${payout.payoutCurrency}.`);
+    if (!setOff && !bankVerified) return setErr("Verify the partner's bank account first.");
     if (payout.payeeInactive && inactiveDecision.trim().length < 10) {
       return setErr("This independent counsellor is " + payout.payeeInactive + ". Record Finance's decision to pay anyway (at least 10 characters), or reactivate them first.");
     }
@@ -503,6 +530,12 @@ function ReconPanel({
 
   return (
     <div className="space-y-3">
+      {payout.payeeHold && (
+        <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-3.5 py-2.5 text-sm text-[#B42318]">
+          <span className="font-semibold">Partner on payout hold:</span> {payout.payeeHold.reason}. Nothing can be released until a Finance Manager or Super Admin lifts it in{" "}
+          <Link href="/admin/adjustments" className="font-semibold underline">Finance › Adjustments</Link>.
+        </div>
+      )}
       {payout.status === PayoutStatus.ON_HOLD && payout.holdReason && (
         <div className="rounded-lg border border-[#FEC84B] bg-[#FFFAEB] px-3.5 py-2.5 text-sm text-[#B54708]"><span className="font-semibold">On Hold:</span> {payout.holdReason}</div>
       )}
@@ -602,8 +635,21 @@ function ReconPanel({
             </div>
             <div className="flex gap-3">
               <FormInput label="Payment Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              <FormInput label={foreign ? "Amount (₹ equivalent)" : "Amount (₹)"} type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <FormInput label={hasAdj ? "Claim amount (₹, before adjustments)" : foreign ? "Amount (₹ equivalent)" : "Amount (₹)"} type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
+            {hasAdj && (
+              <div className="rounded-lg border border-[#FEDF89] bg-[#FFFAEB] p-3 text-xs text-[#B54708]">
+                <div className="mb-1 font-semibold">Adjustments netted at release</div>
+                <div>Claim {inr(claimN)}</div>
+                {adjDeduct > 0 && <div>Less adjustments −{inr(adjDeduct)}</div>}
+                {adjCredit > 0 && <div>Plus adjustments +{inr(adjCredit)}</div>}
+                <div className="font-semibold">To pay {inr(toPay)}</div>
+                {payout.adjustment.deductionInr > adjDeduct && (
+                  <div className="mt-1">{inr(payout.adjustment.deductionInr - adjDeduct)} carries forward to the partner&apos;s next payout.</div>
+                )}
+                {setOff && <div className="mt-1">Wholly set off: no bank transfer; no reference needed.</div>}
+              </div>
+            )}
             {foreign && (
               <div className="rounded-lg border border-[#B2DDFF] bg-[#EFF8FF] p-3">
                 <p className="mb-2 text-xs font-semibold text-[#175CD3]">
@@ -652,14 +698,20 @@ function ReconPanel({
               <p className="mt-1.5 text-center text-[11px] text-[#98A2B3]">Complete the 4-point verification first.</p>
             </div>
           )}
-          {readyToPay && canRelease && !bankVerified && (
+          {readyToPay && canRelease && onHoldPayee && (
+            <div className="mt-3">
+              <button disabled className="h-9 w-full cursor-not-allowed rounded-lg bg-[#EAECF0] text-[13px] font-semibold text-[#98A2B3]">Release Payment</button>
+              <p className="mt-1.5 text-center text-[11px] text-[#B42318]">Partner on payout hold.</p>
+            </div>
+          )}
+          {readyToPay && canRelease && !onHoldPayee && !bankVerified && !setOff && (
             <div className="mt-3">
               <button disabled className="h-9 w-full cursor-not-allowed rounded-lg bg-[#EAECF0] text-[13px] font-semibold text-[#98A2B3]">Release Payment</button>
               <p className="mt-1.5 text-center text-[11px] text-[#B54708]">Verify the partner&apos;s bank account first (left).</p>
             </div>
           )}
-          {readyToPay && canRelease && bankVerified && (
-            <Button className="!mt-3 !h-9 w-full !text-[13px]" loading={releasing} onClick={doRelease}>{payVia ? `Pay via RazorpayX${payments.mode === "test" ? " (test)" : ""}` : "Release Payment"}</Button>
+          {readyToPay && canRelease && !onHoldPayee && (bankVerified || setOff) && (
+            <Button className="!mt-3 !h-9 w-full !text-[13px]" loading={releasing} onClick={doRelease}>{setOff ? "Settle against adjustment" : payVia ? `Pay via RazorpayX${payments.mode === "test" ? " (test)" : ""}` : "Release Payment"}</Button>
           )}
           {readyToPay && !canRelease && (
             <p className="mt-3 rounded-md bg-[#F9FAFB] px-3 py-2 text-center text-xs font-medium text-[#667085]">Awaiting Finance Manager to release payment</p>

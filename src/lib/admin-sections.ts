@@ -54,6 +54,7 @@ export type AdminSection =
   | "invoices"
   | "reconciliation"
   | "bankVerifications"
+  | "adjustments"
   | "universities"
   | "events"
   | "system";
@@ -114,6 +115,7 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   invoices: FINANCE,
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
+  adjustments: FINANCE,
   universities: ABOVE_COUNSELLOR,
   events: NOT_BDM,
   system: [SUPER_ADMIN],
@@ -138,6 +140,7 @@ export const SWITCHABLE_SECTIONS: { section: AdminSection; label: string; group:
   { section: "invoices", label: "Invoices & Payouts", group: "Finance" },
   { section: "reconciliation", label: "Reconciliation", group: "Finance" },
   { section: "bankVerifications", label: "Bank Verifications", group: "Finance" },
+  { section: "adjustments", label: "Adjustments", group: "Finance" },
   { section: "universities", label: "Universities", group: "Content" },
   { section: "events", label: "Events", group: "Content" },
 ];
@@ -167,6 +170,7 @@ const GRANTABLE_ROLES: Partial<Record<AdminSection, number[]>> = {
   invoices: FINANCE,
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
+  adjustments: FINANCE,
   events: NOT_BDM,
 };
 
@@ -237,6 +241,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/invoices", "invoices"],
   ["/admin/reconciliation", "reconciliation"],
   ["/admin/bank-verifications", "bankVerifications"],
+  ["/admin/adjustments", "adjustments"],
   ["/admin/users", "system"],
   ["/admin/settings", "system"],
   ["/admin/audit-logs", "system"],
@@ -287,6 +292,7 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["reconciliation.stats", "reconciliation"],
   ["bankVerification.list", "bankVerifications"],
   ["bankVerification.counts", "bankVerifications"],
+  ["adjustments.", "adjustments"],
 ];
 
 export function sectionForProcedure(path: string): AdminSection | null {

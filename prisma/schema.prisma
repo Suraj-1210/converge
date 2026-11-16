@@ -220,6 +220,7 @@ model commission {
   commission_tranche      commission_tranche[]
   partner_tier            partner_tier?        @relation(fields: [partner_tier_id], references: [id], onDelete: Restrict, map: "fk_commission_partner_tier")
 
+  adjustment adjustment[]
   @@index([application_id], map: "fk_commission_application1_idx")
   @@index([org_id], map: "fk_commission_organization1_idx")
   @@index([partner_tier_id], map: "fk_commission_partner_tier_idx")
@@ -535,6 +536,8 @@ model organization {
   bdm_activity          bdm_activity[]
   bdm_prospect          bdm_prospect[]
   bdm_task              bdm_task[]
+  adjustment adjustment[]
+  payout_hold payout_hold[]
 }
 
 model session {
@@ -660,6 +663,7 @@ model university {
   course              course[]
   commission_contract commission_contract[]
   vendor_invoice      vendor_invoice[]
+  adjustment adjustment[]
 }
 
 model user {
@@ -725,6 +729,8 @@ model user {
   organization                                                            organization?             @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_user_org")
   partner_tier_override                                                   partner_tier_override?
 
+  adjustment adjustment[] @relation("adjustment_payee")
+  payout_hold payout_hold[] @relation("payout_hold_payee")
   @@index([org_id], map: "fk_user_organization_idx")
   @@index([approved_by_collegepond_user_id], map: "fk_user_collegepond_user1_idx")
   @@index([lead_counsellor_id], map: "fk_user_collegepond_user1_idx1")
@@ -1075,6 +1081,7 @@ model vendor {
   commission_contract commission_contract[]
   vendor_invoice      vendor_invoice[]
   commission          commission[]
+  adjustment          adjustment[]
 }
 
 // The deal between a university and a vendor. vendor_id NULL = a direct
@@ -1196,6 +1203,7 @@ model commission_tranche {
   // The vendor invoice line that bills this instalment (at most one).
   vendor_invoice_item_tranche vendor_invoice_item_tranche?
 
+  adjustment adjustment[]
   @@unique([commission_id, seq], map: "uq_commission_tranche_seq")
   @@index([commission_id], map: "fk_commission_tranche_commission_idx")
   @@index([vendor_payment_id], map: "idx_commission_tranche_vendor_payment")
@@ -1225,6 +1233,8 @@ model vendor_invoice {
   vendor_invoice_item   vendor_invoice_item[]
   vendor_payment        vendor_payment[]
 
+  adjustment adjustment[]
+  adjustment_allocation adjustment_allocation[]
   @@index([vendor_id], map: "fk_vendor_invoice_vendor_idx")
   @@index([university_id], map: "fk_vendor_invoice_university_idx")
   @@index([status], map: "idx_vendor_invoice_status")
@@ -1389,6 +1399,7 @@ model partner_payout {
   invoice                    invoice               @relation(fields: [invoice_id], references: [id], onDelete: Cascade, map: "fk_partner_payout_invoice")
   bank_account               partner_bank_account? @relation(fields: [bank_account_id], references: [id], onDelete: SetNull, map: "fk_partner_payout_bank_account")
 
+  adjustment_allocation adjustment_allocation[]
   @@index([bank_account_id], map: "fk_partner_payout_bank_account_idx")
   @@index([status], map: "idx_partner_payout_status")
 }
@@ -1742,4 +1753,120 @@ model cp_tab_override {
 
   @@unique([cp_user_id, tab], map: "uq_cp_tab_override_cp_user")
   @@unique([user_id, tab], map: "uq_cp_tab_override_user")
+}
+
+// --- Adjustments ledger (16 Nov 2026) ----------------------------------------
+// Tables from prisma/sql/schema.sql (migration 20261116170000_adjustments).
+// Codes in src/server/db/enums.ts (AdjustmentSide / Direction / Status).
+// Logic in src/server/adjustments.ts; originals are never edited, approved
+// adjustments are applied through adjustment_allocation rows.
+
+model adjustment_reason {
+  id         Int          @id @default(autoincrement())
+  name       String       @unique(map: "uq_adjustment_reason_name") @db.VarChar(150)
+  sort_order Int          @default(0)
+  is_active  Int          @default(1) @db.TinyInt
+  created_at DateTime     @default(now()) @db.Timestamp(0)
+  updated_at DateTime     @default(now()) @updatedAt @db.Timestamp(0)
+  adjustment adjustment[]
+}
+
+model adjustment {
+  id                    Int                     @id @default(autoincrement())
+  side                  Int                     @db.UnsignedTinyInt
+  direction             Int                     @default(0) @db.UnsignedTinyInt
+  status                Int                     @default(0) @db.UnsignedTinyInt
+  reason_id             Int
+  amount                Decimal                 @db.Decimal(14, 2)
+  currency              String                  @db.Char(3)
+  adjustment_date       DateTime                @db.Date
+  vendor_id             Int?
+  university_id         Int?
+  org_id                Int?
+  payee_user_id         Int?
+  commission_id         Int?
+  commission_tranche_id Int?
+  vendor_invoice_id     Int?
+  source_adjustment_id  Int?
+  internal_note         String?                 @db.VarChar(1000)
+  partner_note          String?                 @db.VarChar(500)
+  created_by_cp_user_id Int
+  decided_by_cp_user_id Int?
+  decided_at            DateTime?               @db.Timestamp(0)
+  decision_note         String?                 @db.VarChar(500)
+  note_fy               Int?                    @db.SmallInt
+  note_seq              Int?
+  note_number           String?                 @unique(map: "uq_adjustment_note_number") @db.VarChar(30)
+  created_at            DateTime                @default(now()) @db.Timestamp(0)
+  updated_at            DateTime                @default(now()) @updatedAt @db.Timestamp(0)
+  reason                adjustment_reason       @relation(fields: [reason_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_reason")
+  vendor                vendor?                 @relation(fields: [vendor_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_vendor")
+  university            university?             @relation(fields: [university_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_university")
+  organization          organization?           @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_org")
+  payee_user            user?                   @relation("adjustment_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_payee_user")
+  commission            commission?             @relation(fields: [commission_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_commission")
+  commission_tranche    commission_tranche?     @relation(fields: [commission_tranche_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_tranche")
+  vendor_invoice        vendor_invoice?         @relation(fields: [vendor_invoice_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_vendor_invoice")
+  source_adjustment     adjustment?             @relation("adjustment_source", fields: [source_adjustment_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_source")
+  derived_adjustments   adjustment[]            @relation("adjustment_source")
+  adjustment_evidence   adjustment_evidence[]
+  adjustment_allocation adjustment_allocation[]
+
+  @@unique([note_fy, note_seq], map: "uq_adjustment_note_seq")
+  @@index([side, status], map: "idx_adjustment_side_status")
+  @@index([reason_id], map: "fk_adjustment_reason_idx")
+  @@index([vendor_id], map: "fk_adjustment_vendor_idx")
+  @@index([university_id], map: "fk_adjustment_university_idx")
+  @@index([org_id], map: "fk_adjustment_org_idx")
+  @@index([payee_user_id], map: "fk_adjustment_payee_user_idx")
+  @@index([commission_id], map: "fk_adjustment_commission_idx")
+  @@index([commission_tranche_id], map: "fk_adjustment_tranche_idx")
+  @@index([vendor_invoice_id], map: "fk_adjustment_vendor_invoice_idx")
+  @@index([source_adjustment_id], map: "fk_adjustment_source_idx")
+}
+
+model adjustment_evidence {
+  id                     Int        @id @default(autoincrement())
+  adjustment_id          Int
+  file_url               String     @db.VarChar(500)
+  file_name              String?    @db.VarChar(255)
+  uploaded_by_cp_user_id Int
+  created_at             DateTime   @default(now()) @db.Timestamp(0)
+  adjustment             adjustment @relation(fields: [adjustment_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_evidence_adjustment")
+
+  @@index([adjustment_id], map: "fk_adjustment_evidence_adjustment_idx")
+}
+
+model adjustment_allocation {
+  id                    Int             @id @default(autoincrement())
+  adjustment_id         Int
+  vendor_invoice_id     Int?
+  partner_payout_id     Int?
+  amount                Decimal         @db.Decimal(14, 2)
+  created_by_cp_user_id Int?
+  created_at            DateTime        @default(now()) @db.Timestamp(0)
+  adjustment            adjustment      @relation(fields: [adjustment_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_allocation_adjustment")
+  vendor_invoice        vendor_invoice? @relation(fields: [vendor_invoice_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_allocation_vendor_invoice")
+  partner_payout        partner_payout? @relation(fields: [partner_payout_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_adjustment_allocation_payout")
+
+  @@index([adjustment_id], map: "fk_adjustment_allocation_adjustment_idx")
+  @@index([vendor_invoice_id], map: "fk_adjustment_allocation_vendor_invoice_idx")
+  @@index([partner_payout_id], map: "fk_adjustment_allocation_payout_idx")
+}
+
+model payout_hold {
+  id                   Int           @id @default(autoincrement())
+  org_id               Int?
+  payee_user_id        Int?
+  reason               String        @db.VarChar(500)
+  placed_by_cp_user_id Int
+  placed_at            DateTime      @default(now()) @db.Timestamp(0)
+  lifted_by_cp_user_id Int?
+  lifted_at            DateTime?     @db.Timestamp(0)
+  lift_note            String?       @db.VarChar(500)
+  organization         organization? @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_payout_hold_org")
+  payee_user           user?         @relation("payout_hold_payee", fields: [payee_user_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_payout_hold_payee_user")
+
+  @@index([org_id], map: "fk_payout_hold_org_idx")
+  @@index([payee_user_id], map: "fk_payout_hold_payee_user_idx")
 }

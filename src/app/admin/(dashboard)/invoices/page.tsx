@@ -272,6 +272,16 @@ export default function InvoicesPayoutsPage() {
                           <td className={`${TD} font-medium text-[#101828]`}>
                             {inv.partner}
                             <PayeeTags partnerType={inv.partnerType} payeeInactive={inv.payeeInactive} panReview={inv.panReview} />
+                            {inv.payeeOnHold && (
+                              <span title="Payouts to this partner are on hold (Finance › Adjustments)" className="ml-1.5 inline-block rounded-[10px] bg-[#FEF3F2] px-2 py-0.5 align-middle text-[10px] font-semibold text-[#B42318]">
+                                On hold
+                              </span>
+                            )}
+                            {inv.payeeAdjustment && inv.payeeAdjustment.deductionInr > 0 && (
+                              <span className="block text-[11px] font-medium text-[#B54708]">
+                                {inr(inv.payeeAdjustment.deductionInr)} adjustment to recover at release
+                              </span>
+                            )}
                           </td>
                           <td className={`${TD} font-mono text-[13px]`}>{inv.invoiceNumber}</td>
                           <td className={TD}>{formatDate(inv.invoiceDate)}</td>
@@ -464,12 +474,17 @@ function CrossRef({
       </div>
 
       {/* Action bar */}
+      {actionable && canApprove && inv.payeeOnHold && (
+        <p className="mt-3 rounded-md bg-[#FEF3F2] px-3 py-2 text-xs font-medium text-[#B42318]">
+          This partner&apos;s payouts are on hold, so the claim can&apos;t be approved for payment. A Finance Manager or Super Admin lifts holds in Finance › Adjustments.
+        </p>
+      )}
       {actionable && canApprove && (
         <div className="mt-3 flex items-center gap-2">
           <button
-            className={`rounded-lg px-4 py-2 text-[13px] font-semibold ${inv.allVerified ? "bg-[#12B76A] text-white hover:bg-[#039855]" : "cursor-not-allowed bg-[#EAECF0] text-[#98A2B3]"}`}
-            disabled={!inv.allVerified || busy}
-            title={inv.allVerified ? "All students verified" : "Cannot approve — not all students have verified university payments"}
+            className={`rounded-lg px-4 py-2 text-[13px] font-semibold ${inv.allVerified && !inv.payeeOnHold ? "bg-[#12B76A] text-white hover:bg-[#039855]" : "cursor-not-allowed bg-[#EAECF0] text-[#98A2B3]"}`}
+            disabled={!inv.allVerified || inv.payeeOnHold || busy}
+            title={inv.payeeOnHold ? "Partner on payout hold" : inv.allVerified ? "All students verified" : "Cannot approve — not all students have verified university payments"}
             onClick={onApprove}
           >
             Approve for Payment

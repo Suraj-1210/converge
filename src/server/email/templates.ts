@@ -426,6 +426,9 @@ export function payoutSentEmail(
     reference: string;
     paymentDate: string;
     foreign?: { currency: string; amount: number; rate: number } | null;
+    // Adjustments netted off this payout (16 Nov 2026): the claim's amount,
+    // less deductions, plus credits = amountInr.
+    adjustment?: { claimInr: number; deductionInr: number; creditInr: number } | null;
   },
   appUrl: string,
 ): EmailMessage {
@@ -433,6 +436,28 @@ export function payoutSentEmail(
   const amountLine = f
     ? `${fx(f.amount, f.currency)} (at ${f.rate.toFixed(2)} = ${inr(pay.amountInr)})`
     : inr(pay.amountInr);
+  const adj = pay.adjustment && (pay.adjustment.deductionInr > 0 || pay.adjustment.creditInr > 0) ? pay.adjustment : null;
+  const adjLines = adj
+    ? [
+        `Claim amount: ${inr(adj.claimInr)}`,
+        ...(adj.deductionInr > 0 ? [`Less adjustment: ${inr(adj.deductionInr)}`] : []),
+        ...(adj.creditInr > 0 ? [`Plus adjustment: ${inr(adj.creditInr)}`] : []),
+      ]
+    : [];
+  if (adj && pay.amountInr <= 0) {
+    // Wholly set off against adjustments: nothing is sent to the bank.
+    return build(
+      `Claim ${pay.invoiceNumber} Settled Against an Adjustment`,
+      "Your claim has been settled",
+      hello(p.name),
+      [
+        { p: `Your commission claim ${pay.invoiceNumber} has been settled in full against the adjustment(s) on your account, so no bank transfer was made.` },
+        { list: [...adjLines, `Paid to your bank: ${inr(0)}`] },
+        { p: "Your Adjustment Notes and the remaining balance (if any) are on the Commission page of the Partner Portal." },
+        { button: { label: "View Commission", url: portal(appUrl, "/partner/commission") } },
+      ],
+    );
+  }
   return build(
     `Payment Sent: ${f ? fx(f.amount, f.currency) : inr(pay.amountInr)} for Claim ${pay.invoiceNumber}`,
     "Your payment is on its way",
@@ -441,7 +466,8 @@ export function payoutSentEmail(
       { p: `We have released the payment for your commission claim ${pay.invoiceNumber}.` },
       {
         list: [
-          `Amount: ${amountLine}`,
+          ...adjLines,
+          `Amount${adj ? " paid" : ""}: ${amountLine}`,
           `Payment method: ${pay.method}`,
           `Reference / UTR: ${pay.reference}`,
           `Payment date: ${pay.paymentDate}`,
@@ -930,4 +956,37 @@ export function counsellorFollowUpEmail(
     { list: f.lines },
     { button: { label: "Open application", url: portal(appUrl, f.link) } },
   ]);
+}
+
+// An approved adjustment on the partner's account (16 Nov 2026), with the
+// numbered Adjustment Note attached as a PDF. Only the partner-facing note is
+// shown: never the reason category, Finance's internal note or the evidence.
+export function adjustmentNoteEmail(
+  p: PartnerRef,
+  a: {
+    noteNumber: string;
+    kind: "deduction" | "credit";
+    amountInr: number;
+    note: string | null;
+    paused?: boolean;
+  },
+  appUrl: string,
+): EmailMessage {
+  const deduction = a.kind === "deduction";
+  return build(
+    `Adjustment Note ${a.noteNumber}: ${deduction ? "deduction of" : "credit of"} ${inr(a.amountInr)}`,
+    deduction ? "An adjustment on your commission account" : "A credit on your commission account",
+    hello(p.name),
+    [
+      {
+        p: deduction
+          ? `Collegepond has recorded an adjustment of ${inr(a.amountInr)} against your commission account. It will be deducted from your next payout; anything your next payout doesn't cover is carried forward to the one after.`
+          : `Collegepond has recorded a credit of ${inr(a.amountInr)} on your commission account. It will be added to your next payout.`,
+      },
+      ...(a.note ? [{ quote: a.note, label: "Note from Collegepond Finance" }] : []),
+      { p: `Adjustment Note ${a.noteNumber} is attached for your records, and you can download it any time from the Commission section of the Partner Portal. Please keep raising your commission invoices as usual: the adjustment is applied when we pay.` },
+      { button: { label: "Go to Commission", url: portal(appUrl, "/partner/commission") } },
+      { p: "If you have questions about this adjustment, simply reply to this email." },
+    ],
+  );
 }

@@ -935,6 +935,25 @@ export const PayoutStatusLabel: Record<PayoutStatus, string> = {
 
 export const PAYOUT_STATUS_CODES = Object.values(PayoutStatus) as PayoutStatus[];
 
+// Adjustments ledger (16 Nov 2026; ~/server/adjustments). An adjustment is a
+// deduction or a credit on one side of the money: UNIVERSITY = what the
+// university / vendor owes Collegepond, PARTNER = what Collegepond owes the
+// payee. Finance drafts it; only a Super Admin approves or rejects.
+export const AdjustmentSide = { UNIVERSITY: 0, PARTNER: 1 } as const;
+export type AdjustmentSide = (typeof AdjustmentSide)[keyof typeof AdjustmentSide];
+
+export const AdjustmentDirection = { DEDUCTION: 0, CREDIT: 1 } as const;
+export type AdjustmentDirection = (typeof AdjustmentDirection)[keyof typeof AdjustmentDirection];
+
+export const AdjustmentStatus = { DRAFT: 0, APPROVED: 1, REJECTED: 2 } as const;
+export type AdjustmentStatus = (typeof AdjustmentStatus)[keyof typeof AdjustmentStatus];
+
+export const AdjustmentStatusLabel: Record<AdjustmentStatus, string> = {
+  [AdjustmentStatus.DRAFT]: "Awaiting approval",
+  [AdjustmentStatus.APPROVED]: "Approved",
+  [AdjustmentStatus.REJECTED]: "Rejected",
+};
+
 // partner_payout.method — the rail used to release a partner payout. IFSC is
 // captured for NEFT/RTGS/IMPS/UPI; SWIFT replaces it for INTERNATIONAL_WIRE.
 export const PayoutMethod = {

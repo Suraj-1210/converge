@@ -389,7 +389,7 @@ function UniversityBilling() {
         <div className="grid flex-1 grid-cols-2 gap-4 lg:grid-cols-4">
           <StatCard icon="revenue" tone="blue" label="Expected (All Invoices)" sub="Converted to INR" value={s ? formatINR(s.expectedInr) : "—"} />
           <StatCard icon="revenue" tone="green" label="Received" sub="Converted to INR" value={s ? formatINR(s.receivedInr) : "—"} />
-          <StatCard icon="clock" tone="orange" label="Outstanding" sub={s ? `${s.overdueCount} overdue` : undefined} value={s ? formatINR(s.outstandingInr) : "—"} />
+          <StatCard icon="clock" tone="orange" label="Outstanding" sub={s ? `${s.overdueCount} overdue${s.deductionsInr > 0 ? ` · after ${formatINR(s.deductionsInr)} adjustments` : ""}` : undefined} value={s ? formatINR(s.outstandingInr) : "—"} />
           <StatCard icon="trophy" tone="purple" label="Collection Rate" value={s ? `${s.collectionRate}%` : "—"} />
         </div>
         <div className="w-44">
@@ -1007,7 +1007,16 @@ function BillingStudentsView({
                             {st.isFlat ? `Flat ${money(st.grossAmount, st.currency)}` : `${st.rate}%`}
                             {st.cpSharePct != null && <span className="block text-xs text-[#98A2B3]">CP share {st.cpSharePct}%</span>}
                           </td>
-                          <td className={`${TD} font-semibold text-[#101828]`}>{money(st.calcAmount, st.currency)}</td>
+                          <td className={`${TD} font-semibold text-[#101828]`}>
+                            {money(st.calcAmount, st.currency)}
+                            {st.adjustments && (st.adjustments.deduction > 0 || st.adjustments.credit > 0 || st.adjustments.drafts > 0) && (
+                              <Link href="/admin/adjustments" className="mt-0.5 block text-[11px] font-semibold text-[#B54708] hover:underline">
+                                {st.adjustments.deduction > 0 && `−${money(st.adjustments.deduction, st.adjustments.currency)} adj.`}
+                                {st.adjustments.credit > 0 && ` +${money(st.adjustments.credit, st.adjustments.currency)} adj.`}
+                                {st.adjustments.drafts > 0 && ` ${st.adjustments.drafts} awaiting approval`}
+                              </Link>
+                            )}
+                          </td>
                           <td className={TD}>
                             <span className={`rounded-[10px] px-2 py-0.5 text-[11px] font-semibold ${st.rateType === "Program-specific" ? "bg-[#F9F5FF] text-[#7F56D9]" : "bg-[#F2F4F7] text-[#667085]"}`}>
                               {st.rateType}
@@ -1294,6 +1303,29 @@ function InvoicesView({
                     </div>
                   )}
                 </div>
+                {/* Approved adjustments applied to this invoice, each its own line (Finance > Adjustments). */}
+                {inv.adjustments.length > 0 && (
+                  <div className="overflow-hidden rounded-lg border border-[#FEDF89]">
+                    <div className="bg-[#FFFAEB] px-3.5 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#B54708]">Adjustments</div>
+                    <table className="w-full border-collapse">
+                      <tbody>
+                        {inv.adjustments.map((a, i) => (
+                          <tr key={`${a.adjustmentId}-${i}`} className="border-t border-[#F2F4F7]">
+                            <td className={TD}>
+                              <Link href="/admin/adjustments" className="font-medium text-[#1570EF] hover:underline">#{a.adjustmentId}</Link>{" "}
+                              {a.direction === "deduction" ? "Deduction" : "Credit"} · {a.reason}
+                              {a.student && <span className="text-[#667085]"> · {a.student}</span>}
+                              {a.note && <span className="block text-xs text-[#667085]">{a.note}</span>}
+                            </td>
+                            <td className={`${TD} text-right font-semibold ${a.direction === "deduction" ? "text-[#B42318]" : "text-[#067647]"}`}>
+                              {a.direction === "deduction" ? "−" : "+"}{money(a.amount, inv.currency)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
                 {inv.notes && <p className="text-xs text-[#667085]"><span className="font-semibold">Notes:</span> {inv.notes}</p>}
               </div>
             )}

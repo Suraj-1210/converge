@@ -37,6 +37,15 @@ INSERT IGNORE INTO `tranche_condition` (`name`, `sort_order`, `is_active`) VALUE
   ('After Semester 2',  40, 1),
   ('On Completion',     50, 1);
 
+-- Adjustment Reasons master (Settings -> Adjustment Reasons). Same rows as
+-- the 20261116170000_adjustments migration seeds.
+INSERT IGNORE INTO `adjustment_reason` (`name`, `sort_order`, `is_active`) VALUES
+  ('Student withdrew / university clawback', 10, 1),
+  ('Partner fraud',                          20, 1),
+  ('Overpayment',                            30, 1),
+  ('Duplicate payment',                      40, 1),
+  ('Other',                                  50, 1);
+
 -- Partner Tiers master (Settings -> Partner Tiers). Same rows as the
 -- 20261014091941_partner_tiers migration seeds.
 INSERT IGNORE INTO `partner_tier` (`name`, `display_order`, `badge_color`, `icon`, `benefits`) VALUES

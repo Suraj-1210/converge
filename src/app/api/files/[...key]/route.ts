@@ -82,8 +82,10 @@ export async function GET(
   // student documents and the partners' own KYC documents.
   const adminToken = jar.get(SESSION_COOKIE_NAME)?.value;
   const admin = adminToken ? await verifySessionJwt(adminToken) : null;
-  let allowed =
-    admin != null && (!key.startsWith("bank-proofs/") || BANK_PROOF_ADMIN_ROLES.includes(admin.role));
+  // Adjustment evidence (16 Nov 2026) is finance-only too, and never a
+  // partner's: it matches no row the partner branch below accepts.
+  const financeOnly = key.startsWith("bank-proofs/") || key.startsWith("adjustment-evidence/");
+  let allowed = admin != null && (!financeOnly || BANK_PROOF_ADMIN_ROLES.includes(admin.role));
   if (allowed && admin && isCounsellingRole(admin.role)) {
     const doc = await db.document.findFirst({
       where: { file_url: key, student_id: { not: null } },

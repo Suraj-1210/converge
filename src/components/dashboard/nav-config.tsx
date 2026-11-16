@@ -205,6 +205,14 @@ export const NAV_SECTIONS: NavSection[] = [
         badgeKey: "bankVerifications",
         section: "bankVerifications",
       },
+      // Deductions / credits on university receivables and partner payables,
+      // and payee payout holds (16 Nov 2026).
+      {
+        label: "Adjustments",
+        href: "/admin/adjustments",
+        icon: <ReconciliationIcon />,
+        section: "adjustments",
+      },
     ],
   },
   {

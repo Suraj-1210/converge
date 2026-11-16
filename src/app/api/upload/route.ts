@@ -8,6 +8,9 @@ import {
   verifySessionJwt,
 } from "~/server/auth/jwt";
 import { saveUpload } from "~/server/storage";
+import { AdminRole } from "~/server/db/enums";
+
+const FINANCE_ROLES: number[] = [AdminRole.SUPER_ADMIN, AdminRole.FINANCE_MANAGER, AdminRole.FINANCE_EXECUTIVE];
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -20,12 +23,15 @@ const PUBLIC_FOLDERS = new Set(["uni-logos"]);
 
 // Folder → who may upload there. signup/* is intentionally open (pre-auth),
 // everything else requires the matching session. Unknown folders are rejected.
-type FolderAuth = "admin" | "partner" | "public";
+type FolderAuth = "admin" | "finance" | "partner" | "public";
 function folderPolicy(folder: string): FolderAuth | null {
   if (folder === "uni-logos") return "admin";
   if (folder === "avatars") return "partner";
   // Cancelled cheque / bank letter for payout bank details. Private.
   if (folder === "bank-proofs") return "partner";
+  // Evidence behind a finance adjustment (16 Nov 2026). Staff-only, finance
+  // roles; never readable by a partner (files route).
+  if (folder === "adjustment-evidence") return "finance";
   // Admin adding a partner's KYC document on their behalf (partners can't
   // upload until approved). Private, like the signup documents.
   if (/^partner-docs\/[a-zA-Z0-9._-]+$/.test(folder)) return "admin";
@@ -112,10 +118,18 @@ export async function POST(req: Request) {
   // Per-folder authorization.
   if (policy !== "public") {
     const jar = await cookies();
+    const admin =
+      policy === "admin" || policy === "finance"
+        ? await verifySessionJwt(jar.get(SESSION_COOKIE_NAME)?.value ?? "")
+        : null;
     const ok =
       policy === "admin"
-        ? await verifySessionJwt(jar.get(SESSION_COOKIE_NAME)?.value ?? "")
-        : await resolvePartnerSession(
+        ? admin
+        : policy === "finance"
+          ? admin && FINANCE_ROLES.includes(admin.role)
+            ? admin
+            : null
+          : await resolvePartnerSession(
             jar.get(PARTNER_SESSION_COOKIE_NAME)?.value,
             jar.get(SESSION_COOKIE_NAME)?.value,
             jar.get(PARTNER_OWNER_SESSION_COOKIE_NAME)?.value,

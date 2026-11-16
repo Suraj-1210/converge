@@ -46,6 +46,13 @@ export interface EmailCalendar {
   fileName?: string;
 }
 
+// A file attached to an email (e.g. an Adjustment Note PDF).
+export interface EmailAttachment {
+  fileName: string;
+  contentType: string;
+  data: Buffer;
+}
+
 export function emailFromAddress(): string {
   return env.EMAIL_FROM ?? DEFAULT_FROM;
 }
@@ -53,7 +60,7 @@ export function emailFromAddress(): string {
 export async function sendEmail(
   to: string,
   msg: EmailMessage,
-  opts: { calendar?: EmailCalendar } = {},
+  opts: { calendar?: EmailCalendar; attachments?: EmailAttachment[] } = {},
 ): Promise<void> {
   if (!emailConfigured()) {
     if (env.NODE_ENV === "production") {
@@ -63,7 +70,10 @@ export async function sendEmail(
     const cal = opts.calendar
       ? `\n[email:dev] calendar ${opts.calendar.fileName ?? "invite.ics"} (METHOD:${opts.calendar.method})\n${opts.calendar.ics}`
       : "";
-    console.log(`[email:dev] to=${to} subject="${msg.subject}"\n${msg.text}${cal}\n[email:dev] end`);
+    const files = (opts.attachments ?? [])
+      .map((a) => `\n[email:dev] attachment ${a.fileName} (${a.contentType}, ${a.data.length} bytes)`)
+      .join("");
+    console.log(`[email:dev] to=${to} subject="${msg.subject}"\n${msg.text}${cal}${files}\n[email:dev] end`);
     return;
   }
 
@@ -80,6 +90,22 @@ export async function sendEmail(
     );
     console.log(
       `[email] SES accepted "${msg.subject}" (calendar ${opts.calendar.method}) as ${res.MessageId ?? "(no id)"}`,
+    );
+    return;
+  }
+
+  if (opts.attachments?.length) {
+    // Attachments need raw MIME too.
+    const res = await ses().send(
+      new SendEmailCommand({
+        FromEmailAddress: emailFromAddress(),
+        Destination: { ToAddresses: [to] },
+        Content: { Raw: { Data: buildAttachmentMime(to, msg, opts.attachments) } },
+        ConfigurationSetName: env.SES_CONFIGURATION_SET,
+      }),
+    );
+    console.log(
+      `[email] SES accepted "${msg.subject}" (${opts.attachments.length} attachment(s)) as ${res.MessageId ?? "(no id)"}`,
     );
     return;
   }
@@ -166,6 +192,46 @@ export function buildCalendarMime(to: string, msg: EmailMessage, cal: EmailCalen
     "",
     `--${mixed}`,
     part(`application/ics; name="${file}"`, cal.ics, [`Content-Disposition: attachment; filename="${file}"`]),
+    `--${mixed}--`,
+    "",
+  ];
+  return Buffer.from(lines.join("\r\n"), "utf-8");
+}
+
+// multipart/mixed: the text / html alternative, then each file (base64).
+export function buildAttachmentMime(to: string, msg: EmailMessage, files: EmailAttachment[]): Buffer {
+  const mixed = `mixed_${randomBytes(12).toString("hex")}`;
+  const alt = `alt_${randomBytes(12).toString("hex")}`;
+  const part = (type: string, body: string) =>
+    [`Content-Type: ${type}`, "Content-Transfer-Encoding: base64", "", b64Lines(body)].join("\r\n");
+  const filePart = (f: EmailAttachment) => {
+    const name = f.fileName.replace(/[^A-Za-z0-9._-]/g, "_");
+    return [
+      `Content-Type: ${f.contentType}; name="${name}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${name}"`,
+      "",
+      (f.data.toString("base64").match(/.{1,76}/g) ?? []).join("\r\n"),
+    ].join("\r\n");
+  };
+  const lines = [
+    `From: ${headerAddress(emailFromAddress())}`,
+    `To: ${oneLine(to)}`,
+    `Reply-To: ${headerAddress(env.EMAIL_REPLY_TO ?? DEFAULT_REPLY_TO)}`,
+    `Subject: ${headerText(msg.subject)}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${mixed}"`,
+    "",
+    `--${mixed}`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`,
+    "",
+    `--${alt}`,
+    part("text/plain; charset=UTF-8", msg.text),
+    `--${alt}`,
+    part("text/html; charset=UTF-8", msg.html),
+    `--${alt}--`,
+    "",
+    ...files.flatMap((f) => [`--${mixed}`, filePart(f)]),
     `--${mixed}--`,
     "",
   ];
