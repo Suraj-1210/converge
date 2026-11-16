@@ -1147,12 +1147,31 @@ model commission_tranche_template {
   name        String              @db.VarChar(100)
   amount      Decimal?            @db.Decimal(12, 2)
   pct         Decimal?            @db.Decimal(5, 2)
+  // Settings -> Tranche Conditions. `timing` is a snapshot of its name,
+  // written on save and rewritten when the condition is renamed.
+  condition_id Int?
   timing      String?             @db.VarChar(150)
   created_at  DateTime            @default(now()) @db.Timestamp(0)
   contract    commission_contract @relation(fields: [contract_id], references: [id], onDelete: Cascade, map: "fk_tranche_template_contract")
+  condition   tranche_condition?  @relation(fields: [condition_id], references: [id], onDelete: Restrict, map: "fk_tranche_template_condition")
 
   @@unique([contract_id, seq], map: "uq_tranche_template_contract_seq")
   @@index([contract_id], map: "fk_tranche_template_contract_idx")
+  @@index([condition_id], map: "fk_tranche_template_condition_idx")
+}
+
+// Tranche Conditions master (Settings -> Tranche Conditions): the options of
+// the tranche "Condition" dropdown on Commission Rates. A condition in use can
+// only be deactivated (FK RESTRICT); inactive ones still show where used.
+// See 20261116150000_tranche_conditions.
+model tranche_condition {
+  id                          Int                           @id @default(autoincrement())
+  name                        String                        @unique(map: "uq_tranche_condition_name") @db.VarChar(150)
+  sort_order                  Int                           @default(0)
+  is_active                   Int                           @default(1) @db.TinyInt
+  created_at                  DateTime                      @default(now()) @db.Timestamp(0)
+  updated_at                  DateTime                      @default(now()) @updatedAt @db.Timestamp(0)
+  commission_tranche_template commission_tranche_template[]
 }
 
 // Per-application tranche instances (only for tranche-based deals). Each tracks

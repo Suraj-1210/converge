@@ -1020,6 +1020,7 @@ export default function CommissionRatesPage() {
         <TrancheModal
           contract={modal.contract}
           tranche={modal.tranche}
+          canManageConditions={role === AdminRole.SUPER_ADMIN}
           onClose={() => setModal(null)}
           onToast={showToast}
         />
@@ -1964,11 +1965,13 @@ function BonusModal({
 function TrancheModal({
   contract,
   tranche,
+  canManageConditions,
   onClose,
   onToast,
 }: {
   contract: ContractRow;
   tranche?: TrancheRow;
+  canManageConditions: boolean;
   onClose: () => void;
   onToast: (m: string) => void;
 }) {
@@ -1984,7 +1987,22 @@ function TrancheModal({
   );
   const [amount, setAmount] = useState(tranche?.amount != null ? String(tranche.amount) : "");
   const [pct, setPct] = useState(tranche?.pct != null ? String(tranche.pct) : "");
-  const [timing, setTiming] = useState(tranche?.timing ?? "");
+  // The condition comes from Settings -> Tranche Conditions (active ones, in
+  // order). A condition since deactivated stays selectable on the tranche
+  // that already has it, marked inactive.
+  // Refetch on focus: "Manage conditions" opens Settings in another tab.
+  const conditionsQ = api.commissionRates.trancheConditions.useQuery(undefined, { refetchOnWindowFocus: true });
+  const [conditionId, setConditionId] = useState(tranche?.conditionId != null ? String(tranche.conditionId) : "");
+  const conditionOptions = useMemo(() => {
+    const opts = (conditionsQ.data ?? []).map((c) => ({ value: String(c.id), label: c.name }));
+    if (tranche?.conditionId != null && !opts.some((o) => o.value === String(tranche.conditionId))) {
+      opts.unshift({
+        value: String(tranche.conditionId),
+        label: `${tranche.timing ?? "Condition"}${tranche.conditionActive === false ? " (inactive)" : ""}`,
+      });
+    }
+    return opts;
+  }, [conditionsQ.data, tranche]);
   const [err, setErr] = useState("");
   const usedPct = others.reduce((s, t) => s + (t.pct ?? 0), 0);
   const usedAmt = others.reduce((s, t) => s + (t.pct == null ? (t.amount ?? 0) : 0), 0);
@@ -2015,7 +2033,7 @@ function TrancheModal({
       name: name.trim(),
       amount: mode === "amount" ? value : null,
       pct: mode === "pct" ? value : null,
-      timing: timing || undefined,
+      conditionId: conditionId ? Number(conditionId) : null,
     });
   };
 
@@ -2055,12 +2073,23 @@ function TrancheModal({
         <FormInput label={amountLabel("Amount", contract.currency)} required type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
       )}
       {remaining && <p className="-mt-2 text-xs text-[#667085]">{remaining}. The tranches must add up to the whole commission.</p>}
-      <FormInput
-        label="Condition"
-        value={timing}
-        onChange={(e) => setTiming(e.target.value)}
-        placeholder="e.g. On enrollment, After semester 1, On completion"
-      />
+      <div>
+        <FormSelect
+          label="Condition"
+          value={conditionId}
+          onChange={(e) => setConditionId(e.target.value)}
+          options={conditionOptions}
+          placeholder={conditionsQ.isLoading ? "Loading conditions…" : "No condition"}
+        />
+        {tranche?.conditionId == null && tranche?.timing?.trim() && (
+          <p className="mt-1 text-xs text-[#667085]">Currently &ldquo;{tranche.timing}&rdquo; (not in the conditions list). Pick one to replace it.</p>
+        )}
+        {canManageConditions && (
+          <a href="/admin/settings?section=conditions" target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs font-semibold text-[#1570EF] hover:underline">
+            Manage conditions
+          </a>
+        )}
+      </div>
     </Modal>
   );
 }

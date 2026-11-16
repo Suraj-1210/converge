@@ -28,6 +28,15 @@ INSERT IGNORE INTO `department` (`name`, `is_active`, `sort_order`) VALUES
   ('Finance',              1, 50),
   ('Content',              1, 60);
 
+-- Tranche Conditions master (Settings -> Tranche Conditions). Same rows as
+-- the 20261116150000_tranche_conditions migration seeds.
+INSERT IGNORE INTO `tranche_condition` (`name`, `sort_order`, `is_active`) VALUES
+  ('On Enrollment',     10, 1),
+  ('After Census Date', 20, 1),
+  ('After Semester 1',  30, 1),
+  ('After Semester 2',  40, 1),
+  ('On Completion',     50, 1);
+
 -- Partner Tiers master (Settings -> Partner Tiers). Same rows as the
 -- 20261014091941_partner_tiers migration seeds.
 INSERT IGNORE INTO `partner_tier` (`name`, `display_order`, `badge_color`, `icon`, `benefits`) VALUES

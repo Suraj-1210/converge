@@ -64,6 +64,18 @@ export const commissionRatesRouter = createTRPCRouter({
   // ========================================================================
   // Vendors
   // ========================================================================
+  // The tranche "Condition" dropdown: active conditions from Settings ->
+  // Tranche Conditions, in display order. (Inactive ones a tranche already
+  // uses come with the tranche, see listContracts.)
+  trancheConditions: financeProcedure.query(async () => {
+    const rows = await db.tranche_condition.findMany({
+      where: { is_active: 1 },
+      orderBy: [{ sort_order: "asc" }, { name: "asc" }],
+      select: { id: true, name: true },
+    });
+    return rows;
+  }),
+
   listVendors: financeProcedure.query(async () => {
     const rows = await db.vendor.findMany({ orderBy: { name: "asc" } });
     return rows.map((v) => ({
@@ -192,7 +204,10 @@ export const commissionRatesRouter = createTRPCRouter({
           orderBy: { id: "asc" },
         },
         commission_bonus_tier: { orderBy: { min_students: "asc" } },
-        commission_tranche_template: { orderBy: { seq: "asc" } },
+        commission_tranche_template: {
+          orderBy: { seq: "asc" },
+          include: { condition: { select: { name: true, is_active: true } } },
+        },
       },
       orderBy: { university: { name: "asc" } },
     });
@@ -234,7 +249,11 @@ export const commissionRatesRouter = createTRPCRouter({
         name: t.name,
         amount: num(t.amount),
         pct: num(t.pct),
-        timing: t.timing,
+        // Settings -> Tranche Conditions; `timing` is its name (the snapshot
+        // when the tranche predates the master and isn't linked).
+        conditionId: t.condition_id,
+        conditionActive: t.condition ? t.condition.is_active === 1 : null,
+        timing: t.condition?.name ?? t.timing,
       })),
       // Why the tranche schedule doesn't add up to the commission (null = it
       // does, or there is none). Approve commission refuses until it's fixed.
@@ -648,7 +667,8 @@ export const commissionRatesRouter = createTRPCRouter({
   // ========================================================================
   // Tranche templates — direct and vendor contracts alike (max 4). Each is a
   // % of the commission or (FLAT deals) a fixed amount in the contract
-  // currency, with its condition (timing). A save that would take the
+  // currency, with its condition (Settings -> Tranche Conditions; the name is
+  // also written to `timing` for everything that reads it). A save that would take the
   // schedule past 100% / the flat amount is refused; Approve commission
   // refuses a schedule that doesn't add up exactly.
   // ========================================================================
@@ -661,7 +681,9 @@ export const commissionRatesRouter = createTRPCRouter({
           name: z.string().trim().min(1).max(100),
           amount: z.number().positive().nullable().optional(),
           pct: z.number().positive().max(100).nullable().optional(),
-          timing: z.string().max(150).optional(),
+          // null/absent = no condition. Must be active, unless it's the one
+          // the tranche already has (an inactive condition stays put).
+          conditionId: z.number().int().positive().nullable().optional(),
         })
         .refine((v) => (v.pct != null) !== (v.amount != null), {
           message: "Enter either a percentage or an amount for the tranche.",
@@ -692,11 +714,32 @@ export const commissionRatesRouter = createTRPCRouter({
       ];
       const over = trancheOvershoot(schedule, headline?.commissionType ?? null, headline?.rate ?? null);
       if (over) throw new TRPCError({ code: "BAD_REQUEST", message: over });
+      let condition: { id: number; name: string } | null = null;
+      if (input.conditionId != null) {
+        const c = await db.tranche_condition.findUnique({
+          where: { id: input.conditionId },
+          select: { id: true, name: true, is_active: true },
+        });
+        const current = input.id
+          ? await db.commission_tranche_template.findUnique({
+              where: { id: input.id },
+              select: { condition_id: true },
+            })
+          : null;
+        if (!c || (c.is_active !== 1 && current?.condition_id !== c.id)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "That condition is no longer available. Pick another one.",
+          });
+        }
+        condition = { id: c.id, name: c.name };
+      }
       const data = {
         name: input.name,
         amount: input.amount ?? null,
         pct: input.pct ?? null,
-        timing: orNull(input.timing),
+        condition_id: condition?.id ?? null,
+        timing: condition?.name ?? null,
       };
       if (input.id) {
         await db.commission_tranche_template.update({

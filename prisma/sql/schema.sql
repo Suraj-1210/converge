@@ -1254,7 +1254,25 @@ CREATE TABLE IF NOT EXISTS `commission_bonus_tier` (
 
 
 -- -----------------------------------------------------
+-- tranche_condition  (Settings -> Tranche Conditions master; the
+-- "Condition" dropdown on a tranche. Deactivate, don't delete, once used.)
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `tranche_condition` (
+  `id`         INT          NOT NULL AUTO_INCREMENT,
+  `name`       VARCHAR(150) NOT NULL,
+  `sort_order` INT          NOT NULL DEFAULT 0,
+  `is_active`  TINYINT      NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_tranche_condition_name` (`name` ASC) VISIBLE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
 -- commission_tranche_template  (FK -> commission_contract; max 4)
+-- condition_id -> tranche_condition; `timing` is a snapshot of that
+-- condition's name (rewritten on rename), kept for every reader of it.
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `commission_tranche_template` (
   `id`          INT NOT NULL AUTO_INCREMENT,
@@ -1263,14 +1281,19 @@ CREATE TABLE IF NOT EXISTS `commission_tranche_template` (
   `name`        VARCHAR(100) NOT NULL,
   `amount`      DECIMAL(12,2) NULL DEFAULT NULL,
   `pct`         DECIMAL(5,2)  NULL DEFAULT NULL,
+  `condition_id` INT NULL DEFAULT NULL,
   `timing`      VARCHAR(150) NULL DEFAULT NULL,
   `created_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uq_tranche_template_contract_seq` (`contract_id` ASC, `seq` ASC) VISIBLE,
   INDEX `fk_tranche_template_contract_idx` (`contract_id` ASC) VISIBLE,
+  INDEX `fk_tranche_template_condition_idx` (`condition_id` ASC) VISIBLE,
   CONSTRAINT `fk_tranche_template_contract`
     FOREIGN KEY (`contract_id`) REFERENCES `commission_contract` (`id`)
-    ON DELETE CASCADE ON UPDATE CASCADE
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_tranche_template_condition`
+    FOREIGN KEY (`condition_id`) REFERENCES `tranche_condition` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
 
