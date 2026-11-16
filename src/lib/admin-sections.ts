@@ -279,6 +279,11 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["partnerChat.staff*", "partnerChat"],
   ["bdm.overview", "bdm"],
   ["bdmCrm.", "bdm"],
+  // Bonus Schemes is a Commission Rates page; its Volume bonus due board and
+  // bonus invoicing live in University Billing.
+  ["bonusSchemes.volumeBonusDue", "universityBilling"],
+  ["bonusSchemes.createVolumeBonusInvoice", "universityBilling"],
+  ["bonusSchemes.", "commissionRates"],
   ["commissionRates.", "commissionRates"],
   ["universityBilling.", "universityBilling"],
   ["commissions.", "commissions"],

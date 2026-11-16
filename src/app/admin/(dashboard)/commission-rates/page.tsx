@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "~/server/api/root";
+import Link from "next/link";
 import { api } from "~/trpc/react";
 import { useExportLog } from "~/lib/export-log";
 import { Modal } from "~/components/ui/modal";
@@ -412,10 +413,17 @@ export default function CommissionRatesPage() {
     onSuccess: () => void utils.commissionRates.invalidate(),
     onError: (e) => showToast(e.message),
   });
-  const removeBonus = api.commissionRates.removeBonusTier.useMutation({
-    onSuccess: () => void utils.commissionRates.invalidate(),
-    onError: (e) => showToast(e.message),
-  });
+  // Volume bonus schemes by contract, for the contract's Volume Bonus panel.
+  const schemesQ = api.bonusSchemes.list.useQuery(undefined, { enabled: canView });
+  const schemeRows = schemesQ.data;
+  const volumeSchemes = useMemo(() => {
+    const m = new Map<number, NonNullable<typeof schemeRows>>();
+    for (const sch of schemeRows ?? []) {
+      if (sch.contractId == null) continue;
+      m.set(sch.contractId, [...(m.get(sch.contractId) ?? []), sch]);
+    }
+    return m;
+  }, [schemeRows]);
   const removeTranche = api.commissionRates.removeTranche.useMutation({
     onSuccess: () => void utils.commissionRates.invalidate(),
     onError: (e) => showToast(e.message),
@@ -618,55 +626,38 @@ export default function CommissionRatesPage() {
     </div>
   );
 
-  const renderBonusSubTable = (c: ContractRow) => (
-    <div className="rounded-lg border border-[#E4E7EC]">
-      <div className="flex items-center justify-between px-3.5 py-2">
-        <span className="text-xs font-semibold text-[#475467]">🎁 Volume Bonus Tiers</span>
-        {canEdit && (
-          <button className={TEXT_BTN} onClick={() => setModal({ kind: "bonus", contract: c })}>
-            + Add Tier
-          </button>
+  // Volume bonuses live in Bonus Schemes (16 Nov 2026): dated, counted per
+  // intake, on vendor contracts too, and applied at Approve commission. The
+  // old tiers (never applied) were copied there as switched-off schemes.
+  const renderBonusSubTable = (c: ContractRow) => {
+    const schemes = volumeSchemes.get(c.id) ?? [];
+    return (
+      <div className="rounded-lg border border-[#E4E7EC]">
+        <div className="flex items-center justify-between px-3.5 py-2">
+          <span className="text-xs font-semibold text-[#475467]">🎁 Volume Bonus</span>
+          <Link href="/admin/commission-rates/bonus-schemes" className={TEXT_BTN}>
+            Manage in Bonus Schemes →
+          </Link>
+        </div>
+        {schemes.length === 0 ? (
+          <p className="px-3.5 pb-3 text-xs text-[#98A2B3]">No volume bonus scheme for this contract.</p>
+        ) : (
+          <ul className="space-y-1 px-3.5 pb-3 text-xs text-[#344054]">
+            {schemes.map((s) => (
+              <li key={s.id}>
+                <b>{s.name}</b>
+                {s.isActive ? "" : " (off)"} ·{" "}
+                {s.slabs
+                  .map((b) => `${b.minStudents}${b.maxStudents ? `–${b.maxStudents}` : "+"}: ${money(b.amountPerStudent, s.currency)}`)
+                  .join(", ")}
+                {s.retroactive ? " · retroactive" : ""}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
-      {c.bonusTiers.length === 0 ? (
-        <p className="px-3.5 pb-3 text-xs text-[#98A2B3]">No volume bonuses configured.</p>
-      ) : (
-        <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className={TH}>Student Range</th>
-              <th className={TH}>Amount Per Student</th>
-              {canEdit && <th className={TH}></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {c.bonusTiers.map((b) => (
-              <tr key={b.id} className="border-b border-[#F2F4F7] last:border-0">
-                <td className={TD}>
-                  {b.minStudents}
-                  {b.maxStudents ? `–${b.maxStudents}` : "+"} students
-                </td>
-                <td className={TD}>{flatLabel(b.amountPerStudent ?? 0, c.currency)}</td>
-                {canEdit && (
-                  <td className={`${TD} text-right`}>
-                    <button
-                      className={`${TEXT_BTN} mr-3`}
-                      onClick={() => setModal({ kind: "bonus", contract: c, tier: b })}
-                    >
-                      Edit
-                    </button>
-                    <button className={DEL_BTN} onClick={() => removeBonus.mutate({ id: b.id })}>
-                      Delete
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
+    );
+  };
 
   // Direct and third-party vendor contracts alike (testers, 29 Oct 2026).
   const renderTrancheSubTable = (c: ContractRow) => (
@@ -842,7 +833,7 @@ export default function CommissionRatesPage() {
             <td colSpan={cols} className="px-4 py-3">
               <div className="space-y-3">
                 {renderRatesSubTable(c)}
-                {!isVendor && renderBonusSubTable(c)}
+                {renderBonusSubTable(c)}
                 {renderTrancheSubTable(c)}
               </div>
             </td>
@@ -891,6 +882,9 @@ export default function CommissionRatesPage() {
         </div>
         {tab === "entry" && canEdit && (
           <div className="flex gap-2">
+            <Link href="/admin/commission-rates/bonus-schemes">
+              <Button variant="secondary">🎁 Bonus Schemes</Button>
+            </Link>
             <Button variant="secondary" onClick={() => setModal({ kind: "vendor" })}>
               Add Vendor
             </Button>

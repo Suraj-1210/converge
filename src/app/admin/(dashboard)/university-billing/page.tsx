@@ -32,6 +32,8 @@ import {
   TrancheStatusLabel,
 } from "~/server/db/enums";
 import { FINANCE_CURRENCIES, money as fmtMoney } from "~/lib/currency";
+import { BonusApproval, emptyBonusEdits, resolveBonusEdits, type BonusEdits } from "./bonus-approval";
+import { VolumeBonusDue } from "./volume-bonus-due";
 
 type RO = inferRouterOutputs<AppRouter>;
 type BillingStudent = RO["universityBilling"]["vendorBillingStudents"][number];
@@ -631,11 +633,14 @@ function ApproveCommissionModal({
 }) {
   const q = api.universityBilling.approvalPreview.useQuery({ applicationId: student.applicationId });
   const [err, setErr] = useState("");
+  // Base / volume bonus / partner bonus edits (each with a reason).
+  const [edits, setEdits] = useState<BonusEdits>(emptyBonusEdits);
   const approve = api.universityBilling.confirmBilling.useMutation({
     onSuccess: onApproved,
     onError: (e) => setErr(e.message),
   });
   const p = q.data;
+  const bonus = p ? resolveBonusEdits(p, edits) : null;
   const blocker = !p
     ? null
     : p.depositSlip !== "verified"
@@ -648,18 +653,18 @@ function ApproveCommissionModal({
             ? "Partner Tiers aren't set up, so the partner's share can't be worked out."
             : p.trancheIssue
               ? `This university's tranche schedule doesn't add up: ${p.trancheIssue} Fix it in Commission Rates first.`
-              : null;
+              : (bonus?.issue ?? null);
   return (
     <Modal
       open
       title="Approve commission"
-      width="w-[600px]"
+      width="w-[680px]"
       onClose={onClose}
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button
-            onClick={() => approve.mutate({ applicationId: student.applicationId })}
+            onClick={() => approve.mutate({ applicationId: student.applicationId, ...bonus?.payload })}
             loading={approve.isPending}
             disabled={!p || blocker != null}
           >
@@ -707,6 +712,7 @@ function ApproveCommissionModal({
             </ReviewField>
             <ReviewField label="Vendor">{p.vendorName ?? "—"}</ReviewField>
           </div>
+          <BonusApproval p={p} value={edits} onChange={setEdits} />
           {p.tranches.length > 0 && (
             <div>
               <div className="mb-1 text-xs font-semibold tracking-wide text-[#98A2B3] uppercase">
@@ -835,6 +841,9 @@ function VendorBillingTab({
         <StatCard icon="deposit" tone="orange" label="Outstanding" value={outstandingInvoices.length} sub={formatINR(Math.round(outstandingInr * 100) / 100)} active={filter === "outstanding"} onClick={() => clickCard("outstanding", "invoices")} />
         <StatCard icon="revenue" tone="green" label="Fully Paid" value={fullyPaidInvoices.length} sub={formatINR(Math.round(paidInr * 100) / 100)} active={filter === "paid"} onClick={() => clickCard("paid", "invoices")} />
       </div>
+
+      {/* University volume bonuses, billed on their own invoices. */}
+      <VolumeBonusDue canEdit={canEdit} onJumpToInvoice={jumpToInvoice} />
 
       {/* View toggle */}
       <div className="inline-flex rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] p-0.5">

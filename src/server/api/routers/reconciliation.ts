@@ -11,6 +11,7 @@ import {
   PartnerInvoiceStatus,
   PayoutStatus,
   PayoutMethodLabel,
+  TrancheKind,
   TrancheStatus,
   PAYOUT_METHOD_CODES,
   financialYearOf,
@@ -426,8 +427,9 @@ export const reconciliationRouter = createTRPCRouter({
         ),
       ];
       for (const cid of trancheCommissionIds) {
+        // A university volume bonus is Collegepond's, never paid out.
         const pending = await db.commission_tranche.count({
-          where: { commission_id: cid, status: { not: TrancheStatus.PAID } },
+          where: { commission_id: cid, kind: { not: TrancheKind.VOLUME_BONUS }, status: { not: TrancheStatus.PAID } },
         });
         if (pending === 0) {
           await db.commission.update({ where: { id: cid }, data: { partner_paid_at: now } });

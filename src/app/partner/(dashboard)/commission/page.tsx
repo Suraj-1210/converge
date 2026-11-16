@@ -135,6 +135,9 @@ function TrancheBreakdown({ claim }: { claim: Claim }) {
                 <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${d.dot}`} />
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-[#101828]">{t.name}</div>
+                  {t.isBonus && (
+                    <div className="text-[11px] text-[#6941C6]">Collegepond bonus · 100% yours · claimable with your first instalment</div>
+                  )}
                   <span className={`mt-1 inline-block rounded-[10px] px-2 py-0.5 text-[10px] font-semibold ${d.pill}`}>{d.label}</span>
                   {(t.invoiceNumber != null || t.paidAt != null) && (
                     <div className="mt-1 text-[11px] text-[#667085]">
@@ -153,7 +156,7 @@ function TrancheBreakdown({ claim }: { claim: Claim }) {
                   </div>
                 ) : (
                   <>
-                    <div className="text-sm font-medium text-[#98A2B3]">{money(t.plannedForeign, claim.currency)}</div>
+                    <div className="text-sm font-medium text-[#98A2B3]">{money(t.plannedForeign, t.bonusCurrency ?? claim.currency)}</div>
                     <div className="text-[10px] text-[#98A2B3]">expected</div>
                   </>
                 )}
@@ -334,13 +337,13 @@ function CommissionContent() {
       "University Student ID", "CP Student ID", "Name", "Programme", "University", "Start Date", "Country",
       "Tuition Currency", "Tuition", "Commission Type", "Commission %", "Commission Currency", "Commission Amount",
       "Your Share %", "Your Share", "Received by Collegepond (INR)", "Claimable Now (INR)", "Claimed (INR)", "Paid (INR)",
-      "Status", "Paid to Partner",
+      "Status", "Paid to Partner", "Bonus", "Bonus Amount", "Bonus Currency",
     ];
     const body = rows.map((c) => [
       c.universityStudentId ?? "", c.studentCode, c.studentName, c.program, c.university, c.intake ?? "", c.country,
       c.tuitionCurrency, c.tuition, c.isFlat ? "Flat" : "Percentage", c.isFlat ? "" : c.commissionRate, c.currency, c.commissionAmount,
       shareText(c.partnerSharePct), c.shareAmount, c.receivedInr, c.claimableInr, c.claimedInr, c.paidInr,
-      CLAIM_STATE[c.status].t, paidToPartner(c),
+      CLAIM_STATE[c.status].t, paidToPartner(c), c.bonus?.name ?? "", c.bonus?.amount ?? "", c.bonus?.currency ?? "",
     ]);
     downloadCsv(`commission-export-${todayInput()}.csv`, [header, ...body]);
     logExport("Partner commission CSV", body.length);
@@ -442,7 +445,14 @@ function CommissionContent() {
                     <td className={`${TD} font-medium`}>{money(c.tuition, c.tuitionCurrency)}</td>
                     <td className={TD}>{commissionText(c)}</td>
                     <td className={TD} title={c.partnerSharePct == null ? "Collegepond Finance hasn't set the commission share for this student yet" : undefined}>{shareText(c.partnerSharePct)}</td>
-                    <td className={TD}>{c.partnerSharePct == null ? "—" : money(c.shareAmount, c.currency)}</td>
+                    <td className={TD}>
+                      {c.partnerSharePct == null ? "—" : money(c.shareAmount, c.currency)}
+                      {c.bonus && (
+                        <span className="block text-xs font-medium text-[#6941C6]">
+                          + {c.bonus.name} · {money(c.bonus.amount, c.bonus.currency)}
+                        </span>
+                      )}
+                    </td>
                     <td className={TD}>
                       {c.receivedInr > 0 ? inr(c.receivedInr) : "—"}
                       <FxNote fx={c.receivedFx} inrAmount={c.receivedInr} />
@@ -590,7 +600,11 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
     </div>
   );
   const n = claim.tranches.length;
-  const received = claim.tranches.filter((t) => t.state !== "pending").length;
+  // A Collegepond bonus isn't collected from the university: "Received by
+  // Collegepond" counts the base instalments only.
+  const baseTranches = claim.tranches.filter((t) => !t.isBonus);
+  const nBase = baseTranches.length;
+  const received = baseTranches.filter((t) => t.state !== "pending").length;
   const claimed = claim.tranches.filter((t) => t.state === "claimed" || t.state === "paid").length;
   const paid = claim.paidCount;
   const progress = (k: number) => (n > 1 ? ` (${k} of ${n} tranches)` : "");
@@ -598,7 +612,12 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
   const timeline: { title: string; at: Date | string | null; done: boolean; partial?: boolean }[] = [
     { title: "Application submitted", at: d?.appSubmittedAt ?? null, done: !!d?.appSubmittedAt },
     { title: "Confirmed for billing", at: d?.commissionCreatedAt ?? null, done: !!d?.commissionCreatedAt },
-    { title: `Received by Collegepond${progress(received)}`, at: received === n ? (d?.receivedAt ?? null) : null, done: received === n, partial: received > 0 && received < n },
+    {
+      title: `Received by Collegepond${nBase > 1 ? ` (${received} of ${nBase} tranches)` : ""}`,
+      at: received === nBase ? (d?.receivedAt ?? null) : null,
+      done: received === nBase,
+      partial: received > 0 && received < nBase,
+    },
     { title: `Claimed by you${progress(claimed)}`, at: latestInvoice?.date ?? null, done: claimed === n, partial: claimed > 0 && claimed < n },
     { title: `Paid to you${progress(paid)}`, at: claim.paidAt, done: claim.status === "paid", partial: paid > 0 && paid < n },
   ];
@@ -613,7 +632,11 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
       <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         <SummaryCard label="Tuition" value={money(claim.tuition, claim.tuitionCurrency)} />
         <SummaryCard label="Commission" value={commissionText(claim)} />
-        <SummaryCard label="Your Share" value={claim.partnerSharePct == null ? "Pending" : `${claim.partnerSharePct}% · ${money(claim.shareAmount, claim.currency)}`} />
+        <SummaryCard
+          label="Your Share"
+          value={claim.partnerSharePct == null ? "Pending" : `${claim.partnerSharePct}% · ${money(claim.shareAmount, claim.currency)}`}
+          sub={claim.bonus ? `+ ${claim.bonus.name} · ${money(claim.bonus.amount, claim.bonus.currency)}` : null}
+        />
         <SummaryCard label="Received by Collegepond" value={claim.receivedInr > 0 ? inr(claim.receivedInr) : "—"} sub={fxSub} />
         <SummaryCard label="Claimable Now" value={claim.claimableInr > 0 ? inr(claim.claimableInr) : "—"} />
         <SummaryCard label="Claimed" value={claim.claimedInr > 0 ? inr(claim.claimedInr) : "—"} />

@@ -22,6 +22,7 @@ import {
   OrganizationType,
   PartnerInvoiceStatus,
   PayoutStatus,
+  TrancheKind,
   TrancheStatus,
   financialYearOf,
 } from "~/server/db/enums";
@@ -139,6 +140,14 @@ function refuseUnsetShare(comms: { partner_share_pct: unknown }[]): void {
 }
 
 const studentCode = (id: number) => `CP-${String(id).padStart(5, "0")}`;
+
+// The partner's tranches: base instalments and any CP-funded partner incentive.
+// A university volume bonus is Collegepond income and never the partner's.
+const PARTNER_TRANCHES = { kind: { not: TrancheKind.VOLUME_BONUS } } as const;
+// What % of a tranche's INR is the partner's: their tier share of a base
+// instalment, all of a partner incentive (Suraj, 16 Nov 2026).
+const partnerPctOf = (kind: number, sharePct: number) =>
+  kind === TrancheKind.PARTNER_INCENTIVE ? 100 : sharePct;
 
 // The currency an account is paid in: INR into a domestic account; an
 // international one picks it on the bank-details form (null = not picked yet,
@@ -269,10 +278,12 @@ export const partnerCommissionRouter = createTRPCRouter({
         },
         // Pay-as-collected: claimability is per tranche.
         commission_tranche: {
+          where: PARTNER_TRANCHES,
           orderBy: { seq: "asc" },
           select: {
             id: true,
             seq: true,
+            kind: true,
             name: true,
             status: true,
             amount: true, // planned (commission-currency) slice — used before collection
@@ -282,6 +293,8 @@ export const partnerCommissionRouter = createTRPCRouter({
             invoice_item: {
               select: { invoice: { select: { invoice_number: true, status: true } } },
             },
+            // A partner incentive's scheme currency.
+            commission_bonus: { select: { currency: true } },
           },
         },
       },
@@ -328,11 +341,30 @@ export const partnerCommissionRouter = createTRPCRouter({
           ? c.commission_tranche.map((t) => {
               const state = partnerTrancheState(t.status, t.invoice_item != null);
               const collected = state !== "pending";
+              // A partner incentive is CP-funded: all of it is the partner's,
+              // in its scheme currency, never through a vendor payment.
+              if (t.kind === TrancheKind.PARTNER_INCENTIVE) {
+                return {
+                  seq: t.seq,
+                  name: t.name ?? "Bonus",
+                  isBonus: true,
+                  bonusCurrency: t.commission_bonus?.currency ?? "INR",
+                  state,
+                  amountInr: collected ? round2(num(t.amount_inr)) : 0,
+                  foreign: null,
+                  plannedForeign: round2(num(t.amount)),
+                  invoiceNumber: t.invoice_item?.invoice.invoice_number ?? null,
+                  invoiceStatus: t.invoice_item?.invoice.status ?? null,
+                  paidAt: t.disbursed_at,
+                };
+              }
               const rate = t.vendor_payment_id != null ? (rates.get(t.vendor_payment_id) ?? null) : legacyRate;
               const amountInr = collected ? share(num(t.amount_inr)) : 0;
               return {
                 seq: t.seq,
                 name: t.name ?? `Tranche ${t.seq}`,
+                isBonus: false,
+                bonusCurrency: null as string | null,
                 state,
                 amountInr,
                 // The foreign amount behind the INR, at the rate it was booked.
@@ -347,6 +379,8 @@ export const partnerCommissionRouter = createTRPCRouter({
               {
                 seq: 1,
                 name: "Full commission",
+                isBonus: false,
+                bonusCurrency: null as string | null,
                 state: legacyState,
                 amountInr: legacyState === "pending" ? 0 : share(num(c.claimable_inr)),
                 foreign:
@@ -363,7 +397,12 @@ export const partnerCommissionRouter = createTRPCRouter({
         round2(tranches.filter((t) => pred(t.state)).reduce((s, t) => s + t.amountInr, 0));
       const status = partnerCommissionState(tranches.map((t) => t.state));
       const paidCount = tranches.filter((t) => t.state === "paid").length;
-      const received = tranches.filter((t) => t.state !== "pending");
+      // The blended FX line reads base instalments (an incentive has no vendor rate).
+      const received = tranches.filter((t) => t.state !== "pending" && !t.isBonus);
+      const bonusTranche = tranches.find((t) => t.isBonus) ?? null;
+      // Received by Collegepond = base instalments only (a partner bonus is
+      // Collegepond's own money, not collected from the university).
+      const receivedInr = round2(received.reduce((s, t) => s + t.amountInr, 0));
       // Blended rate across the collected tranches, for the headline FX line.
       const receivedForeign = received.reduce((s, t) => s + (t.foreign?.amount ?? 0), 0);
       const intake =
@@ -392,15 +431,27 @@ export const partnerCommissionRouter = createTRPCRouter({
         sharePending: partnerSharePct == null,
         // Your share of what Collegepond will receive, in the commission currency.
         shareAmount: share(round2(gross * cpFrac)),
+        // A CP-funded partner incentive on this student ("Bonus: <scheme>"),
+        // in its scheme currency: 100% the partner's, claimable with the
+        // first collected base instalment.
+        bonus: bonusTranche
+          ? {
+              name: bonusTranche.name,
+              amount: bonusTranche.plannedForeign,
+              currency: bonusTranche.bonusCurrency ?? "INR",
+              state: bonusTranche.state,
+              amountInr: bonusTranche.amountInr,
+            }
+          : null,
         // The partner's share, INR: collected by Collegepond (approved),
         // claimable now, on a claim not yet paid, and paid.
-        receivedInr: sum((s) => s !== "pending"),
+        receivedInr,
         receivedFx:
           receivedForeign > 0 && received.every((t) => t.foreign)
             ? {
                 amount: round2(receivedForeign),
                 currency: fxCurrency,
-                rate: round2((sum((s) => s !== "pending") / receivedForeign) * 100) / 100,
+                rate: round2((receivedInr / receivedForeign) * 100) / 100,
               }
             : null,
         claimableInr: sum((s) => s === "claimable"),
@@ -650,8 +701,8 @@ export const partnerCommissionRouter = createTRPCRouter({
           partner_share_pct: true,
           // Only RECEIVED ("available to claim") tranches not already on an invoice.
           commission_tranche: {
-            where: { status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
-            select: { id: true, amount_inr: true },
+            where: { ...PARTNER_TRANCHES, status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
+            select: { id: true, kind: true, amount_inr: true },
           },
         },
       });
@@ -673,7 +724,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         return c.commission_tranche.map((t) => ({
           commissionId: c.id,
           trancheId: t.id,
-          amount: round2(num(t.amount_inr) * (sharePct / 100)),
+          amount: round2(num(t.amount_inr) * (partnerPctOf(t.kind, sharePct) / 100)),
         }));
       });
       const subtotal = round2(lineItems.reduce((s, l) => s + l.amount, 0));
@@ -751,8 +802,8 @@ export const partnerCommissionRouter = createTRPCRouter({
           select: {
             partner_share_pct: true,
             commission_tranche: {
-              where: { status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
-              select: { amount_inr: true },
+              where: { ...PARTNER_TRANCHES, status: TrancheStatus.RECEIVED, invoice_item: { is: null } },
+              select: { kind: true, amount_inr: true },
             },
           },
         }),
@@ -767,8 +818,14 @@ export const partnerCommissionRouter = createTRPCRouter({
       const subtotal = round2(
         comms.reduce((s, c) => {
           const sharePct = num(c.partner_share_pct);
-          const gross = c.commission_tranche.reduce((a, t) => a + num(t.amount_inr), 0);
-          return s + round2(gross * (sharePct / 100));
+          // Line by line, as generateInvoice writes them.
+          return (
+            s +
+            c.commission_tranche.reduce(
+              (a, t) => a + round2(num(t.amount_inr) * (partnerPctOf(t.kind, sharePct) / 100)),
+              0,
+            )
+          );
         }, 0),
       );
       return {
@@ -879,7 +936,7 @@ export const partnerCommissionRouter = createTRPCRouter({
         partner_paid_at: true,
         claimable_inr: true,
         partner_share_pct: true,
-        commission_tranche: { select: { status: true, amount_inr: true } },
+        commission_tranche: { where: PARTNER_TRANCHES, select: { kind: true, status: true, amount_inr: true } },
       },
     });
     const byFy = new Map<number, { students: number; earned: number; paid: number }>();
@@ -891,7 +948,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       e.students += 1;
       if (c.commission_tranche.length > 0) {
         for (const t of c.commission_tranche) {
-          const part = round2((num(t.amount_inr) * share) / 100);
+          const part = round2((num(t.amount_inr) * partnerPctOf(t.kind, share)) / 100);
           if (t.status === TrancheStatus.RECEIVED || t.status === TrancheStatus.PAID) e.earned += part;
           if (t.status === TrancheStatus.PAID) e.paid += part;
         }

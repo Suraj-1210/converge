@@ -5,6 +5,7 @@ import {
   DocumentStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
+  TrancheKind,
   TrancheStatus,
   UniApplicationStatus,
   VendorInvoiceStatus,
@@ -117,7 +118,9 @@ async function storedRates() {
 // Instalments (or whole commissions without tranche rows) on no vendor
 // invoice, as CP-share amounts per commission currency. A tranche counts as
 // invoiced when a line links it, or when its commission has a whole-commission
-// line (a line with no tranche links bills every tranche).
+// line (a line with no tranche links bills every BASE tranche). A university
+// volume bonus (tranche kind 1) is billed in full, in its scheme currency, on
+// its own invoice; a partner incentive (kind 2) is never billed.
 async function notYetBilled(fy: number | null) {
   const range = fy == null ? "" : "AND COALESCE(c.approved_at, c.created_at) >= ? AND COALESCE(c.approved_at, c.created_at) < ?";
   const params = fy == null ? [] : [fyStart(fy), fyEnd(fy)];
@@ -126,7 +129,8 @@ async function notYetBilled(fy: number | null) {
        SELECT c.id AS cid, c.currency AS ccy, ${CP_SHARE_SQL("COALESCE(t.amount, 0)")} AS amt, 1 AS items
        FROM commission_tranche t
        JOIN commission c ON c.id = t.commission_id
-       WHERE NOT EXISTS (SELECT 1 FROM vendor_invoice_item_tranche l WHERE l.commission_tranche_id = t.id)
+       WHERE t.kind = 0
+         AND NOT EXISTS (SELECT 1 FROM vendor_invoice_item_tranche l WHERE l.commission_tranche_id = t.id)
          AND NOT EXISTS (
            SELECT 1 FROM vendor_invoice_item i
            WHERE i.commission_id = c.id
@@ -138,7 +142,16 @@ async function notYetBilled(fy: number | null) {
        WHERE NOT EXISTS (SELECT 1 FROM commission_tranche t WHERE t.commission_id = c.id)
          AND NOT EXISTS (SELECT 1 FROM vendor_invoice_item i WHERE i.commission_id = c.id)
          ${range}
+       UNION ALL
+       SELECT c.id, b.currency, COALESCE(t.amount, 0), 1
+       FROM commission_tranche t
+       JOIN commission c ON c.id = t.commission_id
+       JOIN commission_bonus b ON b.commission_tranche_id = t.id
+       WHERE t.kind = 1
+         AND NOT EXISTS (SELECT 1 FROM vendor_invoice_item_tranche l WHERE l.commission_tranche_id = t.id)
+         ${range}
      ) x GROUP BY x.ccy`,
+    ...params,
     ...params,
     ...params,
   );
@@ -175,7 +188,11 @@ async function openInvoices() {
             select: {
               commision_amount: true,
               collegepond_received_at: true,
-              commission_tranche: { select: { id: true, status: true, amount: true } },
+              // Vendor-billed tranches; kind lets a whole line skip a volume bonus.
+              commission_tranche: {
+                where: { kind: { not: TrancheKind.PARTNER_INCENTIVE } },
+                select: { id: true, kind: true, status: true, amount: true },
+              },
               application: { select: { course: { select: { university: { select: { id: true, name: true } } } } } },
             },
           },

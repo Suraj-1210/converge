@@ -41,6 +41,21 @@ import {
   netOutstanding,
   standingUniversityBalances,
 } from "~/server/adjustments";
+import {
+  BonusKind,
+  TrancheKind,
+} from "~/server/db/enums";
+import {
+  INTAKE_SOURCE_SELECT,
+  applyVolumeBackfill,
+  incentiveCandidates,
+  intakeKey,
+  intakeLabel,
+  releasePartnerIncentives,
+  slabLabel,
+  stampBonus,
+  volumeBonusFor,
+} from "~/server/bonus-schemes";
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -129,6 +144,73 @@ function trancheSlices(resolved: ResolvedRate, gross: number) {
       }))
     : [{ seq: 1, name: "Full commission", amount: gross }];
 }
+
+// The slices for a base Finance edited at approval: the schedule's slices of
+// the calculated base, scaled to the edited one (the last absorbs rounding).
+function scaledSlices(resolved: ResolvedRate, calculated: number, base: number) {
+  const slices = trancheSlices(resolved, calculated);
+  if (base === calculated) return slices;
+  let acc = 0;
+  return slices.map((s, i) => {
+    const amount =
+      i === slices.length - 1
+        ? Math.round((base - acc) * 100) / 100
+        : Math.round((calculated > 0 ? (s.amount * base) / calculated : base / slices.length) * 100) / 100;
+    acc += amount;
+    return { ...s, amount };
+  });
+}
+
+// What the bonus schemes give a student at approval (read-only; confirmBilling
+// re-runs it inside its transaction). See ~/server/bonus-schemes.
+type BonusApp = {
+  submitted_at: Date | null;
+  created_at: Date;
+  deferred_intake_month: number | null;
+  deferred_intake_year: number | null;
+  program_start_date: Date | null;
+  course: {
+    intake_month: string | null;
+    intake_year: number | null;
+    university: { id: number; country: string | null };
+  };
+};
+const BONUS_APP_SELECT = { submitted_at: true, created_at: true, ...INTAKE_SOURCE_SELECT } as const;
+async function bonusesFor(
+  app: BonusApp,
+  resolved: ResolvedRate,
+  payee: Awaited<ReturnType<typeof payeeForApplication>>,
+  at: Date,
+  client?: Parameters<typeof volumeBonusFor>[1],
+) {
+  const intake = intakeKey(app);
+  const volume = await volumeBonusFor(
+    { contractId: resolved.contractId, vendorId: resolved.vendorId, universityId: app.course.university.id, intake, at },
+    client,
+  );
+  const incentives = payee
+    ? await incentiveCandidates(
+        {
+          payee,
+          country: app.course.university.country,
+          universityId: app.course.university.id,
+          intake,
+          submittedAt: app.submitted_at ?? app.created_at,
+        },
+        client,
+      )
+    : [];
+  return { intake, volume, incentives };
+}
+const pickView = (p: { schemeId: number; schemeName: string; currency: string; slabMin: number; slabMax: number | null; count: number; perStudent: number }) => ({
+  schemeId: p.schemeId,
+  schemeName: p.schemeName,
+  currency: p.currency,
+  slab: slabLabel(p.slabMin, p.slabMax),
+  count: p.count,
+  perStudent: p.perStudent,
+});
+const reasonOk = (r: string | undefined) => (r?.trim().length ?? 0) >= 5;
 
 const staffName = (u: { first_name: string; last_name: string } | undefined, id: number | null) =>
   id == null ? null : u ? `${u.first_name} ${u.last_name}`.trim() : `Staff #${id}`;
@@ -274,13 +356,16 @@ export const universityBillingRouter = createTRPCRouter({
           org_id: true,
           student_id: true,
           student: { select: { id: true, first_name: true, last_name: true } },
+          ...BONUS_APP_SELECT,
           course: {
             select: {
               id: true,
               name: true,
               tuition_fee: true,
               currency: true,
-              university: { select: { id: true, name: true } },
+              intake_month: true,
+              intake_year: true,
+              university: { select: { id: true, name: true, country: true } },
             },
           },
         },
@@ -305,7 +390,27 @@ export const universityBillingRouter = createTRPCRouter({
       // Same split confirmBilling materialises.
       const tranches = resolved && gross != null ? trancheSlices(resolved, gross) : [];
       const cpGets = resolved && gross != null ? cpReceivable(gross, resolved.cpSharePct) : null;
+      const bonus = resolved ? await bonusesFor(app, resolved, payee, new Date()) : null;
       return {
+        // Bonus schemes (16 Nov 2026). The volume bonus is Collegepond income,
+        // billed in full on its own invoice (no partner share, no CP share %).
+        // The partner incentive is CP-funded and 100% the partner's: the
+        // highest matching scheme by default; Finance may pick another, none,
+        // or edit the amount (with a reason).
+        intake: bonus?.intake ? intakeLabel(bonus.intake) : null,
+        contractCurrency: resolved?.contractCurrency ?? null,
+        volumeBonus: bonus?.volume
+          ? {
+              ...pickView(bonus.volume),
+              retroactive: bonus.volume.retroactive,
+              backfill: bonus.volume.backfill.map((b) => ({
+                studentName: b.studentName,
+                current: b.current,
+                action: b.action,
+              })),
+            }
+          : null,
+        incentives: (bonus?.incentives ?? []).map(pickView),
         applicationId: app.id,
         studentId: app.student.id,
         studentName: `${app.student.first_name} ${app.student.last_name}`.trim(),
@@ -347,7 +452,25 @@ export const universityBillingRouter = createTRPCRouter({
   // The payee is stamped too: the agency, or for an independent counsellor's
   // student, the independent (even if since suspended or deleted).
   confirmBilling: financeManagerProcedure
-    .input(z.object({ applicationId: z.number().int().positive() }))
+    .input(
+      z.object({
+        applicationId: z.number().int().positive(),
+        // Base university commission, when Finance edits what the rate gives
+        // (with a reason). Omitted = as calculated.
+        baseAmount: z.number().min(0).optional(),
+        baseReason: z.string().trim().max(500).optional(),
+        // University volume bonus for this student. Omitted = as the scheme
+        // gives it; 0 = none. A change needs a reason.
+        volumeBonusAmount: z.number().min(0).optional(),
+        volumeBonusReason: z.string().trim().max(500).optional(),
+        // Partner incentive: the scheme applied (omitted = the highest that
+        // matches; null = none / manual) and its amount. A change needs a reason.
+        incentiveSchemeId: z.number().int().positive().nullable().optional(),
+        incentiveAmount: z.number().min(0).optional(),
+        incentiveCurrency: currency.optional(),
+        incentiveReason: z.string().trim().max(500).optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const app = await db.application.findUnique({
         where: { id: input.applicationId },
@@ -357,12 +480,15 @@ export const universityBillingRouter = createTRPCRouter({
           student_id: true,
           status: true,
           commission: { select: { id: true } },
+          ...BONUS_APP_SELECT,
           course: {
             select: {
               id: true,
               tuition_fee: true,
               currency: true,
-              university: { select: { id: true, name: true } },
+              intake_month: true,
+              intake_year: true,
+              university: { select: { id: true, name: true, country: true } },
             },
           },
         },
@@ -388,13 +514,19 @@ export const universityBillingRouter = createTRPCRouter({
         });
       }
       const tuition = num(app.course.tuition_fee);
-      const amount = grossCommission(tuition, resolved.rate, resolved.commissionType);
-      const scheduleIssue = trancheScheduleIssue(resolved.templates, resolved.commissionType, amount);
+      const calculated = grossCommission(tuition, resolved.rate, resolved.commissionType);
+      const scheduleIssue = trancheScheduleIssue(resolved.templates, resolved.commissionType, calculated);
       if (scheduleIssue) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: `${app.course.university.name}'s tranche schedule doesn't add up: ${scheduleIssue} Fix it in Commission Rates first.`,
         });
+      }
+      // The base Finance approves: as calculated, or edited with a reason.
+      const amount = input.baseAmount == null ? calculated : Math.round(input.baseAmount * 100) / 100;
+      const baseEdited = amount !== calculated;
+      if (baseEdited && !reasonOk(input.baseReason)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Give a reason for changing the base commission (at least 5 characters)." });
       }
       const payee = await payeeForApplication(app);
       if (!payee) {
@@ -412,56 +544,151 @@ export const universityBillingRouter = createTRPCRouter({
           message: "Partner Tiers aren't set up, so the partner's commission share can't be worked out. Ask a Super Admin to check Settings → Partner Tiers.",
         });
       }
-      const created = await db.commission.create({
-        data: {
-          application_id: app.id,
-          ...payeeData(payee),
-          tuition_fee: tuition,
-          currency: commissionCurrency(resolved, app.course.currency),
-          tuition_currency: app.course.currency,
-          // The contract's CP share (vendor pass-through), as a snapshot.
-          cp_share_pct: resolved.cpSharePct,
-          // Flat deals store rate 0; the gross amount carries the value.
-          commision_rate:
-            resolved.commissionType === CommissionType.FLAT ? 0 : resolved.rate,
-          commision_amount: amount,
-          vendor_id: resolved.vendorId,
-          partner_share_pct: share.sharePct,
-          partner_tier_id: share.tier.id,
-          created_at: confirmedAt,
-          approved_by_cp_user_id: ctx.cpUser.id,
-          approved_at: confirmedAt,
+      const commissionCcy = commissionCurrency(resolved, app.course.currency);
+
+      const created = await db.$transaction(
+        async (tx) => {
+          // One approval at a time per contract, so two students can't both
+          // be counted as the same volume-bonus student.
+          await tx.$queryRawUnsafe("SELECT id FROM commission_contract WHERE id = ? FOR UPDATE", resolved.contractId);
+          const bonus = await bonusesFor(app, resolved, payee, confirmedAt, tx);
+
+          // University volume bonus for this student.
+          const volCalc = bonus.volume?.perStudent ?? 0;
+          const volAmount = input.volumeBonusAmount == null ? volCalc : Math.round(input.volumeBonusAmount * 100) / 100;
+          const volEdited = volAmount !== volCalc;
+          if (volEdited && !reasonOk(input.volumeBonusReason)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Give a reason for changing the volume bonus (at least 5 characters)." });
+          }
+          // Partner incentive: the highest by default, or Finance's pick.
+          const top = bonus.incentives[0] ?? null;
+          let chosen = top;
+          if (input.incentiveSchemeId !== undefined) {
+            chosen =
+              input.incentiveSchemeId === null
+                ? null
+                : (bonus.incentives.find((c) => c.schemeId === input.incentiveSchemeId) ?? null);
+            if (input.incentiveSchemeId !== null && !chosen) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "That incentive scheme doesn't apply to this student (scope, dates or slab). Refresh and pick again.",
+              });
+            }
+          }
+          const incCalc = chosen?.perStudent ?? 0;
+          const incAmount = input.incentiveAmount == null ? incCalc : Math.round(input.incentiveAmount * 100) / 100;
+          const incEdited = incAmount !== incCalc || (chosen?.schemeId ?? null) !== (top?.schemeId ?? null);
+          if (incEdited && !reasonOk(input.incentiveReason)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Give a reason for changing the partner incentive (at least 5 characters)." });
+          }
+
+          const c = await tx.commission.create({
+            data: {
+              application_id: app.id,
+              ...payeeData(payee),
+              tuition_fee: tuition,
+              currency: commissionCcy,
+              tuition_currency: app.course.currency,
+              // The contract's CP share (vendor pass-through), as a snapshot.
+              cp_share_pct: resolved.cpSharePct,
+              // Flat deals store rate 0; the gross amount carries the value.
+              commision_rate:
+                resolved.commissionType === CommissionType.FLAT ? 0 : resolved.rate,
+              commision_amount: amount,
+              calculated_commission_amount: baseEdited ? calculated : null,
+              commission_amount_reason: baseEdited ? input.baseReason!.trim() : null,
+              bonus_intake: bonus.intake,
+              vendor_id: resolved.vendorId,
+              partner_share_pct: share.sharePct,
+              partner_tier_id: share.tier.id,
+              created_at: confirmedAt,
+              approved_by_cp_user_id: ctx.cpUser.id,
+              approved_at: confirmedAt,
+            },
+          });
+          await tx.audit_log.create({
+            data: {
+              org_id: payee.orgId,
+              action: "commission.share_stamped",
+              entity_type: "commission",
+              entity_id: c.id,
+              metadata: {
+                byCpUserId: ctx.cpUser.id,
+                via: "confirm_billing",
+                payeeUserId: payee.userId,
+                tier: share.tier.name,
+                sharePct: share.sharePct,
+                fyStudents: share.students,
+                source: share.source,
+              },
+            },
+          });
+          if (baseEdited) {
+            await tx.audit_log.create({
+              data: {
+                org_id: payee.orgId,
+                action: "commission.base_edited",
+                entity_type: "commission",
+                entity_id: c.id,
+                metadata: { byCpUserId: ctx.cpUser.id, calculated, amount, currency: commissionCcy, reason: input.baseReason!.trim() },
+              },
+            });
+          }
+          // Materialize tranche instances from the contract's tranche schedule so the
+          // partner can claim each tranche as CP collects it (pay-as-collected). A
+          // single-payment contract gets one 100% tranche so claimability is uniform.
+          await tx.commission_tranche.createMany({
+            data: scaledSlices(resolved, calculated, amount).map((t) => ({
+              commission_id: c.id,
+              seq: t.seq,
+              name: t.name,
+              amount: t.amount,
+              kind: TrancheKind.BASE,
+              status: TrancheStatus.UPCOMING,
+            })),
+          });
+          // The bonuses ride on their own tranches after the base ones.
+          if (volAmount > 0) {
+            await stampBonus(
+              tx,
+              c.id,
+              {
+                kind: BonusKind.VOLUME,
+                pick: bonus.volume,
+                amount: volAmount,
+                currency: bonus.volume?.currency ?? resolved.contractCurrency ?? commissionCcy,
+                calculated: bonus.volume ? volCalc : null,
+                reason: volEdited ? input.volumeBonusReason!.trim() : null,
+                intake: bonus.intake,
+              },
+              ctx.cpUser.id,
+            );
+          }
+          // A retroactive scheme reaching its threshold reaches back to the
+          // earlier students in the intake.
+          if (bonus.volume?.retroactive && bonus.volume.backfill.length > 0) {
+            await applyVolumeBackfill(tx, bonus.volume, c.id, ctx.cpUser.id);
+          }
+          if (incAmount > 0) {
+            await stampBonus(
+              tx,
+              c.id,
+              {
+                kind: BonusKind.INCENTIVE,
+                pick: chosen,
+                amount: incAmount,
+                currency: chosen?.currency ?? input.incentiveCurrency ?? "INR",
+                calculated: chosen ? incCalc : null,
+                reason: incEdited ? input.incentiveReason!.trim() : null,
+                intake: bonus.intake,
+              },
+              ctx.cpUser.id,
+            );
+          }
+          return c;
         },
-      });
-      await db.audit_log.create({
-        data: {
-          org_id: payee.orgId,
-          action: "commission.share_stamped",
-          entity_type: "commission",
-          entity_id: created.id,
-          metadata: {
-            byCpUserId: ctx.cpUser.id,
-            via: "confirm_billing",
-            payeeUserId: payee.userId,
-            tier: share.tier.name,
-            sharePct: share.sharePct,
-            fyStudents: share.students,
-            source: share.source,
-          },
-        },
-      });
-      // Materialize tranche instances from the contract's tranche schedule so the
-      // partner can claim each tranche as CP collects it (pay-as-collected). A
-      // single-payment contract gets one 100% tranche so claimability is uniform.
-      await db.commission_tranche.createMany({
-        data: trancheSlices(resolved, amount).map((t) => ({
-          commission_id: created.id,
-          seq: t.seq,
-          name: t.name,
-          amount: t.amount,
-          status: TrancheStatus.UPCOMING,
-        })),
-      });
+        { timeout: 20_000, maxWait: 10_000 },
+      );
       return { commissionId: created.id };
     }),
 
@@ -497,7 +724,10 @@ export const universityBillingRouter = createTRPCRouter({
             },
           },
         },
+        // Base instalments only: volume bonuses are billed from the Volume
+        // bonus due board, partner incentives never.
         commission_tranche: {
+          where: { kind: TrancheKind.BASE },
           orderBy: { seq: "asc" },
           select: { id: true, seq: true, name: true, amount: true, status: true },
         },
@@ -665,7 +895,9 @@ export const universityBillingRouter = createTRPCRouter({
           where: { id: { in: ids } },
           include: {
             application: { select: { student: { select: { first_name: true, last_name: true } } } },
+            // Base instalments only (volume bonuses go on their own invoice).
             commission_tranche: {
+              where: { kind: TrancheKind.BASE },
               orderBy: { seq: "asc" },
               select: { id: true, seq: true, name: true, amount: true },
             },
@@ -744,8 +976,9 @@ export const universityBillingRouter = createTRPCRouter({
           // Percentage deals recompute from the entered tuition; flat deals keep
           // the stored gross commission. Either way CP bills its CP share of
           // the instalments' slice of it.
+          // A base Finance edited at approval is billed as approved.
           const gross =
-            rate > 0
+            rate > 0 && c.calculated_commission_amount == null
               ? grossCommission(l.tuitionAmount, rate, CommissionType.PERCENTAGE)
               : storedGross;
           const billedGross = Math.round(gross * fraction * 100) / 100;
@@ -1136,7 +1369,10 @@ export const universityBillingRouter = createTRPCRouter({
                   vendor_invoice_item: {
                     select: { ...TRANCHE_LINKS_SELECT, vendor_invoice_id: true, expected_amount: true },
                   },
-                  commission_tranche: { select: { id: true, amount: true } },
+                  commission_tranche: {
+                    where: { kind: { not: TrancheKind.PARTNER_INCENTIVE } },
+                    select: { id: true, kind: true, amount: true },
+                  },
                   application: {
                     select: {
                       university_app_id: true,
@@ -1280,10 +1516,18 @@ export const universityBillingRouter = createTRPCRouter({
               org_id: true,
               payee_user_id: true,
               collegepond_received_at: true,
-              commission_tranche: { select: { status: true, amount_inr: true, vendor_payment_id: true, name: true } },
+              // Base instalments: a volume bonus is Collegepond's alone and a
+              // partner incentive isn't collected from the vendor.
+              commission_tranche: {
+                where: { kind: TrancheKind.BASE },
+                select: { status: true, amount_inr: true, vendor_payment_id: true, name: true },
+              },
               application: { select: { student: { select: { first_name: true, last_name: true } } } },
             },
           });
+          // A partner incentive becomes claimable with its student's first
+          // approved base instalment.
+          const incentives = await releasePartnerIncentives(tx, commissionIds, now);
           for (const c of comms) {
             const ts = c.commission_tranche;
             // The commission-level "fully collected" stamp + full claimable_inr
@@ -1302,9 +1546,16 @@ export const universityBillingRouter = createTRPCRouter({
                 },
               });
             }
+            // Only a base instalment (or a pre-tranche commission) is the
+            // partner's to claim; a volume bonus collection isn't news to them.
+            const baseNow = ts.filter((t) => t.vendor_payment_id === p.id);
+            if (ts.length > 0 && baseNow.length === 0) continue;
             const key = `${c.org_id ?? ""}:${c.payee_user_id ?? ""}`;
             const entry = claimable.get(key) ?? { orgId: c.org_id, userId: c.payee_user_id, lines: [] };
-            const names = ts.filter((t) => t.vendor_payment_id === p.id).map((t) => t.name).filter(Boolean);
+            const names = [
+              ...baseNow.map((t) => t.name),
+              ...incentives.filter((i) => i.commissionId === c.id).map((i) => i.name),
+            ].filter(Boolean);
             entry.lines.push(
               `${`${c.application.student.first_name} ${c.application.student.last_name}`.trim()}${names.length ? ` — ${names.join(", ")}` : ""}`,
             );
@@ -1320,6 +1571,7 @@ export const universityBillingRouter = createTRPCRouter({
                 vendorInvoiceId: p.vendor_invoice_id,
                 releasedTrancheIds: covered.map((t) => t.id),
                 legacyCommissionIds: legacy.map((l) => l.commission_id),
+                releasedIncentiveTrancheIds: incentives.map((i) => i.trancheId),
               },
             },
           });

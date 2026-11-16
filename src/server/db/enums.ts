@@ -886,6 +886,31 @@ export const TRANCHE_STATUS_CODES = Object.values(
   TrancheStatus,
 ) as TrancheStatus[];
 
+// commission_tranche.kind (20261116180000_bonus_schemes). Vendor-side code
+// (invoicing, collection) handles BASE and VOLUME_BONUS; partner-side code
+// (statement, claims, payouts) handles BASE and PARTNER_INCENTIVE:
+//   VOLUME_BONUS      — the university's volume bonus: Collegepond income,
+//                       billed on its own vendor invoice, no partner share.
+//   PARTNER_INCENTIVE — CP-funded: never on a vendor invoice, 100% to the
+//                       partner, claimable once a base instalment is in.
+export const TrancheKind = {
+  BASE: 0,
+  VOLUME_BONUS: 1,
+  PARTNER_INCENTIVE: 2,
+} as const;
+export type TrancheKind = (typeof TrancheKind)[keyof typeof TrancheKind];
+
+// bonus_scheme.kind / commission_bonus.kind (same codes as the tranche kinds).
+export const BonusKind = {
+  VOLUME: 1,
+  INCENTIVE: 2,
+} as const;
+export type BonusKind = (typeof BonusKind)[keyof typeof BonusKind];
+export const BonusKindLabel: Record<BonusKind, string> = {
+  [BonusKind.VOLUME]: "University volume bonus",
+  [BonusKind.INCENTIVE]: "Partner incentive",
+};
+
 // invoice.status — the PARTNER's invoice TO CP (outbound). Ops moves it
 // SUBMITTED → UNDER_REVIEW → APPROVED|PARTIAL_APPROVED|REJECTED; PAID is set
 // once Finance releases the payout (see PayoutStatus).

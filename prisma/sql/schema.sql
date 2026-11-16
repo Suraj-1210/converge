@@ -597,6 +597,11 @@ CREATE TABLE IF NOT EXISTS `commission` (
   -- when. Loose cp_user ref, like partner_payout.ops_approved_by_cp_user_id.
   `approved_by_cp_user_id`   INT NULL DEFAULT NULL,
   `approved_at`              TIMESTAMP NULL DEFAULT NULL,
+  -- "YYYY-MM": the intake the student was counted in for volume bonuses.
+  `bonus_intake`             CHAR(7) NULL DEFAULT NULL,
+  -- Set when Finance edited the base at approval: what the rate gave, and why.
+  `calculated_commission_amount` DECIMAL(12,2) NULL DEFAULT NULL,
+  `commission_amount_reason` VARCHAR(500) NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   INDEX `fk_commission_application1_idx`  (`application_id` ASC) VISIBLE,
   UNIQUE INDEX `application_id_UNIQUE`    (`application_id` ASC) VISIBLE,
@@ -1304,6 +1309,9 @@ CREATE TABLE IF NOT EXISTS `commission_tranche` (
   `id`            INT NOT NULL AUTO_INCREMENT,
   `commission_id` INT NOT NULL,
   `seq`           TINYINT(3) UNSIGNED NOT NULL,
+  -- 0 = base instalment, 1 = university volume bonus (vendor-billed, no
+  -- partner share), 2 = CP-funded partner incentive (never vendor-billed).
+  `kind`          TINYINT UNSIGNED NOT NULL DEFAULT 0,
   `name`          VARCHAR(100) NULL DEFAULT NULL,
   `amount`        DECIMAL(12,2) NULL DEFAULT NULL,
   `amount_inr`    DECIMAL(14,2) NULL DEFAULT NULL,
@@ -1322,6 +1330,104 @@ CREATE TABLE IF NOT EXISTS `commission_tranche` (
   CONSTRAINT `fk_commission_tranche_commission`
     FOREIGN KEY (`commission_id`) REFERENCES `commission` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+-- -----------------------------------------------------
+-- Bonus schemes (20261116180000_bonus_schemes): kind 1 = university volume
+-- bonus (income, per contract per intake), kind 2 = CP-funded partner
+-- incentive. commission_bonus is the snapshot stamped on a commission.
+-- -----------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS `bonus_scheme` (
+  `id`                    INT NOT NULL AUTO_INCREMENT,
+  `kind`                  TINYINT UNSIGNED NOT NULL,
+  `name`                  VARCHAR(150) NOT NULL,
+  `currency`              CHAR(3) NOT NULL,
+  -- Volume bonus: the commission approval date. Partner incentive: the date
+  -- the student's application was submitted. NULL = open-ended.
+  `active_from`           DATE NULL DEFAULT NULL,
+  `active_to`             DATE NULL DEFAULT NULL,
+  -- Volume bonus: the university contract (direct or vendor) it belongs to.
+  `contract_id`           INT NULL DEFAULT NULL,
+  -- Scope; NULL = any.
+  `country`               VARCHAR(100) NULL DEFAULT NULL,
+  `university_id`         INT NULL DEFAULT NULL,
+  `intake_month`          TINYINT UNSIGNED NULL DEFAULT NULL,
+  `intake_year`           SMALLINT UNSIGNED NULL DEFAULT NULL,
+  -- Volume bonus only: 1 = once the threshold is reached every student
+  -- counted in that intake earns it; 0 = only students from the threshold on.
+  `retroactive`           TINYINT NOT NULL DEFAULT 0,
+  `is_active`             TINYINT NOT NULL DEFAULT 1,
+  `notes`                 VARCHAR(500) NULL DEFAULT NULL,
+  -- Copied from commission_bonus_tier by this migration.
+  `imported_from_tiers`   TINYINT NOT NULL DEFAULT 0,
+  `created_by_cp_user_id` INT NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_bonus_scheme_kind` (`kind` ASC, `is_active` ASC) VISIBLE,
+  INDEX `fk_bonus_scheme_contract_idx` (`contract_id` ASC) VISIBLE,
+  INDEX `fk_bonus_scheme_university_idx` (`university_id` ASC) VISIBLE,
+  CONSTRAINT `fk_bonus_scheme_contract`
+    FOREIGN KEY (`contract_id`) REFERENCES `commission_contract` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_bonus_scheme_university`
+    FOREIGN KEY (`university_id`) REFERENCES `university` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `bonus_scheme_slab` (
+  `id`                 INT NOT NULL AUTO_INCREMENT,
+  `scheme_id`          INT NOT NULL,
+  `min_students`       SMALLINT UNSIGNED NOT NULL,
+  `max_students`       SMALLINT UNSIGNED NULL DEFAULT NULL,
+  `amount_per_student` DECIMAL(12,2) NOT NULL,
+  `created_at`         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `fk_bonus_scheme_slab_scheme_idx` (`scheme_id` ASC) VISIBLE,
+  CONSTRAINT `fk_bonus_scheme_slab_scheme`
+    FOREIGN KEY (`scheme_id`) REFERENCES `bonus_scheme` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `commission_bonus` (
+  `id`                    INT NOT NULL AUTO_INCREMENT,
+  `commission_id`         INT NOT NULL,
+  `kind`                  TINYINT UNSIGNED NOT NULL,
+  `scheme_id`             INT NULL DEFAULT NULL,
+  -- Snapshots, so the record reads the same if the scheme is later closed.
+  `scheme_name`           VARCHAR(150) NULL DEFAULT NULL,
+  `slab_min`              SMALLINT UNSIGNED NULL DEFAULT NULL,
+  `slab_max`              SMALLINT UNSIGNED NULL DEFAULT NULL,
+  -- The count (including this student) that reached the slab.
+  `student_count`         SMALLINT UNSIGNED NULL DEFAULT NULL,
+  `intake`                CHAR(7) NULL DEFAULT NULL,
+  -- What the scheme gave; NULL when Finance added one no scheme matched.
+  `calculated_amount`     DECIMAL(12,2) NULL DEFAULT NULL,
+  `amount`                DECIMAL(12,2) NOT NULL,
+  `currency`              CHAR(3) NOT NULL,
+  `commission_tranche_id` INT NULL DEFAULT NULL,
+  `is_manual`             TINYINT NOT NULL DEFAULT 0,
+  `edit_reason`           VARCHAR(500) NULL DEFAULT NULL,
+  -- 'approval' (stamped at Approve commission) or 'retroactive' (a volume
+  -- bonus added when a later student reached the threshold).
+  `via`                   VARCHAR(20) NOT NULL DEFAULT 'approval',
+  `created_by_cp_user_id` INT NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_commission_bonus_kind` (`commission_id` ASC, `kind` ASC) VISIBLE,
+  UNIQUE INDEX `uq_commission_bonus_tranche` (`commission_tranche_id` ASC) VISIBLE,
+  INDEX `fk_commission_bonus_scheme_idx` (`scheme_id` ASC) VISIBLE,
+  CONSTRAINT `fk_commission_bonus_commission`
+    FOREIGN KEY (`commission_id`) REFERENCES `commission` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_commission_bonus_scheme`
+    FOREIGN KEY (`scheme_id`) REFERENCES `bonus_scheme` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_commission_bonus_tranche`
+    FOREIGN KEY (`commission_tranche_id`) REFERENCES `commission_tranche` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
 

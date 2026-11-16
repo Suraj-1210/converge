@@ -1,4 +1,4 @@
-import { TrancheStatus } from "~/server/db/enums";
+import { TrancheKind, TrancheStatus } from "~/server/db/enums";
 
 // Which instalments (commission_tranche rows) a vendor invoice line bills.
 //
@@ -6,7 +6,9 @@ import { TrancheStatus } from "~/server/db/enums";
 // line links the tranches it bills through vendor_invoice_item_tranche, and an
 // instalment can be on one invoice only. A line with no links bills the WHOLE
 // commission (every line made before that, and commissions without tranche
-// rows), so it covers every tranche.
+// rows), so it covers every tranche — every BASE tranche: a university
+// volume bonus (TrancheKind 1, 16 Nov 2026) is billed on its own instalment
+// line, and a partner incentive (2) is never on a vendor invoice.
 
 type Decimalish = { toNumber: () => number } | null;
 const num = (d: Decimalish): number => (d == null ? 0 : d.toNumber());
@@ -44,13 +46,15 @@ export function lineForTranche<L extends TrancheLinks>(lines: L[], trancheId: nu
  * read exactly as they did); an instalment line splits by tranche amount over
  * the amounts of the tranches it bills.
  */
-export function lineTrancheShares<T extends { id: number; amount: Decimalish }>(
+export function lineTrancheShares<T extends { id: number; amount: Decimalish; kind?: number }>(
   it: TrancheLinks,
   tranches: T[],
   gross: number,
 ): { tranche: T; fraction: number }[] {
   if (isWholeCommissionLine(it)) {
-    return tranches.map((t) => ({ tranche: t, fraction: gross > 0 ? num(t.amount) / gross : 1 }));
+    return tranches
+      .filter((t) => (t.kind ?? 0) === 0)
+      .map((t) => ({ tranche: t, fraction: gross > 0 ? num(t.amount) / gross : 1 }));
   }
   const billed = tranches.filter((t) => lineBillsTranche(it, t.id));
   const base = billed.reduce((s, t) => s + num(t.amount), 0);
@@ -78,7 +82,7 @@ type CollectLine = TrancheLinks & {
   commission: {
     commision_amount: Decimalish;
     collegepond_received_at: Date | null;
-    commission_tranche: { id: number; seq: number; name: string | null; status: number; amount: Decimalish }[];
+    commission_tranche: { id: number; seq: number; kind: number; name: string | null; status: number; amount: Decimalish }[];
   };
 };
 
@@ -132,8 +136,11 @@ export const COLLECT_LINE_SELECT = {
 export const COLLECT_COMMISSION_SELECT = {
   commision_amount: true,
   collegepond_received_at: true,
+  // Vendor-billed instalments only: a CP-funded partner incentive is never
+  // on a vendor invoice. kind lets a whole-commission line skip volume bonuses.
   commission_tranche: {
+    where: { kind: { not: TrancheKind.PARTNER_INCENTIVE } },
     orderBy: { seq: "asc" as const },
-    select: { id: true, seq: true, name: true, status: true, amount: true, amount_inr: true },
+    select: { id: true, seq: true, kind: true, name: true, status: true, amount: true, amount_inr: true },
   },
 } as const;

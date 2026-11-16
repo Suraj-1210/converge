@@ -437,7 +437,15 @@ export const commissionRatesRouter = createTRPCRouter({
   removeContract: financeManagerProcedure
     .input(idInput)
     .mutation(async ({ input }) => {
-      // rates / bonus tiers / tranche templates cascade with the contract.
+      // rates / bonus tiers / tranche templates cascade with the contract;
+      // its bonus schemes are kept on record, so they block the delete.
+      const schemes = await db.bonus_scheme.count({ where: { contract_id: input.id } });
+      if (schemes > 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `This contract has ${schemes} volume bonus ${schemes === 1 ? "scheme" : "schemes"} (Bonus Schemes). Delete or move them first.`,
+        });
+      }
       await db.commission_contract.delete({ where: { id: input.id } });
       return { success: true as const };
     }),

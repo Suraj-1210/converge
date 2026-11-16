@@ -10,6 +10,7 @@ import {
   CommissionStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
+  TrancheKind,
   TrancheStatus,
   financialYearOf,
   toINR,
@@ -99,6 +100,12 @@ export const commissionsRouter = createTRPCRouter({
         },
         vendor: { select: { name: true, type: true } },
         partner_tier: { select: { name: true } },
+        // Bonuses stamped at approval (volume bonus = CP income; partner
+        // incentive = CP-funded, the partner's).
+        commission_bonus: {
+          orderBy: { kind: "asc" },
+          select: { kind: true, scheme_name: true, amount: true, currency: true, is_manual: true, edit_reason: true },
+        },
         // One line per instalment invoice, or a single whole-commission line.
         vendor_invoice_item: {
           orderBy: { id: "asc" },
@@ -107,12 +114,16 @@ export const commissionsRouter = createTRPCRouter({
             vendor_invoice: { select: { id: true, invoice_number: true, status: true } },
           },
         },
-        // Per-tranche claim + payout chain (pay-as-collected).
+        // Per-tranche claim + payout chain (pay-as-collected): base
+        // instalments and any partner incentive. A university volume bonus
+        // is Collegepond income (Volume bonus due board), not the partner's.
         commission_tranche: {
+          where: { kind: { not: TrancheKind.VOLUME_BONUS } },
           orderBy: { seq: "asc" },
           select: {
             id: true,
             seq: true,
+            kind: true,
             name: true,
             status: true,
             amount: true,
@@ -167,14 +178,20 @@ export const commissionsRouter = createTRPCRouter({
       const partnerSharePct = c.partner_share_pct == null ? null : num(c.partner_share_pct);
       const share = (gross: number) =>
         partnerSharePct == null ? 0 : round2(gross * (partnerSharePct / 100));
+      // A partner incentive is 100% the partner's (CP-funded).
+      const partnerPart = (t: { kind: number }, inr: number) =>
+        t.kind === TrancheKind.PARTNER_INCENTIVE ? round2(inr) : share(inr);
       const tranches = c.commission_tranche;
+      // Vendor-side progress reads base instalments only: an incentive is
+      // never invoiced to or collected from the vendor.
+      const baseTranches = tranches.filter((t) => t.kind === TrancheKind.BASE);
       const vendorLines = c.vendor_invoice_item;
       const hasVendorInvoice = vendorLines.length > 0;
       // Instalment invoicing: instalments not on a vendor invoice yet, and the
       // invoiced ones still to collect. The vendor invoice to collect on next
       // is the one billing the earliest open instalment (else the latest).
-      const uninvoiced = tranches.filter((t) => lineForTranche(vendorLines, t.id) == null).length;
-      const openBilled = tranches.filter(
+      const uninvoiced = baseTranches.filter((t) => lineForTranche(vendorLines, t.id) == null).length;
+      const openBilled = baseTranches.filter(
         (t) =>
           lineForTranche(vendorLines, t.id) != null &&
           t.status !== TrancheStatus.COLLECTED &&
@@ -215,15 +232,15 @@ export const commissionsRouter = createTRPCRouter({
             ? 1
             : 0;
       // Collected by Finance, awaiting a manager's approval (not claimable yet).
-      const awaiting = tranches.filter((t) => t.status === TrancheStatus.COLLECTED).length;
+      const awaiting = baseTranches.filter((t) => t.status === TrancheStatus.COLLECTED).length;
 
       // Partner's claimable-now: received-but-unclaimed tranche share (realised INR).
       const claimableInr =
         tranches.length > 0
-          ? share(
+          ? round2(
               tranches
                 .filter((t) => t.status === TrancheStatus.RECEIVED && t.invoice_item == null)
-                .reduce((s, t) => s + num(t.amount_inr), 0),
+                .reduce((s, t) => s + partnerPart(t, num(t.amount_inr)), 0),
             )
           : c.collegepond_received_at != null && c.partner_paid_at == null && pInvoices.length === 0
             ? share(num(c.claimable_inr))
@@ -309,14 +326,28 @@ export const commissionsRouter = createTRPCRouter({
         ),
         status,
         statusLabel,
+        bonuses: c.commission_bonus.map((b) => ({
+          kind: b.kind,
+          scheme: b.scheme_name,
+          amount: num(b.amount),
+          currency: b.currency,
+          edited: b.is_manual === 1,
+          reason: b.edit_reason,
+        })),
+        // Base edited by Finance at approval (what the rate gave, and why).
+        baseEdit:
+          c.calculated_commission_amount == null
+            ? null
+            : { calculated: num(c.calculated_commission_amount), reason: c.commission_amount_reason },
         tranche: { total, collected, paid, awaiting },
         // Per-tranche detail for the slide-over (partner-share amounts).
         tranches: tranches.map((t) => ({
           seq: t.seq,
           name: t.name,
           status: t.status,
-          amountInr: share(num(t.amount_inr)),
-          plannedForeign: share(num(t.amount)),
+          kind: t.kind,
+          amountInr: partnerPart(t, num(t.amount_inr)),
+          plannedForeign: partnerPart(t, num(t.amount)),
           claimed: t.invoice_item != null,
         })),
         claimableInr,
