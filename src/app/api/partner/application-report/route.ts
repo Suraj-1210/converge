@@ -17,7 +17,7 @@ import {
 } from "~/server/db/enums";
 import { checkNewIntake, intakeLabel } from "~/server/application-deferral";
 import { findVisibleStudent } from "~/server/partner-access";
-import { checkStudentDocFile, saveStudentDocument, studentDocTypeByKey } from "~/server/student-docs";
+import { checkPdfOnly, checkStudentDocFile, saveStudentDocument, studentDocTypeByKey } from "~/server/student-docs";
 import { documentChange, pendingDocChanges, recordPartnerChange } from "~/server/student-changes";
 import { notifyStudentCounsellor } from "~/server/counsellor-notify";
 
@@ -108,7 +108,7 @@ export async function POST(req: Request) {
 
   if (!file && option.docRequired) return bad("Attach the supporting document");
   if (file) {
-    const problem = checkStudentDocFile(file);
+    const problem = checkStudentDocFile(file) ?? (await checkPdfOnly(file));
     if (problem) return bad(problem.error, problem.status);
   }
 

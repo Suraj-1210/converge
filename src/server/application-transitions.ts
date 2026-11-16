@@ -4,9 +4,12 @@ import { db } from "~/server/db";
 import {
   APP_TO_STUDENT_STATUS,
   PartnerReportStatus,
+  REJECTION_REASON_CODES,
+  RejectionReason,
   UNI_APP_STATUS_CODES,
   UniApplicationStatus,
   UniApplicationStatusLabel,
+  rejectionReasonText,
 } from "~/server/db/enums";
 import {
   currentStage,
@@ -54,6 +57,10 @@ export interface TransitionInput {
   // The university's Student ID, saved with the move. Required (here or
   // already on the application) for Conditional / Unconditional Offer.
   universityAppId?: string | null;
+  // Why the university rejected it. Required for Rejected; "Other" needs
+  // the note (16 Nov testing).
+  rejectionReason?: number | null;
+  rejectionNote?: string | null;
 }
 
 const label = (s: number) =>
@@ -104,6 +111,19 @@ export async function transitionApplication(input: TransitionInput) {
   if (isOffer && !newUniId && !app.university_app_id?.trim()) {
     throw fail(`Enter the university's Student ID before moving this application to ${label(target)}.`);
   }
+
+  const isRejection = target === UniApplicationStatus.REJECTED_BY_UNIVERSITY;
+  const rejectionNote = input.rejectionNote?.trim() ?? "";
+  const rejectionReason = input.rejectionReason ?? null;
+  if (isRejection) {
+    if (rejectionReason === null || !REJECTION_REASON_CODES.includes(rejectionReason as RejectionReason)) {
+      throw fail("Choose why the university rejected this application.");
+    }
+    if (rejectionReason === RejectionReason.OTHER && !rejectionNote) {
+      throw fail("Describe the reason for \"Other\".");
+    }
+  }
+  const rejectionText = isRejection ? rejectionReasonText(rejectionReason, rejectionNote || null) : null;
 
   const stageBefore = currentStage(app.status, app.stage_history);
   const open = stageIndex(target) >= 0;
@@ -172,6 +192,12 @@ export async function transitionApplication(input: TransitionInput) {
         ? { pending_docs: pendingDocs as unknown as object }
         : {}),
       ...(newUniId ? { university_app_id: newUniId } : {}),
+      // Saved with a rejection; cleared when the application is reopened.
+      ...(isRejection
+        ? { rejection_reason: rejectionReason, rejection_note: rejectionNote || null }
+        : open
+          ? { rejection_reason: null, rejection_note: null }
+          : {}),
     },
   });
   await syncStudentStatusFromApplications(app.student_id);
@@ -214,6 +240,7 @@ export async function transitionApplication(input: TransitionInput) {
           ? pendingDocs.filter((d) => !d.receivedAt).map((d) => d.label)
           : null,
       confirmedReport: !!input.actor.partnerReport,
+      rejectionReason: rejectionText,
     });
   }
 
@@ -224,7 +251,7 @@ export async function transitionApplication(input: TransitionInput) {
     void notifyCounsellorOfStage(app.id, app.student_id, input.actor.cpUserId, {
       from: app.status,
       to: target,
-      reason: input.reason ?? null,
+      reason: rejectionText ? `Reason: ${rejectionText}` : (input.reason ?? null),
       reported: !!input.actor.partnerReport,
       pendingDocs:
         target === UniApplicationStatus.DOCUMENTS_PENDING
@@ -245,6 +272,7 @@ export async function transitionApplication(input: TransitionInput) {
         byCpUserId: input.actor.cpUserId,
         ...(input.reason ? { reason: input.reason } : {}),
         ...(newUniId && newUniId !== app.university_app_id ? { universityAppId: newUniId } : {}),
+        ...(isRejection ? { rejectionReason, ...(rejectionNote ? { rejectionNote } : {}) } : {}),
         ...(input.actor.partnerReport
           ? {
               partnerReportId: input.actor.partnerReport.id,
@@ -308,7 +336,7 @@ const studentLink = (studentId: number) => `/partner/students/${studentId}?tab=a
 export async function notifyApplicationStatus(
   applicationId: number,
   status: number,
-  extra: { pendingDocs?: string[] | null; confirmedReport?: boolean } = {},
+  extra: { pendingDocs?: string[] | null; confirmedReport?: boolean; rejectionReason?: string | null } = {},
 ): Promise<void> {
   try {
     const a = await applicationContext(applicationId);
@@ -317,7 +345,11 @@ export async function notifyApplicationStatus(
     const studentName = `${a.student.first_name} ${a.student.last_name}`.trim();
     const statusLabel = label(status);
     const docs = extra.pendingDocs ?? null;
-    const note = extra.confirmedReport ? "Collegepond has confirmed the update you reported." : null;
+    const note = extra.rejectionReason
+      ? `Reason: ${extra.rejectionReason}`
+      : extra.confirmedReport
+        ? "Collegepond has confirmed the update you reported."
+        : null;
 
     await createNotifications(
       recipients.map((r) => r.id),

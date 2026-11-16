@@ -23,7 +23,8 @@ type Card = AdminStudentFull["applicationCards"][number];
 //     (from Visa Filed) with the supporting document. A report takes effect
 //     only when a Collegepond counsellor confirms it.
 
-const ALLOWED = ".pdf,.doc,.docx,.jpg,.jpeg,.png";
+// Partners upload PDFs only; the server checks the file itself too.
+const ALLOWED = ".pdf,application/pdf";
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });

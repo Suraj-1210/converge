@@ -50,6 +50,9 @@ model application {
   deferred_at            DateTime?                      @db.Timestamp(0)
   deferred_by_cp_user_id Int?
   deferred_note          String?                        @db.VarChar(255)
+  // Why the university rejected it (RejectionReason code; note for "Other").
+  rejection_reason       Int?                           @db.UnsignedTinyInt
+  rejection_note         String?                        @db.VarChar(500)
   // Weeks the university is expected to take to decide, from submitted_at
   // (application follow-ups). NULL = not set (src/server/follow-ups.ts).
   decision_expected_weeks Int?                          @db.UnsignedTinyInt

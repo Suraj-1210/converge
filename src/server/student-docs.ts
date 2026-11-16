@@ -51,6 +51,7 @@ export type PendingItemRef = { applicationId: number; itemId: number };
 // `studentId` before storing.
 export async function parseStudentDocUpload(
   req: Request,
+  rules: { pdfOnly?: boolean } = {},
 ): Promise<
   | Fail
   | {
@@ -84,7 +85,7 @@ export async function parseStudentDocUpload(
   if (!docType) return bad("Unknown document type", 400);
   if (!Number.isInteger(studentId) || studentId <= 0) return bad("Invalid student id", 400);
   if (!(file instanceof File)) return bad("No file provided", 400);
-  const invalid = checkStudentDocFile(file);
+  const invalid = checkStudentDocFile(file) ?? (rules.pdfOnly ? await checkPdfOnly(file) : null);
   if (invalid) return bad(invalid.error, invalid.status);
   const pendingItem =
     Number.isInteger(applicationId) && applicationId > 0 && Number.isInteger(itemId) && itemId > 0
@@ -107,6 +108,20 @@ export function checkStudentDocFile(file: File): { error: string; status: number
   const ext = (file.name.split(".").pop() ?? "").toLowerCase();
   if (!ALLOWED_EXTENSIONS.has(ext)) return { error: "Allowed file types: PDF, DOC, DOCX, JPG, PNG", status: 415 };
   return null;
+}
+
+// Partners upload PDFs only (16 Nov testing): deposit slips, TT copies and
+// every other student document. Checked by extension and by the file's own
+// "%PDF-" header, so a renamed photo is refused too. Staff uploads keep the
+// wider list above.
+export const PDF_ONLY_MESSAGE =
+  "Please upload a PDF. Photos and other formats (JPG, PNG, Word) aren't accepted, so scan or save the document as a PDF first.";
+
+export async function checkPdfOnly(file: File): Promise<{ error: string; status: number } | null> {
+  const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+  const head = new Uint8Array(await file.slice(0, 5).arrayBuffer());
+  const isPdf = ext === "pdf" && String.fromCharCode(...head) === "%PDF-";
+  return isPdf ? null : { error: PDF_ONLY_MESSAGE, status: 415 };
 }
 
 // A fixed checklist document type ("passport", "sop", …) by key.

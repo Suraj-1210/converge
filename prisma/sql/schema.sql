@@ -531,6 +531,9 @@ CREATE TABLE IF NOT EXISTS `application` (
   `deferred_at`            TIMESTAMP         NULL DEFAULT NULL,
   `deferred_by_cp_user_id` INT               NULL DEFAULT NULL,
   `deferred_note`          VARCHAR(255)      NULL DEFAULT NULL,
+  -- Why the university rejected it (RejectionReason code; note for "Other").
+  `rejection_reason`       TINYINT UNSIGNED  NULL DEFAULT NULL,
+  `rejection_note`         VARCHAR(500)      NULL DEFAULT NULL,
   -- Weeks the university is expected to take to decide, from submitted_at
   -- (application follow-ups). NULL = not set: 1 for a Faster TAT course, else 4.
   `decision_expected_weeks` TINYINT UNSIGNED NULL DEFAULT NULL,

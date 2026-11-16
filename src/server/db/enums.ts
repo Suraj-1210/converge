@@ -550,6 +550,47 @@ export function partnerReportOption(stage: number, to: number): PartnerReportOpt
 }
 
 // ---------------------------------------------------------------------------
+// Rejection reason (16 Nov testing)
+// ---------------------------------------------------------------------------
+// Moving an application to Rejected needs a reason, so rejections can be
+// counted by reason. "Other" needs a note. Stored in
+// application.rejection_reason; partners see the label (and note).
+export const RejectionReason = {
+  LOW_ACADEMIC_PROFILE: 1,
+  BACKLOGS: 2,
+  QUALIFICATION_NOT_RECOGNISED: 3,
+  GAP_IN_EDUCATION: 4,
+  ENGLISH_NOT_MET: 5,
+  COURSE_CRITERIA_NOT_MET: 6,
+  DEADLINE_PASSED: 7,
+  OTHER: 99,
+} as const;
+export type RejectionReason = (typeof RejectionReason)[keyof typeof RejectionReason];
+
+export const RejectionReasonLabel: Record<RejectionReason, string> = {
+  [RejectionReason.LOW_ACADEMIC_PROFILE]: "Low Academic Profile",
+  [RejectionReason.BACKLOGS]: "Backlogs / Active Backlogs",
+  [RejectionReason.QUALIFICATION_NOT_RECOGNISED]: "Previous Qualification Not Recognised",
+  [RejectionReason.GAP_IN_EDUCATION]: "Gap in Education",
+  [RejectionReason.ENGLISH_NOT_MET]: "English Language Requirements Not Met",
+  [RejectionReason.COURSE_CRITERIA_NOT_MET]: "Course Eligibility Criteria Not Met",
+  [RejectionReason.DEADLINE_PASSED]: "Application Deadline Passed",
+  [RejectionReason.OTHER]: "Other",
+};
+
+export const REJECTION_REASON_CODES = Object.values(RejectionReason) as RejectionReason[];
+
+// "Low Academic Profile", or "Other: <note>"; a listed reason with a note
+// reads "Gap in Education (note)". Null for an older rejection with none.
+export function rejectionReasonText(code: number | null, note: string | null): string | null {
+  if (code === null) return null;
+  const label = (RejectionReasonLabel as Record<number, string | undefined>)[code] ?? "Other";
+  const n = note?.trim();
+  if (code === RejectionReason.OTHER) return n ? `Other: ${n}` : "Other";
+  return n ? `${label} (${n})` : label;
+}
+
+// ---------------------------------------------------------------------------
 // Deferral to a later intake (Day 5 testing, 24 Oct 2026, with Suraj)
 // ---------------------------------------------------------------------------
 // Deferring no longer closes the application: the counsellor (or a partner's

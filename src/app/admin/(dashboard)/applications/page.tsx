@@ -11,6 +11,7 @@ import { Toast } from "~/components/ui/toast";
 import { StatCard, SkeletonTable } from "~/components/dashboard/widgets";
 import { formatDate, countryName } from "~/components/dashboard/format";
 import { UniIdModal } from "~/components/students/uni-id-modal";
+import { RejectionReasonModal } from "~/components/students/rejection-reason-modal";
 import { UniApplicationStatus } from "~/server/db/enums";
 import { isClosedStage } from "~/lib/application-stages";
 import { PendingDocsModal } from "~/app/admin/(dashboard)/students/[id]/pipeline-panels";
@@ -214,11 +215,14 @@ function StageSelect({
   // Documents Pending names the documents first (applied from the modal).
   const [pickDocs, setPickDocs] = useState(false);
   const [askUniId, setAskUniId] = useState<number | null>(null);
+  // Rejected asks for the university's reason first.
+  const [askReason, setAskReason] = useState(false);
   const mut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       void utils.applications.invalidate();
       setPickDocs(false);
       setAskUniId(null);
+      setAskReason(false);
       onDone(`Stage updated to ${label(vars.status)}`);
     },
     onError: (e) => onDone(e.message),
@@ -251,6 +255,7 @@ function StageSelect({
             (code === UniApplicationStatus.CONDITIONAL_OFFER || code === UniApplicationStatus.UNCONDITIONAL_OFFER)
           )
             setAskUniId(code);
+          else if (code === UniApplicationStatus.REJECTED_BY_UNIVERSITY) setAskReason(true);
           else mut.mutate({ applicationId, status: code });
         }}
         className={`cursor-pointer appearance-none rounded-full py-0.5 pr-6 pl-2.5 text-[11px] font-semibold outline-none focus:ring-2 focus:ring-[#B2DDFF] ${stageTone(current)} ${mut.isPending ? "opacity-60" : ""}`}
@@ -293,6 +298,20 @@ function StageSelect({
           busy={mut.isPending}
           onClose={() => setAskUniId(null)}
           onSubmit={(universityAppId) => mut.mutate({ applicationId, status: askUniId, universityAppId })}
+        />
+      )}
+      {askReason && (
+        <RejectionReasonModal
+          busy={mut.isPending}
+          onClose={() => setAskReason(false)}
+          onSubmit={(rejectionReason, rejectionNote) =>
+            mut.mutate({
+              applicationId,
+              status: UniApplicationStatus.REJECTED_BY_UNIVERSITY,
+              rejectionReason,
+              rejectionNote,
+            })
+          }
         />
       )}
     </span>

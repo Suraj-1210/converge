@@ -43,7 +43,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "This account is no longer active." }, { status: 401 });
   }
 
-  const parsed = await parseStudentDocUpload(req);
+  const parsed = await parseStudentDocUpload(req, { pdfOnly: true });
   if ("error" in parsed) return parsed.error;
 
   // Another agency's student is indistinguishable from a missing one.

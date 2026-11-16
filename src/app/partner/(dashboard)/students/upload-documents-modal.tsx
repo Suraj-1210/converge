@@ -21,8 +21,9 @@ const SECTIONS: { key: StudentDocSection; label: string }[] = [
   { key: "enrollment", label: "Enrollment" },
 ];
 const MAX_BYTES = 10 * 1024 * 1024;
-const ACCEPT = ".pdf,.doc,.docx,.jpg,.jpeg,.png";
-const ALLOWED = new Set(["pdf", "doc", "docx", "jpg", "jpeg", "png"]);
+// Partners upload PDFs only; the server checks the file itself too.
+const ACCEPT = ".pdf,application/pdf";
+const ALLOWED = new Set(["pdf"]);
 
 // Current files per checklist slot: a superseded single-slot upload stays on
 // the server as history but isn't "the" file any more.
@@ -47,7 +48,7 @@ export function expectedProgress(docs: StudentDoc[] | undefined) {
 
 function fileProblem(f: File): string | null {
   const ext = (f.name.split(".").pop() ?? "").toLowerCase();
-  if (!ALLOWED.has(ext)) return "Use PDF, DOC, DOCX, JPG or PNG.";
+  if (!ALLOWED.has(ext)) return "PDF only: scan or save the document as a PDF.";
   if (f.size > MAX_BYTES) return "Too large (max 10 MB).";
   return null;
 }
@@ -258,7 +259,7 @@ export function DocumentsChecklist({
           , then choose what each one is.
         </p>
         <p className="mt-1 text-[11px] text-[#98A2B3]">
-          PDF, DOC, DOCX, JPG or PNG, up to 10 MB each.
+          PDF only, up to 10 MB each.
         </p>
         <input
           ref={pickRef}

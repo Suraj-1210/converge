@@ -38,6 +38,7 @@ import {
 } from "../lib";
 import { LeadPipeline } from "./lead-pipeline";
 import { UniIdModal } from "~/components/students/uni-id-modal";
+import { RejectionReasonModal } from "~/components/students/rejection-reason-modal";
 import {
   APPLICATION_STAGE_ORDER,
   NEGATIVE_CLOSED_STAGES,
@@ -643,12 +644,15 @@ function AppCard({
   const [deferring, setDeferring] = useState(false);
   // An offer without the university Student ID asks for it first.
   const [askUniId, setAskUniId] = useState<number | null>(null);
+  // Rejected asks for the university's reason first.
+  const [askReason, setAskReason] = useState(false);
 
   const statusMut = api.students.setApplicationStatus.useMutation({
     onSuccess: (_res, vars) => {
       invalidate();
       setPickDocs(false);
       setAskUniId(null);
+      setAskReason(false);
       onToast(
         vars.status === a.status && vars.pendingDocs
           ? "Pending documents updated — the partner has been told"
@@ -678,6 +682,10 @@ function AppCard({
       !a.universityAppId?.trim()
     ) {
       setAskUniId(status);
+      return;
+    }
+    if (status === UniApplicationStatus.REJECTED_BY_UNIVERSITY) {
+      setAskReason(true);
       return;
     }
     statusMut.mutate({ applicationId: a.id, status });
@@ -801,6 +809,13 @@ function AppCard({
         />
       )}
 
+      {/* Why the university rejected it (16 Nov testing) */}
+      {a.status === UniApplicationStatus.REJECTED_BY_UNIVERSITY && a.rejectionReason && (
+        <div className="mt-4 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-4 py-2.5 text-[13px] text-[#B42318]">
+          <span className="font-semibold">Rejection reason:</span> {a.rejectionReason}
+        </div>
+      )}
+
       {/* Deferred to a later intake: still open */}
       {a.deferral && !terminal && <DeferralNotice app={a} />}
 
@@ -827,6 +842,20 @@ function AppCard({
           busy={statusMut.isPending}
           onClose={() => setAskUniId(null)}
           onSubmit={(universityAppId) => statusMut.mutate({ applicationId: a.id, status: askUniId, universityAppId })}
+        />
+      )}
+      {askReason && (
+        <RejectionReasonModal
+          busy={statusMut.isPending}
+          onClose={() => setAskReason(false)}
+          onSubmit={(rejectionReason, rejectionNote) =>
+            statusMut.mutate({
+              applicationId: a.id,
+              status: UniApplicationStatus.REJECTED_BY_UNIVERSITY,
+              rejectionReason,
+              rejectionNote,
+            })
+          }
         />
       )}
       {pickDocs && (
@@ -1593,7 +1622,8 @@ function DepositDetails({
       <div className="mb-3 text-[13px] font-bold text-[#101828]">
         💰 Deposit Details
       </div>
-      <div className="flex flex-wrap items-end gap-4">
+      {/* Deadline and fee side by side on one row (16 Nov testing). */}
+      <div className="grid grid-cols-2 items-end gap-4 sm:max-w-[460px]">
         <DepositField label="Deposit Deadline">
           <input
             type="date"
@@ -1602,37 +1632,40 @@ function DepositDetails({
               setDeadline(e.target.value);
               persist(e.target.value, currency, amount);
             }}
-            className="h-[34px] cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
+            className="h-[34px] w-full cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2.5 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
           />
         </DepositField>
-        <DepositField label="Currency">
-          <select
-            value={currency}
-            onChange={(e) => {
-              setCurrency(e.target.value);
-              persist(deadline, e.target.value, amount);
-            }}
-            className="h-[34px] cursor-pointer rounded-md border border-[#D0D5DD] bg-white px-2 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
-          >
-            {DEPOSIT_CURRENCIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+        <DepositField label="Deposit Fee">
+          <div className="flex h-[34px] rounded-md border border-[#D0D5DD] bg-white focus-within:border-[#1570EF]">
+            <select
+              value={currency}
+              aria-label="Deposit currency"
+              onChange={(e) => {
+                setCurrency(e.target.value);
+                persist(deadline, e.target.value, amount);
+              }}
+              className="cursor-pointer rounded-l-md border-r border-[#E4E7EC] bg-[#F9FAFB] px-2 text-[13px] text-[#344054] outline-none"
+            >
+              {DEPOSIT_CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <input
+              type="number"
+              min={0}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              onBlur={() => persist(deadline, currency, amount)}
+              placeholder="0"
+              className="w-full min-w-0 rounded-r-md bg-transparent px-2.5 text-[13px] text-[#344054] outline-none"
+            />
+          </div>
         </DepositField>
-        <DepositField label="Amount">
-          <input
-            type="number"
-            min={0}
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            onBlur={() => persist(deadline, currency, amount)}
-            placeholder="0"
-            className="h-[34px] w-[120px] rounded-md border border-[#D0D5DD] bg-white px-2.5 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
-          />
-        </DepositField>
-        {warning && (
+      </div>
+      {warning && (
+        <div className="mt-3">
           <span
             className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${
               warning.tone === "paid"
@@ -1644,8 +1677,8 @@ function DepositDetails({
           >
             {warning.tone === "paid" ? "✓" : "⚠️"} {warning.text}
           </span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -284,8 +284,8 @@ function ApplicationCard({
     ["Submitted", fmtDate(a.submittedAt)],
     ["Decision", fmtDate(a.decidedAt)],
     ["University application ID", a.universityAppId],
-    ["Deposit", money(a.depositAmount, a.depositCurrency)],
-    ["Deposit due", fmtDate(a.depositDeadline)],
+    ["Deposit Deadline", fmtDate(a.depositDeadline)],
+    ["Deposit Fee", money(a.depositAmount, a.depositCurrency)],
   ];
   // Opened from the Applications page: bring this one into view, once.
   const ref = useRef<HTMLLIElement>(null);
@@ -326,6 +326,13 @@ function ApplicationCard({
           </span>
         </div>
       </div>
+
+      {/* Why the university rejected it (16 Nov testing) */}
+      {a.status === UniApplicationStatus.REJECTED_BY_UNIVERSITY && a.rejectionReason && (
+        <div className="mt-4 rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-4 py-2.5 text-[13px] text-[#B42318]">
+          <span className="font-semibold">Rejection reason:</span> {a.rejectionReason}
+        </div>
+      )}
 
       {/* Stage track: the same stages and colours as the counsellor portal. */}
       <div className="mt-4 overflow-x-auto pb-1">

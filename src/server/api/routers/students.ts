@@ -92,6 +92,7 @@ import {
   UniApplicationStatus,
   UserStatus,
   UserType,
+  rejectionReasonText,
   type CourseLevel,
   type EducationLevel,
   type EmergencyRelationship,
@@ -920,6 +921,8 @@ async function loadStudentFull(id: number) {
         decided_at: true,
         university_app_id: true,
         counsellor_vendor: true,
+        rejection_reason: true,
+        rejection_note: true,
         conditional_docs: true,
         pending_docs: true,
         deposit_deadline: true,
@@ -1084,6 +1087,8 @@ async function loadStudentFull(id: number) {
       decidedAt: a.decided_at?.toISOString() ?? null,
       universityAppId: a.university_app_id,
       counsellorVendor: a.counsellor_vendor,
+      // Why the university rejected it (partners see this too).
+      rejectionReason: rejectionReasonText(a.rejection_reason, a.rejection_note),
       conditionalDocs: Array.isArray(a.conditional_docs)
         ? (a.conditional_docs as string[])
         : [],
@@ -2106,6 +2111,9 @@ export const studentsRouter = createTRPCRouter({
           .nullish(),
         // The university's Student ID: required for an offer if not saved yet.
         universityAppId: z.string().trim().max(100).nullish(),
+        // Required for Rejected (RejectionReason); "Other" needs the note.
+        rejectionReason: z.number().int().min(1).max(255).nullish(),
+        rejectionNote: z.string().trim().max(500).nullish(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -2118,6 +2126,8 @@ export const studentsRouter = createTRPCRouter({
         targetStatus: input.status,
         pendingDocs: input.pendingDocs ?? null,
         universityAppId: input.universityAppId ?? null,
+        rejectionReason: input.rejectionReason ?? null,
+        rejectionNote: input.rejectionNote ?? null,
       });
       return { status: res.status };
     }),

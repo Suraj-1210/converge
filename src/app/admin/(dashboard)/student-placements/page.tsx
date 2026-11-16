@@ -42,6 +42,23 @@ function StatCard({
   );
 }
 
+// Intakes in calendar order ("Jan 2027" before "Sep 2027"); anything that
+// doesn't read as "Mon YYYY" (e.g. a course listing several months) sorts
+// after, alphabetically.
+const MONTH_INDEX = new Map(
+  ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map(
+    (m, i) => [m, i] as const,
+  ),
+);
+function intakeKey(s: string): number {
+  const m = /^([A-Za-z]{3})[a-z]*\s+(\d{4})$/.exec(s.trim());
+  const month = m ? MONTH_INDEX.get(m[1]!.slice(0, 1).toUpperCase() + m[1]!.slice(1, 3).toLowerCase()) : undefined;
+  return m && month !== undefined ? Number(m[2]) * 12 + month : Number.POSITIVE_INFINITY;
+}
+function byIntake(a: string, b: string): number {
+  return intakeKey(a) - intakeKey(b) || a.localeCompare(b);
+}
+
 const filterSelectCls =
   "h-[38px] rounded-lg border border-[#D0D5DD] bg-white px-2.5 text-[13px] font-medium text-[#344054] outline-none hover:border-[#1570EF] focus:border-[#1570EF]";
 
@@ -54,6 +71,8 @@ export default function StudentPlacementsPage() {
   const [fVendor, setFVendor] = useState("");
   const [fUniversity, setFUniversity] = useState("");
   const [fStatus, setFStatus] = useState<"" | AttKey>("");
+  const [fIntake, setFIntake] = useState("");
+  const [fCountry, setFCountry] = useState("");
   const [openVendors, setOpenVendors] = useState<Record<string, boolean>>({});
   const [openDropdown, setOpenDropdown] = useState<number | null>(null);
   const [modal, setModal] = useState<{ app: Placement; newStatus: AttKey } | null>(null);
@@ -76,11 +95,19 @@ export default function StudentPlacementsPage() {
     ),
   ].sort();
   const uniOptions = [...new Set(rows.map((r) => r.university))].sort();
+  const intakeOptions = [
+    ...new Set(rows.map((r) => r.intake).filter((v): v is string => !!v)),
+  ].sort(byIntake);
+  const countryOptions = [...new Set(rows.map((r) => r.country))].sort((a, b) =>
+    countryName(a).localeCompare(countryName(b)),
+  );
 
   const filtered = rows.filter((p) => {
     if (fVendor !== "" && (p.vendor ?? "") !== fVendor) return false;
     if (fUniversity !== "" && p.university !== fUniversity) return false;
     if (fStatus !== "" && att(p) !== fStatus) return false;
+    if (fIntake !== "" && p.intake !== fIntake) return false;
+    if (fCountry !== "" && p.country !== fCountry) return false;
     return true;
   });
 
@@ -105,7 +132,8 @@ export default function StudentPlacementsPage() {
     return a.name.localeCompare(b.name);
   });
 
-  const hasFilters = fVendor !== "" || fUniversity !== "" || fStatus !== "";
+  const hasFilters =
+    fVendor !== "" || fUniversity !== "" || fStatus !== "" || fIntake !== "" || fCountry !== "";
 
   function openStatusModal(app: Placement, newStatus: AttKey) {
     setOpenDropdown(null);
@@ -195,6 +223,22 @@ export default function StudentPlacementsPage() {
           <option value="pending">Pending</option>
           <option value="attended">Enrolled</option>
         </select>
+        <select className={filterSelectCls} value={fIntake} onChange={(e) => setFIntake(e.target.value)}>
+          <option value="">All Intakes</option>
+          {intakeOptions.map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
+        <select className={filterSelectCls} value={fCountry} onChange={(e) => setFCountry(e.target.value)}>
+          <option value="">All Countries</option>
+          {countryOptions.map((c) => (
+            <option key={c} value={c}>
+              {countryName(c)}
+            </option>
+          ))}
+        </select>
         {hasFilters && (
           <button
             type="button"
@@ -202,6 +246,8 @@ export default function StudentPlacementsPage() {
               setFVendor("");
               setFUniversity("");
               setFStatus("");
+              setFIntake("");
+              setFCountry("");
             }}
             className="h-[38px] rounded-lg border border-[#D0D5DD] bg-white px-3.5 text-[13px] font-medium text-[#667085] hover:bg-[#F9FAFB]"
           >
