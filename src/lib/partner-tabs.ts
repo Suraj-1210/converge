@@ -139,6 +139,7 @@ const API_TABS: [path: string, tab: PartnerTab][] = [
   ["events.forPartners", "events"],
   ["events.partnerGet", "events"],
   ["events.rsvp", "events"],
+  ["resources.partner*", "resources"],
   ["account.", "account"],
 ];
 

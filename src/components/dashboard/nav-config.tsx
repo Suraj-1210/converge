@@ -15,6 +15,7 @@ import {
   PartnersIcon,
   PlacementsIcon,
   ReconciliationIcon,
+  ResourcesIcon,
   SearchIcon,
   SettingsIcon,
   StudentsIcon,
@@ -225,6 +226,7 @@ export const NAV_SECTIONS: NavSection[] = [
         section: "universities",
       },
       { label: "Events", href: "/admin/events", icon: <CalendarIcon />, section: "events" },
+      { label: "Resources", href: "/admin/resources", icon: <ResourcesIcon />, section: "resources" },
     ],
   },
   {

@@ -620,6 +620,25 @@ export function counsellorDecisionOwnerEmail(
   );
 }
 
+// A resource marked Important (with "Notify partners") was published to the
+// partner's Resources library (src/server/resources.ts). Once per resource
+// per recipient.
+export function resourcePublishedEmail(
+  p: PartnerRef,
+  r: { title: string; description: string | null; category: string; url: string },
+): EmailMessage {
+  return build(
+    `Important resource: ${r.title}`,
+    "A new resource is available",
+    hello(p.name),
+    [
+      { p: `Collegepond has added an important resource to your Resources library (${r.category}).` },
+      { quote: r.description?.trim() ? r.description.trim() : r.title, label: r.title },
+      { button: { label: "Open Resources", url: r.url } },
+    ],
+  );
+}
+
 // 19. Approved partner hasn't signed the partnership agreement (MOU) yet.
 export function mouReminderEmail(p: PartnerRef, appUrl: string): EmailMessage {
   return build(

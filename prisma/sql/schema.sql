@@ -2505,6 +2505,136 @@ CREATE TABLE IF NOT EXISTS `partner_manual_notice_target` (
   -- refuses a CHECK on columns that CASCADE foreign keys use.
 ) ENGINE = InnoDB;
 
+
+-- Resources library (Admin > Resources, Partner > Resources; 16 Nov 2026).
+-- resource_category is the Settings > Resource Categories master (deactivate,
+-- don't delete, once a resource uses it). A file resource keeps every upload
+-- in resource_version (partners get the highest version_no); downloads and
+-- previews are logged in resource_download; resource_notification makes the
+-- publish bell / email go once per resource per recipient.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `resource_category` (
+  `id`         INT          NOT NULL AUTO_INCREMENT,
+  `name`       VARCHAR(100) NOT NULL,
+  `sort_order` INT          NOT NULL DEFAULT 0,
+  `is_active`  TINYINT      NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_resource_category_name` (`name` ASC) VISIBLE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `resource` (
+  `id`                    INT              NOT NULL AUTO_INCREMENT,
+  `title`                 VARCHAR(200)     NOT NULL,
+  `description`           VARCHAR(2000)    NULL DEFAULT NULL,
+  `category_id`           INT              NOT NULL,
+  `university_id`         INT              NULL DEFAULT NULL,
+  `country`               VARCHAR(2)       NULL DEFAULT NULL,
+  -- 0 = all partners, 1 = agency owners and independents, 2 = agency counsellors
+  `audience`              TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  -- 0 = file (resource_version), 1 = link (link_url)
+  `kind`                  TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `link_url`              VARCHAR(1000)    NULL DEFAULT NULL,
+  -- Visible from publish_on through expires_on (inclusive), India time.
+  `publish_on`            DATE             NOT NULL,
+  `expires_on`            DATE             NULL DEFAULT NULL,
+  `is_pinned`             TINYINT          NOT NULL DEFAULT 0,
+  `is_important`          TINYINT          NOT NULL DEFAULT 0,
+  `notify_partners`       TINYINT          NOT NULL DEFAULT 0,
+  -- When it first went live (the resource.published event); NULL until then.
+  `announced_at`          TIMESTAMP        NULL DEFAULT NULL,
+  `archived_at`           TIMESTAMP        NULL DEFAULT NULL,
+  `created_by_cp_user_id` INT              NOT NULL,
+  `updated_by_cp_user_id` INT              NULL DEFAULT NULL,
+  `created_at`            TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`            TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `fk_resource_category_idx` (`category_id` ASC) VISIBLE,
+  INDEX `fk_resource_university_idx` (`university_id` ASC) VISIBLE,
+  INDEX `idx_resource_live` (`archived_at` ASC, `publish_on` ASC) VISIBLE,
+  INDEX `fk_resource_created_by_idx` (`created_by_cp_user_id` ASC) VISIBLE,
+  INDEX `fk_resource_updated_by_idx` (`updated_by_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_resource_category`
+    FOREIGN KEY (`category_id`) REFERENCES `resource_category` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_university`
+    FOREIGN KEY (`university_id`) REFERENCES `university` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_created_by`
+    FOREIGN KEY (`created_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_updated_by`
+    FOREIGN KEY (`updated_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `resource_version` (
+  `id`                     INT          NOT NULL AUTO_INCREMENT,
+  `resource_id`            INT          NOT NULL,
+  `version_no`             INT          NOT NULL,
+  `file_url`               VARCHAR(500) NOT NULL,
+  `file_name`              VARCHAR(255) NOT NULL,
+  `mime_type`              VARCHAR(120) NOT NULL,
+  `size_bytes`             INT UNSIGNED NOT NULL,
+  `restored_from_id`       INT          NULL DEFAULT NULL,
+  `uploaded_by_cp_user_id` INT          NOT NULL,
+  `created_at`             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_resource_version_no` (`resource_id` ASC, `version_no` ASC) VISIBLE,
+  INDEX `fk_resource_version_uploaded_by_idx` (`uploaded_by_cp_user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_resource_version_resource`
+    FOREIGN KEY (`resource_id`) REFERENCES `resource` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_version_uploaded_by`
+    FOREIGN KEY (`uploaded_by_cp_user_id`) REFERENCES `cp_user` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `resource_download` (
+  `id`          INT              NOT NULL AUTO_INCREMENT,
+  `resource_id` INT              NOT NULL,
+  `version_id`  INT              NULL DEFAULT NULL,
+  `user_id`     INT              NOT NULL,
+  -- 0 = download, 1 = in-browser preview, 2 = link opened
+  `action`      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `created_at`  TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_resource_download_resource_user` (`resource_id` ASC, `user_id` ASC) VISIBLE,
+  INDEX `fk_resource_download_version_idx` (`version_id` ASC) VISIBLE,
+  INDEX `fk_resource_download_user_idx` (`user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_resource_download_resource`
+    FOREIGN KEY (`resource_id`) REFERENCES `resource` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_download_version`
+    FOREIGN KEY (`version_id`) REFERENCES `resource_version` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_download_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `resource_notification` (
+  `resource_id` INT       NOT NULL,
+  `user_id`     INT       NOT NULL,
+  `bell_at`     TIMESTAMP NULL DEFAULT NULL,
+  `bell_batch`  CHAR(36)  NULL DEFAULT NULL,
+  `email_at`    TIMESTAMP NULL DEFAULT NULL,
+  `email_batch` CHAR(36)  NULL DEFAULT NULL,
+  `created_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`resource_id`, `user_id`),
+  INDEX `idx_resource_notification_bell_batch` (`bell_batch` ASC) VISIBLE,
+  INDEX `idx_resource_notification_email_batch` (`email_batch` ASC) VISIBLE,
+  INDEX `fk_resource_notification_user_idx` (`user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_resource_notification_resource`
+    FOREIGN KEY (`resource_id`) REFERENCES `resource` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_resource_notification_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
 SET SQL_MODE            = @OLD_SQL_MODE;
 SET FOREIGN_KEY_CHECKS  = @OLD_FOREIGN_KEY_CHECKS;
 SET UNIQUE_CHECKS       = @OLD_UNIQUE_CHECKS;

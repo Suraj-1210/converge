@@ -30,6 +30,10 @@ import { AdminRole } from "~/server/db/enums";
 //                                       Its data is scoped to the partners it
 //                                       is BDM of (~/server/staff-access).
 //   Finance, Content (1, 2, 7)        → what they had before
+//   Resources (16 Nov)                 → Super Admin and BDM; switchable on
+//                                       for any role (the library is the
+//                                       same for everyone; download names
+//                                       follow staff-access scoping)
 //   Users, Settings, Audit Logs        → Super Admin only, not switchable
 //   Reports & Analytics                → Super Admin only, not switchable
 //                                       (16 Nov 2026: its data spans every
@@ -61,6 +65,7 @@ export type AdminSection =
   | "universities"
   | "events"
   | "reports"
+  | "resources"
   | "system";
 
 const {
@@ -123,6 +128,8 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   universities: ABOVE_COUNSELLOR,
   events: NOT_BDM,
   reports: [SUPER_ADMIN],
+  // Resources library (16 Nov 2026): fully switchable, any role can be given it.
+  resources: [SUPER_ADMIN, BDM],
   system: [SUPER_ADMIN],
 };
 
@@ -148,6 +155,7 @@ export const SWITCHABLE_SECTIONS: { section: AdminSection; label: string; group:
   { section: "adjustments", label: "Adjustments", group: "Finance" },
   { section: "universities", label: "Universities", group: "Content" },
   { section: "events", label: "Events", group: "Content" },
+  { section: "resources", label: "Resources", group: "Content" },
 ];
 
 const SWITCHABLE = new Set<AdminSection>(SWITCHABLE_SECTIONS.map((s) => s.section));
@@ -236,6 +244,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/uni-assist", "uniAssist"],
   ["/admin/universities", "universities"],
   ["/admin/events", "events"],
+  ["/admin/resources", "resources"],
   ["/admin/notes-reminders", "notes"],
   ["/admin/partner-chat", "partnerChat"],
   ["/admin/tat-management", "tat"],
@@ -305,6 +314,7 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["bankVerification.counts", "bankVerifications"],
   ["adjustments.", "adjustments"],
   ["reports.", "reports"],
+  ["resources.admin*", "resources"],
 ];
 
 export function sectionForProcedure(path: string): AdminSection | null {

@@ -37,6 +37,16 @@ INSERT IGNORE INTO `tranche_condition` (`name`, `sort_order`, `is_active`) VALUE
   ('After Semester 2',  40, 1),
   ('On Completion',     50, 1);
 
+-- Resource Categories master (Settings -> Resource Categories). Same rows as
+-- the 20261116193000_resources migration seeds.
+INSERT IGNORE INTO `resource_category` (`name`, `sort_order`, `is_active`) VALUES
+  ('Training',             10, 1),
+  ('Brochures',            20, 1),
+  ('Counsellor Handbooks', 30, 1),
+  ('Marketing Creatives',  40, 1),
+  ('Forms & Templates',    50, 1),
+  ('Policies',             60, 1);
+
 -- Adjustment Reasons master (Settings -> Adjustment Reasons). Same rows as
 -- the 20261116170000_adjustments migration seeds.
 INSERT IGNORE INTO `adjustment_reason` (`name`, `sort_order`, `is_active`) VALUES

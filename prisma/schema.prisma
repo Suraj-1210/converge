@@ -2066,3 +2066,102 @@ model partner_manual_notice_target {
   @@index([org_id], map: "fk_partner_manual_notice_target_org_idx")
   @@index([user_id], map: "fk_partner_manual_notice_target_user_idx")
 }
+
+// Resources library (Admin > Resources, Partner > Resources; 16 Nov 2026).
+// Migration 20261116193000_resources.sql. The FKs to university / cp_user /
+// user exist in the database but aren't modelled as relations here, so the
+// shared models stay untouched; resolve those ids with a second query.
+model resource_category {
+  id         Int        @id @default(autoincrement())
+  name       String     @unique(map: "uq_resource_category_name") @db.VarChar(100)
+  sort_order Int        @default(0)
+  is_active  Int        @default(1) @db.TinyInt
+  created_at DateTime   @default(now()) @db.Timestamp(0)
+  updated_at DateTime   @default(now()) @updatedAt @db.Timestamp(0)
+  resource   resource[]
+}
+
+model resource {
+  id                    Int                     @id @default(autoincrement())
+  title                 String                  @db.VarChar(200)
+  description           String?                 @db.VarChar(2000)
+  category_id           Int
+  university_id         Int?
+  country               String?                 @db.VarChar(2)
+  // ResourceAudience: 0 all partners, 1 owners + independents, 2 agency counsellors
+  audience              Int                     @default(0) @db.UnsignedTinyInt
+  // ResourceKind: 0 file, 1 link
+  kind                  Int                     @default(0) @db.UnsignedTinyInt
+  link_url              String?                 @db.VarChar(1000)
+  publish_on            DateTime                @db.Date
+  expires_on            DateTime?               @db.Date
+  is_pinned             Int                     @default(0) @db.TinyInt
+  is_important          Int                     @default(0) @db.TinyInt
+  notify_partners       Int                     @default(0) @db.TinyInt
+  announced_at          DateTime?               @db.Timestamp(0)
+  archived_at           DateTime?               @db.Timestamp(0)
+  created_by_cp_user_id Int
+  updated_by_cp_user_id Int?
+  created_at            DateTime                @default(now()) @db.Timestamp(0)
+  updated_at            DateTime                @default(now()) @updatedAt @db.Timestamp(0)
+  category              resource_category       @relation(fields: [category_id], references: [id], onUpdate: Cascade, map: "fk_resource_category")
+  versions              resource_version[]
+  downloads             resource_download[]
+  notifications         resource_notification[]
+
+  @@index([category_id], map: "fk_resource_category_idx")
+  @@index([university_id], map: "fk_resource_university_idx")
+  @@index([archived_at, publish_on], map: "idx_resource_live")
+  @@index([created_by_cp_user_id], map: "fk_resource_created_by_idx")
+  @@index([updated_by_cp_user_id], map: "fk_resource_updated_by_idx")
+}
+
+model resource_version {
+  id                     Int                 @id @default(autoincrement())
+  resource_id            Int
+  version_no             Int
+  file_url               String              @db.VarChar(500)
+  file_name              String              @db.VarChar(255)
+  mime_type              String              @db.VarChar(120)
+  size_bytes             Int                 @db.UnsignedInt
+  restored_from_id       Int?
+  uploaded_by_cp_user_id Int
+  created_at             DateTime            @default(now()) @db.Timestamp(0)
+  resource               resource            @relation(fields: [resource_id], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "fk_resource_version_resource")
+  downloads              resource_download[]
+
+  @@unique([resource_id, version_no], map: "uq_resource_version_no")
+  @@index([uploaded_by_cp_user_id], map: "fk_resource_version_uploaded_by_idx")
+}
+
+model resource_download {
+  id          Int               @id @default(autoincrement())
+  resource_id Int
+  version_id  Int?
+  user_id     Int
+  // 0 download, 1 preview, 2 link opened
+  action      Int               @default(0) @db.UnsignedTinyInt
+  created_at  DateTime          @default(now()) @db.Timestamp(0)
+  resource    resource          @relation(fields: [resource_id], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "fk_resource_download_resource")
+  version     resource_version? @relation(fields: [version_id], references: [id], onUpdate: Cascade, map: "fk_resource_download_version")
+
+  @@index([resource_id, user_id], map: "idx_resource_download_resource_user")
+  @@index([version_id], map: "fk_resource_download_version_idx")
+  @@index([user_id], map: "fk_resource_download_user_idx")
+}
+
+model resource_notification {
+  resource_id Int
+  user_id     Int
+  bell_at     DateTime? @db.Timestamp(0)
+  bell_batch  String?   @db.Char(36)
+  email_at    DateTime? @db.Timestamp(0)
+  email_batch String?   @db.Char(36)
+  created_at  DateTime  @default(now()) @db.Timestamp(0)
+  resource    resource  @relation(fields: [resource_id], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "fk_resource_notification_resource")
+
+  @@id([resource_id, user_id])
+  @@index([bell_batch], map: "idx_resource_notification_bell_batch")
+  @@index([email_batch], map: "idx_resource_notification_email_batch")
+  @@index([user_id], map: "fk_resource_notification_user_idx")
+}

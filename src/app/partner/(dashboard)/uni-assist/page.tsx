@@ -21,6 +21,7 @@ import {
 import { HOME_CURRENCY, bracketsFor, formatMoney } from "~/lib/fx-convert";
 import { ShortlistApproval } from "~/server/db/enums";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { UniResourcesButton, useUniResources, type UniResources } from "./uni-resources";
 
 type Program = RouterOutputs["universities"]["searchPrograms"]["items"][number];
 
@@ -329,6 +330,8 @@ export default function PartnerUniAssistPage() {
 
   const rows = programs.data?.pages.flatMap((pg) => pg.items) ?? [];
   const total = programs.data?.pages[0]?.total ?? 0;
+  // Resources-library entries per university on the loaded pages, in one query.
+  const uniResources = useUniResources(rows.flatMap((p) => (p.university ? [p.university.id] : [])));
 
   return (
     <>
@@ -548,6 +551,7 @@ export default function PartnerUniAssistPage() {
               onToggleShortlist={() => toggleShortlist(p.id)}
               displayCurrency={applied.currency}
               rates={rates}
+              resources={p.university ? uniResources[p.university.id] : undefined}
             />
           ))}
           {programs.hasNextPage && (
@@ -687,12 +691,14 @@ function ProgramCard({
   onToggleShortlist,
   displayCurrency,
   rates,
+  resources,
 }: {
   program: Program;
   shortlistState: ShortlistState;
   onToggleShortlist: () => void;
   displayCurrency: string;
   rates: Record<string, number>;
+  resources?: UniResources[number];
 }) {
   const uni = program.university;
   const tags = collectTags(program);
@@ -723,6 +729,7 @@ function ProgramCard({
               {COUNTRY_NAME[uni.country] ?? uni.country}
             </div>
           )}
+          <UniResourcesButton items={resources} />
         </div>
       </div>
 
