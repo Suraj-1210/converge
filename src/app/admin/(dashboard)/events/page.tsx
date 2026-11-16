@@ -11,6 +11,8 @@ import {
 import { formatDate } from "~/components/dashboard/format";
 import { StatCard, Icon, Skeleton } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
+import { MediaUpload } from "~/components/events/media-upload";
+import { BannersPanel } from "./banners-panel";
 
 type EventRow = RouterOutputs["events"]["list"][number];
 
@@ -149,7 +151,15 @@ function Calendar({ events }: { events: EventRow[] }) {
 // ---------------------------------------------------------------------------
 // Add / Edit event modal.
 // ---------------------------------------------------------------------------
-function EventModal({ event, onClose }: { event: EventRow | null; onClose: () => void }) {
+function EventModal({
+  event,
+  onClose,
+  onSaved,
+}: {
+  event: EventRow | null;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+}) {
   const utils = api.useUtils();
   const isEdit = event !== null;
   const partners = api.events.partnersForInvite.useQuery().data ?? [];
@@ -170,14 +180,27 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
       event?.actualAttendance != null ? String(event.actualAttendance) : "",
     isActive: event?.isActive ?? false,
     invitePartnerIds: event?.invitedPartners.map((p) => p.userId) ?? [],
+    creativeRef: event?.creativeRef ?? null,
+    creativePreview: event?.creativeUrl ?? null,
+    registrationUrl: event?.registrationUrl ?? "",
+    audience: event?.audience ?? ("all" as "all" | "selected"),
+    sharePartners: event?.sharePartners ?? true,
+    showOnDashboard: event?.onDashboard ?? false,
   }));
   const [err, setErr] = useState("");
-  const onDone = () => {
+  const onDone = (r: { notified: number; updatesSent: number }) => {
     void utils.events.list.invalidate();
+    void utils.events.bannerList.invalidate();
+    const parts = [
+      r.notified > 0 ? `announced to ${r.notified} partner${r.notified === 1 ? "" : "s"} (email + notification)` : null,
+      r.updatesSent > 0 ? `"updated" email to ${r.updatesSent}` : null,
+    ].filter(Boolean);
+    onSaved(parts.length > 0 ? `Event saved and ${parts.join("; ")}.` : "Event saved.");
     onClose();
   };
-  const create = api.events.create.useMutation({ onSuccess: onDone });
-  const update = api.events.update.useMutation({ onSuccess: onDone });
+  const onError = (e: { message: string }) => setErr(e.message);
+  const create = api.events.create.useMutation({ onSuccess: onDone, onError });
+  const update = api.events.update.useMutation({ onSuccess: onDone, onError });
   const busy = create.isPending || update.isPending;
 
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) =>
@@ -210,6 +233,14 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
   function submit() {
     if (f.title.trim() === "") return setErr("Event name is required.");
     if (f.eventDate === "") return setErr("Event date is required.");
+    const reg = nn(f.registrationUrl);
+    if (reg && !/^https?:\/\/\S+\.\S+/i.test(reg)) {
+      return setErr("The registration link must be a full link starting with https://");
+    }
+    if (f.audience === "selected" && f.invitePartnerIds.length === 0 && f.isActive) {
+      return setErr("Pick at least one partner, or choose “All approved partners”.");
+    }
+    setErr("");
     const payload = {
       title: f.title.trim(),
       eventType: f.eventType,
@@ -226,7 +257,14 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
       actualAttendance:
         f.actualAttendance.trim() === "" ? null : Number(f.actualAttendance),
       isActive: f.isActive,
-      invitePartnerIds: f.invitePartnerIds,
+      creativeUrl: f.creativeRef,
+      registrationUrl: reg,
+      audience: f.audience,
+      sharePartners: f.sharePartners,
+      showOnDashboard: f.showOnDashboard,
+      // The invite list only counts for "Selected partners"; for "All" the
+      // server leaves registrations (RSVPs) as they are.
+      invitePartnerIds: f.audience === "selected" ? f.invitePartnerIds : undefined,
     };
     if (isEdit) update.mutate({ ...payload, id: event.id });
     else create.mutate(payload);
@@ -360,6 +398,59 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
               placeholder="Schedule / talking points…"
             />
           </div>
+          <MediaUpload
+            label="Creative / poster"
+            hint="The event poster (A4 portrait works best). JPG or PNG, or a PDF (shown as a link). Up to 5 MB. Shown on the event page, in the email and on the dashboard slide."
+            folder="event-creatives"
+            allowPdf
+            value={f.creativeRef}
+            previewUrl={f.creativePreview}
+            onChange={(ref, preview) => setF((s) => ({ ...s, creativeRef: ref, creativePreview: preview }))}
+          />
+          <div>
+            <label className={label}>External registration link (optional)</label>
+            <input
+              className={input}
+              value={f.registrationUrl}
+              onChange={(e) => set("registrationUrl", e.target.value)}
+              placeholder="https://… the university's registration form"
+            />
+            <span className="mt-1 block text-[11px] text-[#98A2B3]">
+              Partners get a “Register students” button that opens this in a new tab.
+            </span>
+          </div>
+          <div>
+            <label className={label}>Audience</label>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  { v: "all", t: "All approved partners" },
+                  { v: "selected", t: "Selected partners" },
+                ] as const
+              ).map((o) => (
+                <label
+                  key={o.v}
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium ${
+                    f.audience === o.v
+                      ? "border-[#1570EF] bg-[#EFF8FF] text-[#175CD3]"
+                      : "border-[#D0D5DD] text-[#344054]"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="event-audience"
+                    checked={f.audience === o.v}
+                    onChange={() => set("audience", o.v)}
+                  />
+                  {o.t}
+                </label>
+              ))}
+            </div>
+            <span className="mt-1 block text-[11px] text-[#98A2B3]">
+              Only the audience sees the event, gets the email and notification, and sees its dashboard slide.
+            </span>
+          </div>
+          {f.audience === "selected" && (
           <div>
             <label className={label}>Partners to Invite</label>
             {partners.length > 0 && (
@@ -421,6 +512,40 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
             <span className="mt-1 block text-[11px] text-[#98A2B3]">
               {f.invitePartnerIds.length} selected
             </span>
+          </div>
+          )}
+          <div className="space-y-2 rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] p-3">
+            <label className="flex items-start gap-2 text-[13px] text-[#344054]">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={f.sharePartners}
+                onChange={(e) => set("sharePartners", e.target.checked)}
+              />
+              <span>
+                <span className="font-semibold">Email and notify the audience when published</span>
+                <span className="block text-[11px] text-[#667085]">
+                  One email (poster, details, calendar invite) and one bell notification per person, never
+                  twice. Partners added to the audience later get theirs on the next save.
+                  {event && event.sharedCount > 0 ? ` Already sent to ${event.sharedCount}.` : ""}
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-[13px] text-[#344054]">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={f.showOnDashboard}
+                onChange={(e) => set("showOnDashboard", e.target.checked)}
+              />
+              <span>
+                <span className="font-semibold">Show on partner dashboard</span>
+                <span className="block text-[11px] text-[#667085]">
+                  Adds a slide to the rotating dashboard banner until the event date. Fine-tune it under
+                  Dashboard banners.
+                </span>
+              </span>
+            </label>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -492,7 +617,24 @@ function EventCard({
 }) {
   const [showRsvps, setShowRsvps] = useState(false);
   return (
-    <div className="mb-3 rounded-xl border border-[#E4E7EC] bg-white p-5">
+    <div className="mb-3 flex gap-4 rounded-xl border border-[#E4E7EC] bg-white p-5">
+      {e.creativeUrl && (
+        <a
+          href={e.creativeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open the poster"
+          className="flex aspect-[1/1.414] w-20 shrink-0 self-start items-center justify-center overflow-hidden rounded-md border border-[#E4E7EC] bg-[#F9FAFB]"
+        >
+          {e.creativeIsPdf ? (
+            <span className="text-[11px] font-semibold text-[#B42318]">PDF poster</span>
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={e.creativeUrl} alt={`${e.title} poster`} className="h-full w-full object-cover" />
+          )}
+        </a>
+      )}
+      <div className="min-w-0 flex-1">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-[15px] font-bold text-[#101828]">{e.title}</h3>
@@ -508,6 +650,14 @@ function EventCard({
           >
             {e.isActive ? "Published" : "Draft"}
           </span>
+          <span className="rounded-[10px] bg-[#F2F4F7] px-2 py-0.5 text-[11px] font-semibold text-[#344054]">
+            {e.audience === "all" ? "All partners" : "Selected partners"}
+          </span>
+          {e.onDashboard && (
+            <span className="rounded-[10px] bg-[#F4F3FF] px-2 py-0.5 text-[11px] font-semibold text-[#5925DC]">
+              On dashboard
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 gap-2">
           <button
@@ -569,6 +719,20 @@ function EventCard({
         <span>
           Max: <strong className="text-[#101828]">{e.maxAttendees ?? "—"}</strong>
         </span>
+        <span title="Partners sent the email + notification">
+          Shared with: <strong className="text-[#101828]">{e.sharedCount}</strong>
+          {!e.sharePartners && <span className="text-[#98A2B3]"> (sharing off)</span>}
+        </span>
+        {e.registrationUrl && (
+          <a
+            href={e.registrationUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-[#1570EF] hover:underline"
+          >
+            Registration link ↗
+          </a>
+        )}
         {e.partnersInvited > 0 && (
           <button
             type="button"
@@ -593,6 +757,7 @@ function EventCard({
           ))}
         </ul>
       )}
+      </div>
     </div>
   );
 }
@@ -681,10 +846,12 @@ export default function EventsPage() {
     onSuccess: () => void utils.events.list.invalidate(),
   });
 
-  const [tab, setTab] = useState<"upcoming" | "past">("upcoming");
+  const [tab, setTab] = useState<"upcoming" | "past" | "banners">("upcoming");
   const [search, setSearch] = useState("");
   const [type, setType] = useState("");
   const [modal, setModal] = useState<{ event: EventRow | null } | null>(null);
+  const [saved, setSaved] = useState("");
+  const bannerCount = api.events.bannerList.useQuery().data?.slides.length;
 
   const rows = data ?? [];
   const today = todayStr();
@@ -763,6 +930,7 @@ export default function EventsPage() {
           [
             { key: "upcoming", label: "Upcoming Events", count: upcoming.length },
             { key: "past", label: "Past Events", count: past.length },
+            { key: "banners", label: "Dashboard banners", count: bannerCount ?? 0 },
           ] as const
         ).map((t) => (
           <button
@@ -787,6 +955,22 @@ export default function EventsPage() {
         ))}
       </div>
 
+      {saved !== "" && (
+        <div
+          role="status"
+          className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-[#ABEFC6] bg-[#ECFDF3] px-4 py-2.5 text-[13px] text-[#067647]"
+        >
+          <span>{saved}</span>
+          <button type="button" onClick={() => setSaved("")} aria-label="Dismiss" className="font-semibold">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {tab === "banners" ? (
+        <BannersPanel events={rows} />
+      ) : (
+        <>
       {/* Filters */}
       <div className="mb-5 flex flex-wrap items-center gap-2.5">
         <input
@@ -851,8 +1035,12 @@ export default function EventsPage() {
           </div>
         </div>
       )}
+        </>
+      )}
 
-      {modal && <EventModal event={modal.event} onClose={() => setModal(null)} />}
+      {modal && (
+        <EventModal event={modal.event} onClose={() => setModal(null)} onSaved={setSaved} />
+      )}
     </>
   );
 }

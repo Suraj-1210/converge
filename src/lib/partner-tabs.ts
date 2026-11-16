@@ -137,6 +137,7 @@ const API_TABS: [path: string, tab: PartnerTab][] = [
   ["partnerCommission.invoiceHistory", "commission"],
   ["partnerCommission.adjustments", "commission"],
   ["events.forPartners", "events"],
+  ["events.partnerGet", "events"],
   ["events.rsvp", "events"],
   ["account.", "account"],
 ];

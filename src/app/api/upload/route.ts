@@ -18,14 +18,16 @@ export const maxDuration = 30;
 const MAX_BYTES = 10 * 1024 * 1024;
 
 // Visibility is decided server-side by folder — never trust the client.
-// Only non-sensitive public assets (university logos) are public-read.
-const PUBLIC_FOLDERS = new Set(["uni-logos"]);
+// Only non-sensitive public assets (university logos, event posters and
+// partner dashboard banners, which go out in emails) are public-read.
+const PUBLIC_FOLDERS = new Set(["uni-logos", "event-creatives", "partner-banners"]);
 
 // Folder → who may upload there. signup/* is intentionally open (pre-auth),
 // everything else requires the matching session. Unknown folders are rejected.
 type FolderAuth = "admin" | "finance" | "partner" | "public";
 function folderPolicy(folder: string): FolderAuth | null {
   if (folder === "uni-logos") return "admin";
+  if (folder === "event-creatives" || folder === "partner-banners") return "admin";
   if (folder === "avatars") return "partner";
   // Cancelled cheque / bank letter for payout bank details. Private.
   if (folder === "bank-proofs") return "partner";

@@ -718,6 +718,21 @@ export const EventRegistrationStatusLabel: Record<EventRegistrationStatus, strin
   [EventRegistrationStatus.ATTENDED]: "Attended",
 };
 
+// event.audience — who an event is shared with (email, bell, dashboard slide)
+// and who sees it in the portal.
+export const EventAudience = {
+  ALL: 1, // every approved partner user
+  SELECTED: 2, // the invite list (event_registration)
+} as const;
+export type EventAudience = (typeof EventAudience)[keyof typeof EventAudience];
+
+// partner_banner.kind — a dashboard slide.
+export const BannerKind = {
+  EVENT: 1, // linked to an event; click opens the event page
+  INFO: 2, // information; click opens a pop-up with the details
+} as const;
+export type BannerKind = (typeof BannerKind)[keyof typeof BannerKind];
+
 // ---------------------------------------------------------------------------
 // Finance / Commission
 // ---------------------------------------------------------------------------

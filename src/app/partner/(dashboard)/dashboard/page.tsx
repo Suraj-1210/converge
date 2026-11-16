@@ -8,7 +8,6 @@ import { timeAgo, formatDate, stageLabel } from "~/components/dashboard/format";
 import {
   KpiCard,
   DashboardCard,
-  NeedsDataBadge,
   EmptyState,
   Skeleton,
   SkeletonRows,
@@ -18,6 +17,7 @@ import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { RELATIONSHIP_MANAGER_LABEL } from "~/lib/constants/partner-relationship";
 import { TierBadge, tierProgressText } from "~/components/partner/loyalty-tiers";
 import { CommissionIcon, SearchIcon, StudentsIcon } from "~/components/dashboard/nav-icons";
+import { PartnerBannerCarousel } from "~/components/partner/event-banner";
 
 const num = (n: number) => n.toLocaleString("en-IN");
 
@@ -81,22 +81,20 @@ export default function PartnerDashboardPage() {
   // Their Collegepond counsellor or lead out of office today, with who to
   // contact instead.
   const away = api.outOfOffice.partnerNotices.useQuery(undefined, { retry: false }).data ?? [];
+  // The managed rotating banner (Events → Dashboard banners in admin).
+  const banner = api.events.partnerBanner.useQuery(undefined, { retry: false });
 
   return (
     <>
-      {/* Banners first, above the welcome. */}
-      {/* TODO(data): EduFin loan banner — needs a partner-offers/promos source. */}
-      <div className="mb-6 rounded-xl border border-[#E4E7EC] bg-gradient-to-r from-[#EFF8FF] to-[#F9FAFB] p-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-[#101828]">
-            Education loans made easy with EduFin Bank
-          </h2>
-          <NeedsDataBadge />
-        </div>
-        <p className="mt-1 text-[13px] text-[#475467]">
-          Help your students fund their studies — fast approvals for Collegepond partners.
-        </p>
-      </div>
+      {/* Banner first, above the welcome: managed slides (event → event
+          page, information → pop-up). Nothing shows when there are none. */}
+      {banner.data && banner.data.slides.length > 0 && (
+        <PartnerBannerCarousel
+          className="mb-6"
+          slides={banner.data.slides}
+          rotateSeconds={banner.data.rotateSeconds}
+        />
+      )}
 
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -325,7 +323,12 @@ export default function PartnerDashboardPage() {
                     <Icon name="calendar" size={16} />
                   </span>
                   <div className="min-w-0">
-                    <div className="truncate font-medium text-[#101828]">{e.title}</div>
+                    <Link
+                      href={`/partner/events/${e.id}`}
+                      className="block truncate font-medium text-[#101828] hover:text-[#1570EF] hover:underline"
+                    >
+                      {e.title}
+                    </Link>
                     <div className="text-xs text-[#98A2B3]">
                       {formatDate(e.date)}
                       {e.isVirtual ? " · Virtual" : e.location ? ` · ${e.location}` : ""}

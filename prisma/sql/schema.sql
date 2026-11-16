@@ -705,6 +705,15 @@ CREATE TABLE IF NOT EXISTS `event` (
   `max_attendees`  INT NULL DEFAULT NULL,
   `organizer`         VARCHAR(255) NULL DEFAULT NULL,
   `agenda`            TEXT NULL DEFAULT NULL,
+  -- Poster (JPG/PNG/PDF) and optional external registration form.
+  `creative_url`      VARCHAR(500) NULL DEFAULT NULL,
+  `registration_url`  VARCHAR(500) NULL DEFAULT NULL,
+  -- 1 = all approved partners, 2 = selected (the invite list).
+  `audience`          TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  -- Email + bell the audience on publish (event_share records who got it).
+  `share_partners`    TINYINT NOT NULL DEFAULT 1,
+  -- Calendar invite SEQUENCE, bumped on a date/time/place/link change.
+  `ics_sequence`      SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   `actual_attendance` INT NULL DEFAULT NULL,
   `is_active`      TINYINT NOT NULL DEFAULT 1,
   `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -760,6 +769,65 @@ CREATE TABLE IF NOT EXISTS `event_registration` (
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `fk_event_registration_user`
     FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- event_share  (FK -> event, user)
+-- One row per partner user sent an event's announcement (email + bell). The
+-- unique key makes "never twice" hold; share_batch marks the rows one save
+-- inserted, so only those are notified.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `event_share` (
+  `id`              INT NOT NULL AUTO_INCREMENT,
+  `event_id`        INT NOT NULL,
+  `user_id`         INT NOT NULL,
+  `share_batch`     CHAR(16) NOT NULL,
+  `notified_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `email_sent_at`   TIMESTAMP NULL DEFAULT NULL,
+  `updated_sent_at` TIMESTAMP NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uq_event_share_event_user` (`event_id` ASC, `user_id` ASC) VISIBLE,
+  INDEX `idx_event_share_batch` (`share_batch` ASC) VISIBLE,
+  INDEX `fk_event_share_user_idx` (`user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_event_share_event`
+    FOREIGN KEY (`event_id`) REFERENCES `event` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_event_share_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- partner_banner  (FK -> event)
+-- Rotating slides on the partner dashboard. kind 1 = EVENT (follows its
+-- event: published, not past, the event's audience), 2 = INFORMATION (every
+-- partner; opens a pop-up with `details`). Rotation interval: system_config
+-- 'partner_banner.rotate_seconds'.
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS `partner_banner` (
+  `id`            INT NOT NULL AUTO_INCREMENT,
+  `kind`          TINYINT UNSIGNED NOT NULL,
+  `event_id`      INT NULL DEFAULT NULL,
+  `title`         VARCHAR(150) NULL DEFAULT NULL,
+  `summary`       VARCHAR(300) NULL DEFAULT NULL,
+  `details`       TEXT NULL DEFAULT NULL,
+  `link_url`      VARCHAR(500) NULL DEFAULT NULL,
+  `link_label`    VARCHAR(60) NULL DEFAULT NULL,
+  `image_url`     VARCHAR(500) NULL DEFAULT NULL,
+  `display_from`  DATE NULL DEFAULT NULL,
+  `display_to`    DATE NULL DEFAULT NULL,
+  `sort_order`    INT NOT NULL DEFAULT 0,
+  `is_active`     TINYINT NOT NULL DEFAULT 1,
+  `created_by_cp_user_id` INT NULL DEFAULT NULL,
+  `created_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `fk_partner_banner_event_idx` (`event_id` ASC) VISIBLE,
+  CONSTRAINT `fk_partner_banner_event`
+    FOREIGN KEY (`event_id`) REFERENCES `event` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 

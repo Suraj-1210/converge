@@ -337,11 +337,62 @@ model event {
   max_attendees      Int?
   organizer          String?              @db.VarChar(255)
   agenda             String?              @db.Text
+  // Poster (JPG/PNG/PDF) and optional external registration form.
+  creative_url       String?              @db.VarChar(500)
+  registration_url   String?              @db.VarChar(500)
+  // EventAudience: 1 all approved partners, 2 selected (invite list).
+  audience           Int                  @default(1) @db.UnsignedTinyInt
+  // Email + bell the audience on publish; event_share records who got it.
+  share_partners     Int                  @default(1) @db.TinyInt
+  ics_sequence       Int                  @default(0) @db.UnsignedSmallInt
   actual_attendance  Int?
   is_active          Int                  @default(1) @db.TinyInt
   created_at         DateTime             @default(now()) @db.Timestamp(0)
   updated_at         DateTime             @default(now()) @db.Timestamp(0)
   event_registration event_registration[]
+  event_share        event_share[]
+  partner_banner     partner_banner[]
+}
+
+// One row per partner user sent an event's announcement (email + bell). The
+// unique key makes "never twice" hold; share_batch marks one save's inserts.
+model event_share {
+  id              Int       @id @default(autoincrement())
+  event_id        Int
+  user_id         Int
+  share_batch     String    @db.Char(16)
+  notified_at     DateTime  @default(now()) @db.Timestamp(0)
+  email_sent_at   DateTime? @db.Timestamp(0)
+  updated_sent_at DateTime? @db.Timestamp(0)
+  event           event     @relation(fields: [event_id], references: [id], onDelete: Cascade, map: "fk_event_share_event")
+  user            user      @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_event_share_user")
+
+  @@unique([event_id, user_id], map: "uq_event_share_event_user")
+  @@index([share_batch], map: "idx_event_share_batch")
+  @@index([user_id], map: "fk_event_share_user_idx")
+}
+
+// Rotating slides on the partner dashboard (BannerKind: 1 EVENT, 2 INFO).
+model partner_banner {
+  id                    Int       @id @default(autoincrement())
+  kind                  Int       @db.UnsignedTinyInt
+  event_id              Int?
+  title                 String?   @db.VarChar(150)
+  summary               String?   @db.VarChar(300)
+  details               String?   @db.Text
+  link_url              String?   @db.VarChar(500)
+  link_label            String?   @db.VarChar(60)
+  image_url             String?   @db.VarChar(500)
+  display_from          DateTime? @db.Date
+  display_to            DateTime? @db.Date
+  sort_order            Int       @default(0)
+  is_active             Int       @default(1) @db.TinyInt
+  created_by_cp_user_id Int?
+  created_at            DateTime  @default(now()) @db.Timestamp(0)
+  updated_at            DateTime  @default(now()) @db.Timestamp(0)
+  event                 event?    @relation(fields: [event_id], references: [id], onDelete: Cascade, map: "fk_partner_banner_event")
+
+  @@index([event_id], map: "fk_partner_banner_event_idx")
 }
 
 model event_registration {
@@ -721,6 +772,7 @@ model user {
   audit_log                                                               audit_log[]
   document                                                                document[]
   event_registration                                                      event_registration[]
+  event_share                                                             event_share[]
   notification                                                            notification[]
   notification_preference                                                 notification_preference[]
   session                                                                 session[]

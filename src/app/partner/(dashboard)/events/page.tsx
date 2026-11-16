@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { api, type RouterOutputs } from "~/trpc/react";
 import {
   EventType,
@@ -63,9 +64,29 @@ function EventCard({
     e.rsvpStatus === EventRegistrationStatus.ATTENDED;
   const declined = e.rsvpStatus === EventRegistrationStatus.DECLINED;
   return (
-    <div className="mb-3 rounded-xl border border-[#E4E7EC] bg-white p-5">
+    <div className="mb-3 flex gap-4 rounded-xl border border-[#E4E7EC] bg-white p-5">
+      {e.creativeUrl && (
+        <Link
+          href={`/partner/events/${e.id}`}
+          className="flex aspect-[1/1.414] w-20 shrink-0 self-start items-center justify-center overflow-hidden rounded-md border border-[#E4E7EC] bg-[#F9FAFB]"
+          aria-hidden
+          tabIndex={-1}
+        >
+          {e.creativeIsPdf ? (
+            <span className="text-[11px] font-semibold text-[#B42318]">PDF</span>
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={e.creativeUrl} alt="" className="h-full w-full object-cover" />
+          )}
+        </Link>
+      )}
+      <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-[15px] font-bold text-[#101828]">{e.title}</h3>
+        <h3 className="text-[15px] font-bold text-[#101828]">
+          <Link href={`/partner/events/${e.id}`} className="hover:text-[#1570EF] hover:underline">
+            {e.title}
+          </Link>
+        </h3>
         <span
           className={`rounded-[10px] px-2 py-0.5 text-[11px] font-semibold ${TYPE_BADGE[e.eventType] ?? TYPE_BADGE[EventType.OTHER]}`}
         >
@@ -137,6 +158,22 @@ function EventCard({
           >
             {declined ? "Declined" : "Decline"}
           </button>
+          <Link
+            href={`/partner/events/${e.id}`}
+            className="rounded-lg px-2 py-1.5 text-[12px] font-semibold text-[#1570EF] hover:underline"
+          >
+            Details
+          </Link>
+          {e.registrationUrl && (
+            <a
+              href={e.registrationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg border border-[#1570EF] px-3 py-1.5 text-[12px] font-semibold text-[#1570EF] hover:bg-[#EFF8FF]"
+            >
+              Register students ↗
+            </a>
+          )}
           {e.isVirtual && e.meetingUrl && accepted && (
             <a
               href={e.meetingUrl}
@@ -149,6 +186,7 @@ function EventCard({
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

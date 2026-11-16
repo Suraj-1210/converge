@@ -41,7 +41,9 @@ type Block =
   | { code: string }
   | { button: { label: string; url: string } }
   | { list: string[] }
-  | { quote: string; label?: string };
+  | { quote: string; label?: string }
+  // An inline picture (an event poster). src must be an absolute URL.
+  | { image: { src: string; alt: string; href?: string } };
 
 function renderHtml(heading: string, greeting: string, blocks: Block[], preheader: string): string {
   const body = blocks
@@ -57,6 +59,12 @@ function renderHtml(heading: string, greeting: string, blocks: Block[], preheade
         return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 24px;"><tr><td style="border-radius:8px;background:${BRAND};">
 <a href="${esc(b.button.url)}" style="display:inline-block;padding:12px 24px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">${esc(b.button.label)}</a>
 </td></tr></table>`;
+      }
+      if ("image" in b) {
+        const img = `<img src="${esc(b.image.src)}" width="496" alt="${esc(b.image.alt)}" border="0" style="display:block;width:100%;max-width:496px;height:auto;border:0;border-radius:8px;">`;
+        return `<div style="margin:0 0 20px;">${
+          b.image.href ? `<a href="${esc(b.image.href)}" style="text-decoration:none;">${img}</a>` : img
+        }</div>`;
       }
       if ("list" in b) {
         const items = b.list
@@ -98,6 +106,7 @@ function renderText(heading: string, greeting: string, blocks: Block[]): string 
     else if ("code" in b) lines.push(`Your verification code is: ${b.code}`, "");
     else if ("button" in b) lines.push(`${b.button.label}: ${b.button.url}`, "");
     else if ("list" in b) lines.push(...b.list.map((i) => `  - ${i}`), "");
+    else if ("image" in b) continue;
     else lines.push(...(b.label ? [b.label] : []), b.quote, "");
   }
   lines.push("Thanks,", "Team Collegepond");
@@ -988,5 +997,53 @@ export function adjustmentNoteEmail(
       { button: { label: "Go to Commission", url: portal(appUrl, "/partner/commission") } },
       { p: "If you have questions about this adjustment, simply reply to this email." },
     ],
+  );
+}
+
+// ─── Partner events ──────────────────────────────────────────────────────────
+
+// An event announced to a partner (src/server/event-sharing.ts): the poster
+// inline, the key details, the portal event page and, when the event has one,
+// the university's own registration form. "updated" is the same email after
+// the date, time, place or link changed. The .ics invite rides along.
+export function partnerEventEmail(
+  r: { name: string },
+  e: {
+    title: string;
+    lines: string[];
+    description: string | null;
+    posterUrl: string | null; // absolute; an image, not a PDF
+    posterPdfUrl: string | null; // absolute; a PDF poster gets a link instead
+    eventPath: string;
+    registrationUrl: string | null;
+    updated: boolean;
+  },
+  appUrl: string,
+): EmailMessage {
+  const page = portal(appUrl, e.eventPath);
+  const subject = e.updated ? `Event updated: ${e.title}` : `You're invited: ${e.title}`;
+  return build(
+    subject,
+    e.updated ? `Updated: ${e.title}` : e.title,
+    hello(r.name),
+    [
+      {
+        p: e.updated
+          ? "The details of this Collegepond event have changed. Your calendar invite is updated too."
+          : "Collegepond has a new event for you and your students.",
+      },
+      ...(e.posterUrl ? [{ image: { src: e.posterUrl, alt: e.title, href: page } }] : []),
+      { list: e.lines },
+      ...(e.description ? [{ p: e.description }] : []),
+      ...(e.posterPdfUrl ? [{ p: `Event poster (PDF): ${e.posterPdfUrl}` }] : []),
+      { button: { label: "View event and RSVP", url: page } },
+      ...(e.registrationUrl
+        ? [
+            { p: "Register your students on the university's form:" },
+            { button: { label: "Register students", url: e.registrationUrl } },
+          ]
+        : []),
+    ],
+    e.updated ? `New details for ${e.title}` : `${e.title}: ${e.lines[0] ?? ""}`,
   );
 }

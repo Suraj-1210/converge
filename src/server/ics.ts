@@ -1,6 +1,6 @@
 import "server-only";
 
-// iCalendar (RFC 5545) events for follow-up calendar invites. No OAuth
+// iCalendar (RFC 5545) events for follow-up and partner event calendar invites. No OAuth
 // calendar sync: the invite travels as an email attachment (Gmail / Outlook
 // add it to the counsellor's calendar) or a downloaded .ics file.
 //
@@ -18,6 +18,11 @@ export interface IcsEvent {
   uid: string;
   sequence: number;
   date: string; // YYYY-MM-DD
+  // A timed event (partner events): start/end instants. Without them the
+  // event is all-day on `date` (follow-ups).
+  start?: Date | null;
+  end?: Date | null;
+  location?: string | null;
   summary: string;
   description: string;
   url?: string;
@@ -71,7 +76,7 @@ function stamp(d: Date): string {
 export function buildIcs(method: IcsMethod, e: IcsEvent, now = new Date()): string {
   const lines = [
     "BEGIN:VCALENDAR",
-    "PRODID:-//Collegepond//Converge follow-ups//EN",
+    "PRODID:-//Collegepond//Converge//EN",
     "VERSION:2.0",
     "CALSCALE:GREGORIAN",
     `METHOD:${method}`,
@@ -79,10 +84,12 @@ export function buildIcs(method: IcsMethod, e: IcsEvent, now = new Date()): stri
     `UID:${e.uid}`,
     `SEQUENCE:${e.sequence}`,
     `DTSTAMP:${stamp(now)}`,
-    `DTSTART;VALUE=DATE:${compactDate(e.date)}`,
-    `DTEND;VALUE=DATE:${compactDate(nextDay(e.date))}`,
+    ...(e.start
+      ? [`DTSTART:${stamp(e.start)}`, `DTEND:${stamp(e.end ?? new Date(e.start.getTime() + 3_600_000))}`]
+      : [`DTSTART;VALUE=DATE:${compactDate(e.date)}`, `DTEND;VALUE=DATE:${compactDate(nextDay(e.date))}`]),
     `SUMMARY:${text(e.summary)}`,
     `DESCRIPTION:${text(e.description)}`,
+    ...(e.location ? [`LOCATION:${text(e.location)}`] : []),
     ...(e.url ? [`URL:${e.url}`] : []),
     `ORGANIZER;CN=${param(e.organizer.name)}:mailto:${e.organizer.email}`,
     ...(e.attendee && method !== "PUBLISH"
@@ -91,7 +98,8 @@ export function buildIcs(method: IcsMethod, e: IcsEvent, now = new Date()): stri
         ]
       : []),
     `STATUS:${method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`,
-    "TRANSP:TRANSPARENT",
+    // All-day follow-ups don't block time; a timed event does.
+    e.start ? "TRANSP:OPAQUE" : "TRANSP:TRANSPARENT",
     "END:VEVENT",
     "END:VCALENDAR",
   ];

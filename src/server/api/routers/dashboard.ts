@@ -17,6 +17,7 @@ import {
 } from "~/server/db/enums";
 import { currentStage, isClosedStage, stageAtLeast, stageIndex } from "~/lib/application-stages";
 import { overallStudentStatus } from "~/lib/student-pipeline";
+import { eventVisibleTo } from "~/server/event-sharing";
 import {
   isCounsellingRole,
   isScopedStaffRole,
@@ -577,8 +578,9 @@ export const dashboardRouter = createTRPCRouter({
           course: { select: { university: { select: { name: true } } } },
         },
       }),
+      // Events this partner may see (for everyone, or invited).
       db.event.findMany({
-        where: { is_active: 1, event_date: { gte: todayStart } },
+        where: { ...eventVisibleTo(ctx.cpPartner.id), event_date: { gte: todayStart } },
         orderBy: { event_date: "asc" },
         take: 4,
         select: {
