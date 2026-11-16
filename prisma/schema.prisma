@@ -545,6 +545,7 @@ model organization {
   bdm_task              bdm_task[]
   adjustment adjustment[]
   payout_hold payout_hold[]
+  partner_manual_notice_target partner_manual_notice_target[]
 }
 
 model session {
@@ -736,6 +737,7 @@ model user {
   collegepond_user_user_lead_counsellor_idTocollegepond_user              collegepond_user?         @relation("user_lead_counsellor_idTocollegepond_user", fields: [lead_counsellor_id], references: [id], map: "fk_user_lead_counsellor")
   organization                                                            organization?             @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_user_org")
   partner_tier_override                                                   partner_tier_override?
+  partner_manual_notice_target                                            partner_manual_notice_target[]
 
   adjustment adjustment[] @relation("adjustment_payee")
   payout_hold payout_hold[] @relation("payout_hold_payee")
@@ -1957,4 +1959,58 @@ model commission_bonus {
 
   @@unique([commission_id, kind], map: "uq_commission_bonus_kind")
   @@index([scheme_id], map: "fk_commission_bonus_scheme_idx")
+}
+
+// Partner Notices master (Settings -> Partner Notices). Per-trigger overrides
+// keyed by the code's trigger code; no row = the code's defaults
+// (src/server/partner-notices.ts). severity 1 info / 2 success / 3 warning /
+// 4 action needed; audience 1 owner+independent / 2 agency counsellors / 3 both.
+model partner_notice_trigger {
+  code           String   @id @db.VarChar(50)
+  is_enabled     Int      @default(1) @db.TinyInt
+  title_template String   @db.VarChar(200)
+  body_template  String?  @db.VarChar(1000)
+  severity       Int      @db.UnsignedTinyInt
+  sort_order     Int      @default(0)
+  window_days    Int?     @db.UnsignedSmallInt
+  audience       Int      @db.UnsignedTinyInt
+  created_at     DateTime @default(now()) @db.Timestamp(0)
+  updated_at     DateTime @default(now()) @updatedAt @db.Timestamp(0)
+}
+
+// Free-text announcements shown in partners' Important Notices between
+// starts_on and ends_on (IST days, inclusive). No targets = every partner in
+// the audience.
+model partner_manual_notice {
+  id         Int                            @id @default(autoincrement())
+  title      String                         @db.VarChar(200)
+  body       String?                        @db.VarChar(2000)
+  link_url   String?                        @db.VarChar(500)
+  severity   Int                            @default(1) @db.UnsignedTinyInt
+  audience   Int                            @default(3) @db.UnsignedTinyInt
+  starts_on  DateTime                       @db.Date
+  ends_on    DateTime?                      @db.Date
+  is_active  Int                            @default(1) @db.TinyInt
+  sort_order Int                            @default(0)
+  created_at DateTime                       @default(now()) @db.Timestamp(0)
+  updated_at DateTime                       @default(now()) @updatedAt @db.Timestamp(0)
+  target     partner_manual_notice_target[]
+
+  @@index([is_active, starts_on], map: "idx_partner_manual_notice_live")
+}
+
+// One partner an announcement is limited to: an agency (org_id) XOR an
+// independent counsellor (user_id); the router enforces exactly one.
+model partner_manual_notice_target {
+  id           Int                   @id @default(autoincrement())
+  notice_id    Int
+  org_id       Int?
+  user_id      Int?
+  notice       partner_manual_notice @relation(fields: [notice_id], references: [id], onDelete: Cascade, map: "fk_partner_manual_notice_target_notice")
+  organization organization?         @relation(fields: [org_id], references: [id], onDelete: Cascade, map: "fk_partner_manual_notice_target_org")
+  user         user?                 @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_partner_manual_notice_target_user")
+
+  @@index([notice_id], map: "fk_partner_manual_notice_target_notice_idx")
+  @@index([org_id], map: "fk_partner_manual_notice_target_org_idx")
+  @@index([user_id], map: "fk_partner_manual_notice_target_user_idx")
 }

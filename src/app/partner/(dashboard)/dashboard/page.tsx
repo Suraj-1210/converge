@@ -41,15 +41,18 @@ export default function PartnerDashboardPage() {
   const me = api.auth.me.useQuery(undefined, { retry: false });
   const recordVisit = api.auth.recordDashboardVisit.useMutation();
   const { data: stats, isLoading } = api.dashboard.partnerStats.useQuery();
-  // Tier and Important Notices are the partner owner's (agency owner or
-  // independent). The server refuses agency counsellors; don't even ask.
+  // The tier is the partner owner's (agency owner or independent). The server
+  // refuses agency counsellors; don't even ask. Important Notices are for
+  // everyone: the server picks what each partner may see (Settings -> Partner
+  // Notices; never money or account notices for an agency counsellor).
   // Decided after mount, so the server render and the first client render
   // match whatever auth.me's cache holds.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const isOwner = mounted && (me.data?.kind === "agency" || me.data?.kind === "independent");
   const tierQ = api.dashboard.partnerTier.useQuery(undefined, { enabled: isOwner, retry: false });
-  const notices = api.dashboard.partnerNotices.useQuery(undefined, { enabled: isOwner, retry: false });
+  const showNotices = mounted && !!me.data;
+  const notices = api.dashboard.partnerNotices.useQuery(undefined, { enabled: showNotices, retry: false });
   const tier = tierQ.data ?? null;
 
   // Bounce away if state has shifted (e.g. unsigned MOU, or status no longer
@@ -138,13 +141,13 @@ export default function PartnerDashboardPage() {
         ))}
       </div>
 
-      {/* Important Notices — owner only, live (MOU, commission, payouts). */}
-      {isOwner && (
+      {/* Important Notices — live, from the Partner Notices master. */}
+      {showNotices && (
         <DashboardCard title="Important Notices" className="mb-6">
           {notices.isLoading ? (
             <SkeletonRows rows={2} />
           ) : notices.data && notices.data.length > 0 ? (
-            <ul className="divide-y divide-[#F2F4F7]">
+            <ul className="max-h-96 divide-y divide-[#F2F4F7] overflow-y-auto">
               {notices.data.map((n) => (
                 <li key={n.id} className="py-2.5 text-[13px] first:pt-0 last:pb-0">
                   <NoticeRow notice={n} />
@@ -341,7 +344,8 @@ export default function PartnerDashboardPage() {
           <div className="grid grid-cols-2 gap-2 text-[13px]">
             {/* Commission is the agency's (owner-only); counsellors don't get it. */}
             {QUICK_LINKS.filter(
-              (l) => l.href !== "/partner/commission" || me.data?.kind !== "counsellor",
+              // Same rule as Quick Actions, decided after mount (hydration).
+              (l) => l.href !== "/partner/commission" || (mounted && !!me.data && me.data.kind !== "counsellor"),
             ).map((l) => (
               <Link
                 key={l.href}
@@ -395,17 +399,24 @@ const NOTICE_DOT: Record<"green" | "amber" | "red" | "blue", string> = {
 function NoticeRow({
   notice: n,
 }: {
-  notice: { tone: keyof typeof NOTICE_DOT; title: string; body?: string; href?: string };
+  notice: { tone: keyof typeof NOTICE_DOT; title: string; body?: string; href?: string; external?: boolean };
 }) {
   const content = (
     <div className="flex gap-2.5">
       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${NOTICE_DOT[n.tone]}`} />
       <div className="min-w-0">
         <div className="font-medium text-[#101828]">{n.title}</div>
-        {n.body && <div className="text-xs text-[#667085]">{n.body}</div>}
+        {n.body && <div className="text-xs whitespace-pre-line text-[#667085]">{n.body}</div>}
       </div>
     </div>
   );
+  if (n.href && n.external) {
+    return (
+      <a href={n.href} target="_blank" rel="noopener noreferrer" className="block rounded-md hover:bg-[#F9FAFB]">
+        {content}
+      </a>
+    );
+  }
   return n.href ? (
     <Link href={n.href} className="block rounded-md hover:bg-[#F9FAFB]">
       {content}

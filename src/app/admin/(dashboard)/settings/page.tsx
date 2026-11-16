@@ -18,6 +18,7 @@ import { TatSettingsPanel } from "./tat-settings-panel";
 import { TuitionBracketsPanel } from "./tuition-brackets-panel";
 import { TrancheConditionsPanel } from "./tranche-conditions-panel";
 import { AdjustmentReasonsPanel } from "./adjustment-reasons-panel";
+import { PartnerNoticesPanel } from "./partner-notices-panel";
 
 const SECTIONS = [
   { id: "general", icon: "bolt", label: "General Settings" },
@@ -32,11 +33,12 @@ const SECTIONS = [
   { id: "brackets", icon: "revenue", label: "Uni Assist Brackets" },
   { id: "conditions", icon: "revenue", label: "Tranche Conditions" },
   { id: "adjReasons", icon: "revenue", label: "Adjustment Reasons" },
+  { id: "notices", icon: "approvals", label: "Partner Notices" },
   { id: "system", icon: "globe", label: "System Info" },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"];
 // Master data only a Super Admin may see or manage.
-const SUPER_ADMIN_SECTIONS: readonly SectionId[] = ["tabs", "departments", "teams", "tiers", "tat", "brackets", "conditions", "adjReasons"];
+const SUPER_ADMIN_SECTIONS: readonly SectionId[] = ["tabs", "departments", "teams", "tiers", "tat", "brackets", "conditions", "adjReasons", "notices"];
 
 const CARD = "rounded-xl border border-[#E4E7EC] bg-white";
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -484,6 +486,16 @@ export default function SettingsPage() {
             ) : (
               <div className={`${CARD} p-5`}>
                 <AdminNotice show text={meQ.isLoading ? "Loading…" : "Only Super Admins can view or manage adjustment reasons"} />
+              </div>
+            )
+          )}
+
+          {section === "notices" && (
+            isSuperAdmin ? (
+              <PartnerNoticesPanel toast={toast} />
+            ) : (
+              <div className={`${CARD} p-5`}>
+                <AdminNotice show text={meQ.isLoading ? "Loading…" : "Only Super Admins can view or manage partner notices"} />
               </div>
             )
           )}

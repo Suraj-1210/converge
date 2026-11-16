@@ -31,6 +31,7 @@ import {
   partnerTierStatuses,
   serializeStatus,
 } from "~/server/partner-tiers";
+import { noticeViewerFor, partnerNoticesFor } from "~/server/partner-notices";
 
 // ---------------------------------------------------------------------------
 // Dashboard aggregations.
@@ -630,10 +631,9 @@ export const dashboardRouter = createTRPCRouter({
   }),
 
   // ===== Partner owner only =====
-  // The tier and the Important Notices (MOU, commission and payout-account
-  // updates) belong to the partner owner: the agency owner or the independent.
-  // Agency counsellors get FORBIDDEN from payeeProcedure. The client hides
-  // these for them too, but this is the enforcement.
+  // The tier belongs to the partner owner: the agency owner or the
+  // independent. Agency counsellors get FORBIDDEN from payeeProcedure. The
+  // client hides it for them too, but this is the enforcement.
 
   // The partner's loyalty tier from the Partner Tiers master: automatic from
   // this FY's confirmed students, or a higher tier a Super Admin set.
@@ -647,101 +647,26 @@ export const dashboardRouter = createTRPCRouter({
     return serializeStatus(status);
   }),
 
-  partnerNotices: payeeProcedure.query(async ({ ctx }) => {
-    const me = await ctx.db.user.findUnique({
-      where: { id: ctx.payee.id },
-      select: { mou_signed_at: true },
-    });
-    if (!me) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
-
-    const notices: OwnerNotice[] = [];
-    notices.push(
-      me.mou_signed_at
-        ? {
-            id: "mou",
-            tone: "green",
-            title: "Your MOU is signed",
-            body: `Signed on ${formatNoticeDate(me.mou_signed_at)}. View or download it under My Account → Documents.`,
-            href: "/partner/account?tab=documents",
-          }
-        : {
-            id: "mou",
-            tone: "amber",
-            title: "Your MOU is waiting for your signature",
-            href: "/mou-signing",
-          },
-    );
-
-    // Commission and payout account belong to an organization. An independent
-    // without one has neither yet, so there's nothing to report.
-    if (ctx.payee.orgId != null) {
-      // The Commission page's own procedures, so the numbers always match it.
+  // Important Notices (Settings -> Partner Notices). Every partner gets the
+  // card: owners and independents see everything their master settings allow;
+  // an agency counsellor sees only student, event and manual notices, never
+  // money or account ones (enforced in ~/server/partner-notices, whatever the
+  // master says). The commission numbers come from the Commission page's own
+  // procedures (payeeProcedure), so they always match it, and are only loaded
+  // for a payee with a commission or bank trigger switched on.
+  partnerNotices: protectedPartnerProcedure.query(async ({ ctx }) => {
+    const viewer = await noticeViewerFor(ctx.cpPartner.id);
+    if (!viewer) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
+    return partnerNoticesFor(viewer, async () => {
       const commission = createCallerFactory(partnerCommissionRouter)(ctx);
-      const [claims, bank] = await Promise.all([
-        commission.listClaimable(),
-        commission.bankAccount(),
-      ]);
-      const ready = claims.filter((c) => c.status === "claimable");
-      if (ready.length > 0) {
-        const total = ready.reduce((s, c) => s + c.claimableInr, 0);
-        notices.push({
-          id: "commission-claimable",
-          tone: "green",
-          title: `${ready.length} commission${ready.length === 1 ? " is" : "s are"} ready to claim`,
-          body: `${formatInr(total)} available. Raise an invoice from the Commission page.`,
-          href: "/partner/commission",
-        });
+      try {
+        const [claims, bank] = await Promise.all([commission.listClaimable(), commission.bankAccount()]);
+        return { claims, bank };
+      } catch (e) {
+        // The Commission tab is switched off for this partner: no money notices.
+        if (e instanceof TRPCError && e.code === "FORBIDDEN") return null;
+        throw e;
       }
-      const monthAgo = Date.now() - 30 * 86_400_000;
-      const paid = claims.filter((c) => c.paidAt && c.paidAt.getTime() >= monthAgo);
-      if (paid.length > 0) {
-        notices.push({
-          id: "commission-paid",
-          tone: "blue",
-          title: `${paid.length} commission${paid.length === 1 ? " was" : "s were"} paid out in the last 30 days`,
-          body: "See the payment dates on the Commission page.",
-          href: "/partner/commission",
-        });
-      }
-      if (!bank.hasAccount) {
-        notices.push({
-          id: "bank",
-          tone: "amber",
-          title: "Add your bank details to get paid",
-          body: "Commission can only be paid out to a verified bank account.",
-          href: "/partner/account?tab=bank",
-        });
-      } else if (bank.status === "rejected") {
-        notices.push({
-          id: "bank",
-          tone: "red",
-          title: "Your bank details need attention",
-          body: bank.rejectionReason ?? "Please re-enter them with a valid proof.",
-          href: "/partner/account?tab=bank",
-        });
-      } else if (bank.status === "pending") {
-        notices.push({
-          id: "bank",
-          tone: "blue",
-          title: "Your bank details are being verified",
-          href: "/partner/account?tab=bank",
-        });
-      }
-    }
-
-    return notices;
+    });
   }),
 });
-
-type OwnerNotice = {
-  id: string;
-  tone: "green" | "amber" | "red" | "blue";
-  title: string;
-  body?: string;
-  href?: string;
-};
-
-const formatNoticeDate = (d: Date) =>
-  d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
-const formatInr = (n: number) =>
-  `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
