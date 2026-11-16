@@ -4,9 +4,9 @@ import { db } from "~/server/db";
 import { resolveStorageUrl } from "~/server/storage";
 import { partnerTierStatuses, serializeStatus } from "~/server/partner-tiers";
 import { type TierStatusView } from "~/lib/partner-tiers";
+import { orgKindOf, orgTypeCode, type OrgKind } from "~/lib/partner-display";
 import {
   DocumentStatus,
-  OrganizationType,
   UserStatus,
   UserType,
   counsellorRangeToCode,
@@ -22,6 +22,9 @@ export interface Application {
   applicationId: string;
   email: string;
   role: "agency" | "independent";
+  // For an organization (role "agency"): an agency or an institution (school /
+  // college). Absent for an independent.
+  orgKind?: OrgKind;
   firstName: string;
   lastName: string;
   phone: string;
@@ -37,6 +40,9 @@ export interface Application {
   // Agency only. Undefined for organizations that predate the question being
   // asked — that's distinct from an explicit "no".
   gstRegistered?: boolean;
+  // GSTIN given at sign-up (mandatory for an Indian organization since
+  // 16 Nov 2026), normalised and checked by the signup router.
+  gstNumber?: string;
   documents?: Record<string, string>;
   status: ApplicationStatus;
   mouSignedAt?: string | null;
@@ -127,7 +133,10 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
   const email = input.email.toLowerCase();
   // An agency owner without an organization would be an orphan owner.
   if (input.role === "agency" && !input.companyName?.trim()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Company name is required for an agency." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: input.orgKind === "institution" ? "Institution name is required." : "Company name is required for an agency.",
+    });
   }
 
   return db.$transaction(async (tx) => {
@@ -153,7 +162,7 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
       const newOrg = await tx.organization.create({
         data: {
           name: input.companyName,
-          type: OrganizationType.AGENCY,
+          type: orgTypeCode(input.orgKind ?? "agency"),
           url_identifier: urlIdentifier,
           website: input.companyWebsite ?? null,
           address: input.companyAddress ?? null,
@@ -163,6 +172,7 @@ export async function saveApplication(input: ApplicationInput): Promise<Applicat
           num_counsellors: counsellorRangeToCode(input.numCounselors),
           annual_student_volume: volumeRangeToCode(input.annualVolume),
           gst_registered: boolToTinyint(input.gstRegistered) ?? null,
+          gst_number: input.gstNumber ?? null,
           pan: input.pan ?? null,
           is_verified: 0,
         },
@@ -282,6 +292,7 @@ export async function getApplicationByEmail(
     applicationId: user.tracking_id ?? "",
     email: user.email,
     role,
+    orgKind: user.organization ? orgKindOf(user.organization.type) : undefined,
     firstName: user.first_name,
     lastName: user.last_name,
     phone,
@@ -296,6 +307,7 @@ export async function getApplicationByEmail(
       user.organization?.gst_registered == null
         ? undefined
         : user.organization.gst_registered === 1,
+    gstNumber: user.organization?.gst_number ?? undefined,
     documents: Object.keys(docs).length ? docs : undefined,
     status: statusLabelFromCode(user.status),
     mouSignedAt: user.mou_signed_at?.toISOString() ?? null,
@@ -353,6 +365,8 @@ export interface PartnerListing {
   applicationId: string;
   email: string;
   role: "agency" | "independent";
+  // Agency or institution for an organization; null for an independent.
+  orgKind: OrgKind | null;
   firstName: string;
   lastName: string;
   phone: string;
@@ -476,6 +490,7 @@ export async function listApplications(
       applicationId: user.tracking_id ?? "",
       email: user.email,
       role,
+      orgKind: role === "agency" && user.organization ? orgKindOf(user.organization.type) : null,
       firstName: user.first_name,
       lastName: user.last_name,
       phone,
@@ -652,16 +667,18 @@ export async function setPartnerBdm(
 }
 
 // The partner's PAN holder rule: an agency owner enters the company / firm /
-// proprietor PAN, an independent counsellor their personal one.
+// proprietor PAN, an institution its own (trust, society…), an independent
+// counsellor their personal one.
 export async function partnerPanHolder(
   email: string,
-): Promise<"agency" | "individual" | null> {
+): Promise<"agency" | "institution" | "individual" | null> {
   const user = await db.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { type: true },
+    select: { type: true, organization: { select: { type: true } } },
   });
   if (!user) return null;
-  return user.type === UserType.AGENCY_OWNER ? "agency" : "individual";
+  if (user.type !== UserType.AGENCY_OWNER) return "individual";
+  return orgKindOf(user.organization?.type) === "institution" ? "institution" : "agency";
 }
 
 // Update a partner's PAN: on the linked organization for an agency, on the
@@ -696,6 +713,7 @@ function toApplication(
     applicationId: user.tracking_id ?? "",
     email: user.email,
     role: input.role,
+    orgKind: input.role === "agency" ? (input.orgKind ?? "agency") : undefined,
     firstName: input.firstName,
     lastName: input.lastName,
     phone: input.phone,
@@ -709,6 +727,7 @@ function toApplication(
     numCounselors: input.numCounselors,
     annualVolume: input.annualVolume,
     gstRegistered: input.gstRegistered,
+    gstNumber: input.gstNumber,
     documents: input.documents,
     status: statusLabelFromCode(user.status),
     submittedAt: user.created_at.toISOString(),

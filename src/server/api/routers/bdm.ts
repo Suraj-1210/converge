@@ -4,6 +4,7 @@ import { bdmPerformanceProcedure, createTRPCRouter, protectedAdminProcedure } fr
 import { db } from "~/server/db";
 import { currentTierFy, ladderFor, partnerTierStatuses, type PartnerRef } from "~/server/partner-tiers";
 import { AdminRole, UserType } from "~/server/db/enums";
+import { ORG_TYPE_LABEL } from "~/lib/partner-display";
 
 // application.status (UniApplicationStatus): 0 begin · 1 docs · 2 submitted · 3 review ·
 // 4 conditional offer · 5 unconditional offer · 6 deposit · 9 visa filed · 7 visa · 8 enrolled ·
@@ -88,6 +89,7 @@ async function independentPartnerRows() {
       key: `u:${u.id}`,
       orgId: null as number | null,
       name: `${u.first_name} ${u.last_name}`.trim(),
+      partnerType: "Independent Counsellor",
       city: u.city || "—",
       country: u.country || null,
       bdmId: u.bdm_id,
@@ -152,7 +154,7 @@ export const bdmRouter = createTRPCRouter({
       // The leaderboard ranks every BDM by revenue, so only Super Admin gets it.
       const showLeaderboard = ctx.cpUser.role === AdminRole.SUPER_ADMIN;
 
-      const orgs = await db.organization.findMany({ select: { id: true, name: true, city: true, country: true } });
+      const orgs = await db.organization.findMany({ select: { id: true, name: true, type: true, city: true, country: true } });
       const orgIds = orgs.map((o) => o.id);
 
       const [users, studentG, appG, depoG, commG, pipeG, lastG] = await Promise.all([
@@ -197,6 +199,8 @@ export const bdmRouter = createTRPCRouter({
           key: `o:${o.id}`,
           orgId: o.id as number | null,
           name: o.name,
+          // "Agency" / "Institution" / "Independent Counsellor".
+          partnerType: ORG_TYPE_LABEL[o.type] ?? "Agency",
           city: o.city ?? "—",
           country: o.country ?? null,
           bdmId: rep?.bdm_id ?? null,

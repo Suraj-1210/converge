@@ -5,7 +5,7 @@ import {
   createTRPCRouter,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
-import { DocumentStatus, PartnerKindLabel, partnerKindOf } from "~/server/db/enums";
+import { DocumentStatus, partnerKindOf } from "~/server/db/enums";
 import { resolveStorageUrl } from "~/server/storage";
 import {
   DEFAULT_NOTIFICATION_PREF,
@@ -14,7 +14,8 @@ import {
 } from "~/lib/constants/notification-prefs";
 import { isAgencyOwner } from "~/server/partner-access";
 import { partnerDocLabel } from "~/lib/constants/partner-labels";
-import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { PARTNER_DOC_SLOTS, partnerDocCategory } from "~/lib/constants/partner-documents";
+import { orgKindOf, partnerKindLabel } from "~/lib/partner-display";
 import { gstinError, gstinWarnings, normalizeGstin } from "~/lib/utils/gstin";
 import { env } from "~/env";
 import { adminGstChangedEmail, appUrl, sendEmail } from "~/server/email";
@@ -62,8 +63,12 @@ export const accountRouter = createTRPCRouter({
     }
 
     const partnerType = partnerKindOf(user.type);
-    // Role-specific document wording exists for owners and independents only.
-    const docRole = partnerType === "counsellor" ? undefined : partnerType;
+    // Role-specific document wording exists for owners and independents only
+    // (an institution's owner gets the institution wording).
+    const docRole =
+      partnerType === "counsellor"
+        ? undefined
+        : partnerDocCategory(partnerType, orgKindOf(user.organization?.type));
 
     const phone = splitPhone(user.phone);
     // Only the agency owner edits the GST number (and sees the company PAN it
@@ -132,7 +137,7 @@ export const accountRouter = createTRPCRouter({
         avatarUrl: resolveStorageUrl(user.avatar_url),
         isEmailVerified: user.is_email_verified === 1,
         isPhoneVerified: user.is_phone_verified === 1,
-        roleLabel: PartnerKindLabel[partnerType],
+        roleLabel: partnerKindLabel(partnerType, user.organization?.type),
         joinedAt: user.created_at.toISOString(),
       },
       business: user.organization

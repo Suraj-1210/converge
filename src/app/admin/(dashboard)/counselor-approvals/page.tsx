@@ -67,7 +67,10 @@ function PartnerCell({
   return (
     <td className="px-4 py-3">
       <div className="text-[#344054]">{c.partner}</div>
-      <div className="text-[11px] text-[#98A2B3]">{partnerCount(c, countByOrg)}</div>
+      <div className="text-[11px] text-[#98A2B3]">
+        {c.partnerType ? `${c.partnerType} · ` : ""}
+        {partnerCount(c, countByOrg)}
+      </div>
     </td>
   );
 }

@@ -24,6 +24,7 @@ import { approvePendingPartnerDocuments } from "~/server/applications/store";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import { findPartnerByContact, splitStoredPhone } from "~/server/partner-contact";
 import { countryCodes } from "~/lib/constants/location-data";
+import { ORG_TYPE_LABEL, orgKindOf } from "~/lib/partner-display";
 import { getExpectedPhoneDigits, isValidEmail, isValidPhone } from "~/lib/utils/validation";
 import { env } from "~/env";
 import {
@@ -83,7 +84,7 @@ async function decideCounsellor(
       first_name: true,
       last_name: true,
       deleted_at: true,
-      organization: { select: { name: true } },
+      organization: { select: { name: true, type: true } },
     },
   });
   // Removed by their agency: restore first (restoreRemoved), don't approve.
@@ -144,7 +145,12 @@ async function decideCounsellor(
     const counsellorName = `${user.first_name} ${user.last_name}`.trim();
     await emailPartners(
       await orgOwnerRecipients(user.org_id),
-      (r) => counsellorDecisionOwnerEmail(r, { counsellorName, approved, reason }, appUrl()),
+      (r) =>
+        counsellorDecisionOwnerEmail(
+          r,
+          { counsellorName, approved, reason, orgKind: orgKindOf(user.organization?.type) },
+          appUrl(),
+        ),
       approved ? "counsellor-approved-owner" : "counsellor-declined-owner",
     );
   }
@@ -336,7 +342,7 @@ export const counsellorsRouter = createTRPCRouter({
         org_id: true,
         approved_by_collegepond_user_id: true,
         deleted_at: true,
-        organization: { select: { name: true, num_counsellors: true } },
+        organization: { select: { name: true, type: true, num_counsellors: true } },
       },
     });
 
@@ -365,6 +371,8 @@ export const counsellorsRouter = createTRPCRouter({
       status: r.status,
       orgId: r.org_id,
       partner: r.organization?.name ?? "—",
+      // "Agency" / "Institution", shown beside the partner's name.
+      partnerType: r.organization ? (ORG_TYPE_LABEL[r.organization.type] ?? "Agency") : null,
       partnerCap:
         r.organization?.num_counsellors != null
           ? (CAP_UPPER[r.organization.num_counsellors] ?? null)
@@ -586,7 +594,7 @@ export const counsellorsRouter = createTRPCRouter({
         select: {
           first_name: true,
           last_name: true,
-          organization: { select: { name: true, city: true, state: true, country: true } },
+          organization: { select: { name: true, type: true, city: true, state: true, country: true } },
         },
       });
       const org = me.organization;
@@ -637,7 +645,10 @@ export const counsellorsRouter = createTRPCRouter({
       if (env.ADMIN_EMAIL) {
         await trySend(
           env.ADMIN_EMAIL,
-          adminCounsellorPendingEmail({ name: counsellorName, email: input.email, phone, agency }, appUrl()),
+          adminCounsellorPendingEmail(
+            { name: counsellorName, email: input.email, phone, agency, orgKind: orgKindOf(org?.type) },
+            appUrl(),
+          ),
           "counsellor-pending-admin",
         );
       }

@@ -13,20 +13,31 @@ import { notifyAdminOfSignup } from "~/server/notifications";
 import { checkLocation } from "~/server/geo";
 import { findPartnerByContact } from "~/server/partner-contact";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
+import { gstinError, normalizeGstin } from "~/lib/utils/gstin";
 import { signSignupProof, verifySignupProof } from "~/server/auth/jwt";
-import { PARTNER_DOC_SLOTS, type PartnerRole } from "~/lib/constants/partner-documents";
+import {
+  PARTNER_DOC_SLOTS,
+  partnerDocCategory,
+  type PartnerDocCategory,
+} from "~/lib/constants/partner-documents";
 
 // Keeps only the documents sign-up collects. Banking proof (the cancelled
 // cheque) belongs to Financial Details after approval, so one sent by a page
 // loaded before that change is dropped rather than failing the sign-up.
 function signupDocuments(
-  role: PartnerRole,
+  category: PartnerDocCategory,
   documents: Record<string, string> | undefined,
 ): Record<string, string> | undefined {
   if (!documents) return documents;
-  const allowed = new Set(PARTNER_DOC_SLOTS[role].filter((s) => s.atSignup).map((s) => s.key));
+  const allowed = new Set(PARTNER_DOC_SLOTS[category].filter((s) => s.atSignup).map((s) => s.key));
   return Object.fromEntries(Object.entries(documents).filter(([key]) => allowed.has(key)));
 }
+
+// GST (16 Nov 2026): an Indian agency or institution must give its GSTIN and
+// GST certificate, and is recorded as GST-registered. GST is an Indian tax, so
+// elsewhere it isn't asked at all.
+const isIndianOrg = (v: { role: string; country?: string }) =>
+  v.role === "agency" && v.country?.toUpperCase() === "IN";
 
 // One account per email and per phone number. A partner who signed up before
 // (pending, rejected, deactivated…), or a counsellor an agency already added,
@@ -147,7 +158,11 @@ export const signupRouter = createTRPCRouter({
   submitApplication: publicProcedure
     .input(
       z.object({
+        // "agency" is any organization: an agency or an institution (orgKind).
         role: z.enum(["agency", "independent"]),
+        // Sign-up category for an organization. Missing = agency (a page
+        // loaded before the category dropdown).
+        orgKind: z.enum(["agency", "institution"]).optional(),
         firstName: z.string().min(1),
         lastName: z.string().min(1),
         email: z.string().email(),
@@ -163,6 +178,8 @@ export const signupRouter = createTRPCRouter({
         numCounselors: z.string().optional(),
         annualVolume: z.string().optional(),
         gstRegistered: z.boolean().optional(),
+        // GSTIN; required for an Indian organization (isIndianOrg).
+        gstNumber: z.string().max(30).optional(),
         // Map of document key -> stored file URL (e.g. "/uploads/...")
         documents: z.record(z.string(), z.string()).optional(),
         // Company PAN for an agency, personal PAN for an independent. Required
@@ -174,12 +191,12 @@ export const signupRouter = createTRPCRouter({
         // Proofs returned by verifyEmailOtp / verifyPhoneOtp; see assertVerified.
         verification: z.object({ email: z.string().min(1), phone: z.string().min(1) }),
       })
-      // Required sign-up documents (incl. the GST certificate for a
-      // GST-registered agency). The client enforces these too, but the rule
-      // lives here as well so the API can't be bypassed.
+      // Required sign-up documents (incl. the GST certificate for an Indian
+      // or otherwise GST-registered organization). The client enforces these
+      // too, but the rule lives here as well so the API can't be bypassed.
       .superRefine((v, ctx) => {
-        const gstRegistered = v.gstRegistered ?? null;
-        for (const slot of PARTNER_DOC_SLOTS[v.role]) {
+        const gstRegistered = isIndianOrg(v) ? true : (v.gstRegistered ?? null);
+        for (const slot of PARTNER_DOC_SLOTS[partnerDocCategory(v.role, v.orgKind)]) {
           if (slot.atSignup && slot.required({ gstRegistered }) && !v.documents?.[slot.key]) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
@@ -190,9 +207,16 @@ export const signupRouter = createTRPCRouter({
         }
       })
       .superRefine((v, ctx) => {
+        if (!isIndianOrg(v)) return;
+        const msg = gstinError(v.gstNumber ?? "");
+        if (msg) ctx.addIssue({ code: z.ZodIssueCode.custom, message: msg, path: ["gstNumber"] });
+      })
+      .superRefine((v, ctx) => {
         const pan = v.pan ? normalizePan(v.pan) : "";
         if (!pan && !isPanRequired(v.role, v)) return;
-        const msg = panError(pan, v.role === "agency" ? "agency" : "individual");
+        const holder =
+          v.role === "independent" ? "individual" : v.orgKind === "institution" ? "institution" : "agency";
+        const msg = panError(pan, holder);
         if (msg) ctx.addIssue({ code: z.ZodIssueCode.custom, message: msg, path: ["pan"] });
       }),
     )
@@ -212,9 +236,11 @@ export const signupRouter = createTRPCRouter({
         location = { country: loc.country, state: loc.state ?? undefined, city: loc.city };
       }
 
+      const indian = isIndianOrg(input);
       const app = await saveApplication({
         email: input.email,
         role: input.role,
+        orgKind: input.role === "agency" ? (input.orgKind ?? "agency") : undefined,
         firstName: input.firstName,
         lastName: input.lastName,
         // Digits only, so the stored number matches what was verified and what
@@ -227,8 +253,11 @@ export const signupRouter = createTRPCRouter({
         companyAddress: input.companyAddress,
         numCounselors: input.numCounselors,
         annualVolume: input.annualVolume,
-        gstRegistered: input.gstRegistered,
-        documents: signupDocuments(input.role, input.documents),
+        // Outside India GST isn't asked; a page loaded before that change may
+        // still send an answer, which is kept as given.
+        gstRegistered: indian ? true : input.role === "agency" ? input.gstRegistered : undefined,
+        gstNumber: indian && input.gstNumber ? normalizeGstin(input.gstNumber) : undefined,
+        documents: signupDocuments(partnerDocCategory(input.role, input.orgKind), input.documents),
         pan: input.pan ? normalizePan(input.pan) : undefined,
       });
 

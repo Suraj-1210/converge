@@ -16,6 +16,7 @@ import {
   type Payee,
 } from "~/server/payee";
 import {
+  OrganizationType,
   PartnerInvoiceStatus,
   PayoutStatus,
   TrancheStatus,
@@ -84,10 +85,12 @@ async function payeeProfile(payee: Payee) {
   if (payee.orgId != null) {
     const org = await db.organization.findUnique({
       where: { id: payee.orgId },
-      select: { gst_number: true, pan: true, name: true },
+      select: { gst_number: true, pan: true, name: true, type: true },
     });
     return {
       kind: "agency" as const,
+      // An institution's PAN may be a trust's or society's (pan.ts).
+      panHolder: org?.type === OrganizationType.INSTITUTION ? ("institution" as const) : ("agency" as const),
       name: org?.name ?? null,
       gstin: org?.gst_number ?? null,
       pan: org?.pan ?? null,
@@ -100,6 +103,7 @@ async function payeeProfile(payee: Payee) {
   });
   return {
     kind: "independent" as const,
+    panHolder: "individual" as const,
     name: u ? `${u.first_name} ${u.last_name}`.trim() : null,
     gstin: null,
     pan: u?.pan ?? null,
@@ -107,10 +111,14 @@ async function payeeProfile(payee: Payee) {
   };
 }
 
-// An independent's PAN is their personal one (4th character P).
-function refuseNonPersonalPan(payee: Payee, pan: string | undefined): void {
-  if (payee.userId == null || !pan) return;
-  const msg = panError(pan, "individual");
+// The input schema accepts any partner PAN (the institution rule is the
+// widest); this applies the payee's own rule: an independent's personal PAN
+// (4th character P), an agency's company / firm / proprietor PAN, an
+// institution's own.
+async function refuseWrongHolderPan(payee: Payee, pan: string | undefined): Promise<void> {
+  if (!pan) return;
+  const { panHolder } = await payeeProfile(payee);
+  const msg = panError(pan, panHolder);
   if (msg) throw new TRPCError({ code: "BAD_REQUEST", message: msg });
 }
 
@@ -424,7 +432,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       // The invoice's "From": the agency, or the independent counsellor.
       orgName: profile.name,
       payeeKind: profile.kind,
-      panHolder: profile.kind === "agency" ? ("agency" as const) : ("individual" as const),
+      panHolder: profile.panHolder,
       panRequired: profile.panRequired,
     };
   }),
@@ -459,8 +467,8 @@ export const partnerCommissionRouter = createTRPCRouter({
             .refine((u) => /^(\/uploads\/)?bank-proofs\//.test(u), "Upload the cancelled cheque / bank letter"),
           proofFileName: z.string().trim().max(255).optional(),
           gstin: z.string().trim().max(20).optional(),
-          // Validated like signup; the org PAN rule (company / firm / proprietor).
-          pan: optionalPanSchema("agency"),
+          // Validated like signup; refuseWrongHolderPan applies the payee's rule.
+          pan: optionalPanSchema("institution"),
         })
         .superRefine((v, ctx) => {
           if (v.region === "domestic") {
@@ -485,7 +493,7 @@ export const partnerCommissionRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const payee = payeeFromSession(ctx.payee);
-      refuseNonPersonalPan(payee, input.pan);
+      await refuseWrongHolderPan(payee, input.pan);
       const intl = input.region === "international";
       const last4 = input.accountNumber.slice(-4);
       const data = {
@@ -558,8 +566,8 @@ export const partnerCommissionRouter = createTRPCRouter({
           errorMap: () => ({ message: "Please confirm your bank details before submitting." }),
         }),
         gstin: z.string().trim().max(20).optional(),
-        // Validated like signup; the org PAN rule (company / firm / proprietor).
-        pan: optionalPanSchema("agency"),
+        // Validated like signup; refuseWrongHolderPan applies the payee's rule.
+        pan: optionalPanSchema("institution"),
         signatoryName: z.string().trim().min(1).max(100),
         signatoryDesignation: z.string().trim().max(100).optional(),
         notes: z.string().trim().max(1000).optional(),
@@ -600,7 +608,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       // An independent invoices on their personal PAN. India-based: required.
       // Elsewhere optional; a claim without one is flagged for Finance review
       // (partnerPayouts / reconciliation), not blocked.
-      refuseNonPersonalPan(payee, input.pan);
+      await refuseWrongHolderPan(payee, input.pan);
       if (payee.userId != null && !input.pan && (await payeeProfile(payee)).panRequired) {
         throw new TRPCError({
           code: "BAD_REQUEST",

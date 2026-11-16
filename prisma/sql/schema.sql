@@ -17,6 +17,7 @@ SET @OLD_SQL_MODE           = @@SQL_MODE,
 
 -- -----------------------------------------------------
 -- organization
+--   type: 0 = agency, 1 = institution (school / college); OrganizationType
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS `organization` (
   `id`                    INT NOT NULL AUTO_INCREMENT,

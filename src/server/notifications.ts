@@ -16,6 +16,7 @@ export async function notifyAdminOfSignup(app: Application): Promise<void> {
           email: app.email,
           phone: `${app.countryCode} ${app.phone}`,
           role: app.role,
+          orgKind: app.orgKind,
           company: app.companyName,
           location: [app.city, app.state, app.country].filter(Boolean).join(", "),
         },

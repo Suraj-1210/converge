@@ -8,12 +8,12 @@ import { FormSelect } from "~/components/ui/form-select";
 import { Toast } from "~/components/ui/toast";
 import { AdminRole, counsellorRangeLabel, volumeRangeLabel } from "~/server/db/enums";
 import { normalizePan, panError } from "~/lib/utils/pan";
-import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { PARTNER_DOC_SLOTS, partnerDocCategory } from "~/lib/constants/partner-documents";
 import { PARTNER_FIELD_LABELS as FIELD, partnerDocLabel } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import { type TierStatusView } from "~/lib/partner-tiers";
-import { partnerTypeLabel } from "~/lib/partner-display";
+import { partnerTypeLabel, type OrgKind } from "~/lib/partner-display";
 import { PartnerTierBadge, PartnerTierPanel } from "./tier-panel";
 import {
   BankAccountDetails,
@@ -37,6 +37,8 @@ type Partner = {
   applicationId: string;
   email: string;
   role: "agency" | "independent";
+  // Agency or institution for an organization; null for an independent.
+  orgKind: OrgKind | null;
   firstName: string;
   lastName: string;
   phone: string;
@@ -1084,7 +1086,7 @@ function PendingCard({
               </span>
             </div>
             <div className="mt-0.5 text-xs text-[#667085]">
-              {p.applicationId || "—"} · {partnerTypeLabel(p.role)}
+              {p.applicationId || "—"} · {partnerTypeLabel(p.role, p.orgKind ?? "agency")}
               {p.city ? ` · ${p.city}` : ""}
             </div>
           </div>
@@ -1128,7 +1130,7 @@ function PendingCard({
               <tbody>
                 {docs.map((d) => (
                   <tr key={d.id} className="border-b border-[#F2F4F7] last:border-b-0">
-                    <td className="px-3 py-2 text-[#344054]">{partnerDocLabel(d.type, p.role)}</td>
+                    <td className="px-3 py-2 text-[#344054]">{partnerDocLabel(d.type, partnerDocCategory(p.role, p.orgKind))}</td>
                     <td className="px-3 py-2 text-[#667085]">{d.fileName}</td>
                     <td className="px-3 py-2">
                       <DocStatusBadge status={d.status} />
@@ -1258,7 +1260,7 @@ function PartnerTable({
                   </div>
                 </td>
                 <td className="px-3.5 py-3 text-sm text-[#344054]">
-                  {partnerTypeLabel(p.role)}
+                  {partnerTypeLabel(p.role, p.orgKind ?? "agency")}
                 </td>
                 <td className="px-3.5 py-3">
                   <PartnerTierBadge tier={p.tier} />
@@ -1344,6 +1346,7 @@ function PartnerDetailSlideOver({
   savingPan: boolean;
 }) {
   const isAgency = p.role === "agency";
+  const isInstitution = isAgency && p.orgKind === "institution";
 
   return (
     <div className="fixed inset-0 z-[200]">
@@ -1364,7 +1367,7 @@ function PartnerDetailSlideOver({
                 <StatusBadge status={p.status} />
               </div>
               <div className="text-xs text-[#98A2B3]">
-                {p.applicationId || "—"} · {partnerTypeLabel(p.role)}
+                {p.applicationId || "—"} · {partnerTypeLabel(p.role, p.orgKind ?? "agency")}
               </div>
             </div>
           </div>
@@ -1399,11 +1402,14 @@ function PartnerDetailSlideOver({
             </div>
           </Section>
 
-          {/* Company (agency only) */}
+          {/* Company (agency or institution) */}
           {isAgency && (
-            <Section title="Company">
+            <Section title={isInstitution ? "Institution" : "Company"}>
               <div className="grid grid-cols-2 gap-4">
-                <DetailItem label={FIELD.companyName} value={p.companyName ?? "—"} />
+                <DetailItem
+                  label={isInstitution ? FIELD.institutionName : FIELD.companyName}
+                  value={p.companyName ?? "—"}
+                />
                 <DetailItem label={FIELD.website} value={p.website ?? "—"} />
                 <DetailItem
                   label={FIELD.numCounsellors}
@@ -1421,9 +1427,9 @@ function PartnerDetailSlideOver({
                 />
                 <DetailItem label="GSTIN" value={p.gstNumber ?? "—"} />
                 <PanEditor
-                  label={FIELD.companyPan}
+                  label={isInstitution ? FIELD.institutionPan : FIELD.companyPan}
                   pan={p.pan}
-                  holder="agency"
+                  holder={isInstitution ? "institution" : "agency"}
                   saving={savingPan}
                   onSave={onSavePan}
                 />
@@ -1526,7 +1532,7 @@ function PartnerDetailSlideOver({
                   >
                     <div className="min-w-0">
                       <div className="text-[11px] font-semibold text-[#667085]">
-                        {partnerDocLabel(d.type, p.role)}
+                        {partnerDocLabel(d.type, partnerDocCategory(p.role, p.orgKind))}
                       </div>
                       <a
                         href={d.url}
@@ -1638,7 +1644,7 @@ function PartnerBankSection({ email }: { email: string }) {
 function AddDocument({ partner, onUploaded }: { partner: Partner; onUploaded: () => void }) {
   // Only what sign-up collects: the cancelled cheque now belongs with the
   // partner's bank details (My Account → Financial Details), not here.
-  const slots = PARTNER_DOC_SLOTS[partner.role === "agency" ? "agency" : "independent"].filter(
+  const slots = PARTNER_DOC_SLOTS[partnerDocCategory(partner.role, partner.orgKind)].filter(
     (s) => s.atSignup,
   );
   const [slot, setSlot] = useState(slots[0]?.key ?? "");
@@ -1714,7 +1720,7 @@ function PanEditor({
 }: {
   label: string;
   pan: string | null;
-  holder: "agency" | "individual";
+  holder: "agency" | "institution" | "individual";
   saving: boolean;
   onSave: (pan: string | null) => void;
 }) {
@@ -1732,7 +1738,7 @@ function PanEditor({
         <input
           value={draft}
           onChange={(e) => setDraft(normalizePan(e.target.value))}
-          placeholder={holder === "agency" ? "ABCDE1234F" : "ABCPE1234F"}
+          placeholder={holder === "individual" ? "ABCPE1234F" : "ABCDE1234F"}
           maxLength={10}
           className={`h-[34px] w-full rounded-lg border px-2.5 text-sm text-[#344054] uppercase outline-none focus:border-[#1570EF] ${
             dirty && error ? "border-[#F04438]" : "border-[#D0D5DD]"

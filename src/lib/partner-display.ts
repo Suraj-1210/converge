@@ -1,19 +1,43 @@
 // How a partner is named wherever a student, application or payout shows
 // "whose" it is (27 Oct testing), the same on both portals:
 //   independent counsellor → the person's name, e.g. "Aishwarya Rai"
-//   agency                 → "<org name> · <partner type>", e.g. "EduBridge · Agency"
-// organization.type has a single value today (OrganizationType.AGENCY), so the
-// type reads "Agency"; a new org type gets its label here.
+//   agency / institution   → "<org name> · <partner type>", e.g. "EduBridge · Agency"
+// The partner type comes from organization.type (OrganizationType); a new org
+// type gets its label here.
 
-import { OrganizationType } from "~/server/db/enums";
+import { OrganizationType, PartnerKindLabel, type PartnerKind } from "~/server/db/enums";
 
 export const ORG_TYPE_LABEL: Record<number, string> = {
   [OrganizationType.AGENCY]: "Agency",
+  [OrganizationType.INSTITUTION]: "Institution",
 };
 
+// The two org categories by name, for code that passes them around as strings
+// (sign-up, the admin partner list, document slots).
+export type OrgKind = "agency" | "institution";
+
+export function orgKindOf(type: number | null | undefined): OrgKind {
+  return type === OrganizationType.INSTITUTION ? "institution" : "agency";
+}
+
+export function orgTypeCode(kind: OrgKind): OrganizationType {
+  return kind === "institution" ? OrganizationType.INSTITUTION : OrganizationType.AGENCY;
+}
+
 // The partner type on its own, e.g. the Type column of the Partners page.
-export function partnerTypeLabel(kind: "agency" | "independent"): string {
-  return kind === "agency" ? ORG_TYPE_LABEL[OrganizationType.AGENCY]! : "Independent Counsellor";
+// `orgKind` defaults to agency for rows that predate the institution type.
+export function partnerTypeLabel(kind: "agency" | "independent", orgKind: OrgKind = "agency"): string {
+  if (kind === "independent") return "Independent Counsellor";
+  return ORG_TYPE_LABEL[orgTypeCode(orgKind)]!;
+}
+
+// A partner user's role as the portal names it: "Agency Owner", or for an
+// institution "Institution Owner" / "Institution Counsellor".
+export function partnerKindLabel(kind: PartnerKind, orgType: number | null | undefined): string {
+  if (kind !== "independent" && orgKindOf(orgType) === "institution") {
+    return kind === "agency" ? "Institution Owner" : "Institution Counsellor";
+  }
+  return PartnerKindLabel[kind];
 }
 
 type Person = { first_name: string; last_name: string } | null | undefined;

@@ -13,15 +13,19 @@
 //   agency      C, F or P — a sole proprietorship has no PAN of its own and
 //               uses the proprietor's individual PAN, so P is allowed too.
 //   individual  P only (independent counsellors).
+//   institution an agency's types plus those a school or college is usually
+//               registered as: T (trust), A / B (society, association),
+//               G (government), J, L — anything but H (a family's PAN).
 
 import { z } from "zod";
 
-export type PanHolder = "agency" | "individual";
+export type PanHolder = "agency" | "institution" | "individual";
 
 const PAN_FORMAT = /^[A-Z]{3}[ABCFGHJLPT][A-Z][0-9]{4}[A-Z]$/;
 
 export const PAN_HOLDER_TYPES: Record<PanHolder, readonly string[]> = {
   agency: ["C", "F", "P"],
+  institution: ["C", "F", "P", "T", "A", "B", "G", "J", "L"],
   individual: ["P"],
 };
 
@@ -40,15 +44,15 @@ export function panError(raw: string, holder: PanHolder): string | null {
     return "Enter a valid PAN: 5 letters, 4 digits, 1 letter (e.g. ABCPE1234F)";
   }
   if (!PAN_HOLDER_TYPES[holder].includes(pan[3]!)) {
-    return holder === "agency"
-      ? "Use the company, firm/LLP or proprietor PAN (4th character C, F or P)"
-      : "Use your personal PAN (4th character P)";
+    if (holder === "agency") return "Use the company, firm/LLP or proprietor PAN (4th character C, F or P)";
+    if (holder === "institution") return "Use the institution's own PAN (trust, society, company or government body) — not a family (HUF) PAN";
+    return "Use your personal PAN (4th character P)";
   }
   return null;
 }
 
-// PAN is mandatory only for India-based partners: an agency whose country is
-// India, or an independent counsellor with an Indian (+91) phone number.
+// PAN is mandatory only for India-based partners: an agency or institution
+// whose country is India, or an independent counsellor with an Indian (+91) phone number.
 // Elsewhere it is optional, but still validated when entered.
 export function isPanRequired(
   role: "agency" | "independent",

@@ -32,7 +32,12 @@ import {
   requireStaffPartnerEmail,
   requireStaffPartnerUser,
 } from "~/server/staff-access";
-import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import {
+  PARTNER_DOC_SLOTS,
+  partnerDocCategory,
+  type PartnerDocCategory,
+} from "~/lib/constants/partner-documents";
+import { orgKindOf } from "~/lib/partner-display";
 import { partnerDocLabel } from "~/lib/constants/partner-labels";
 
 // Who to tell about a rejected document: the uploader for a personal doc, the
@@ -50,10 +55,21 @@ async function documentRecipients(doc: { user_id: number | null; org_id: number 
 
 // Which partner type a document belongs to, for its label: company documents
 // are an agency's; a personal one follows its uploader.
-async function docRole(doc: { user_id: number | null; org_id: number | null }) {
-  if (!doc.user_id) return "agency" as const;
-  const u = await db.user.findUnique({ where: { id: doc.user_id }, select: { type: true } });
-  return u?.type === UserType.AGENCY_OWNER ? ("agency" as const) : ("independent" as const);
+async function docRole(doc: { user_id: number | null; org_id: number | null }): Promise<PartnerDocCategory> {
+  if (!doc.user_id) {
+    const org = doc.org_id
+      ? await db.organization.findUnique({ where: { id: doc.org_id }, select: { type: true } })
+      : null;
+    return orgKindOf(org?.type);
+  }
+  const u = await db.user.findUnique({
+    where: { id: doc.user_id },
+    select: { type: true, organization: { select: { type: true } } },
+  });
+  return partnerDocCategory(
+    u?.type === UserType.AGENCY_OWNER ? "agency" : "independent",
+    orgKindOf(u?.organization?.type),
+  );
 }
 
 const partnerStatus = z.enum([
@@ -295,11 +311,14 @@ export const partnersRouter = createTRPCRouter({
       await requireStaffPartnerEmail(ctx.cpUser, input.email);
       const user = await db.user.findUnique({
         where: { email: input.email.toLowerCase() },
-        select: { id: true, type: true, org_id: true },
+        select: { id: true, type: true, org_id: true, organization: { select: { type: true } } },
       });
       if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Partner not found" });
-      const role = user.type === UserType.AGENCY_OWNER ? "agency" : "independent";
-      const slot = PARTNER_DOC_SLOTS[role].find((s) => s.key === input.slot && s.atSignup);
+      const category = partnerDocCategory(
+        user.type === UserType.AGENCY_OWNER ? "agency" : "independent",
+        orgKindOf(user.organization?.type),
+      );
+      const slot = PARTNER_DOC_SLOTS[category].find((s) => s.key === input.slot && s.atSignup);
       if (!slot) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "That document type doesn't apply to this partner." });
       }

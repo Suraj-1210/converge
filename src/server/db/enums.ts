@@ -1,5 +1,10 @@
+// A partner organization's category (16 Nov 2026). An institution (a school or
+// college whose counsellors refer students) works exactly like an agency: an
+// owner plus counsellors, the org is the payee, same documents and GST rule.
+// Only the wording differs, so it's an org type, not a new UserType.
 export const OrganizationType = {
   AGENCY: 0,
+  INSTITUTION: 1,
 } as const;
 export type OrganizationType =
   (typeof OrganizationType)[keyof typeof OrganizationType];

@@ -234,7 +234,7 @@ export default function BDMPerformancePage() {
                     const convColor = p.apps === 0 ? "text-[#98A2B3]" : p.conversion >= 30 ? "text-[#027A48]" : p.conversion >= 20 ? "text-[#B54708]" : "text-[#B42318]";
                     return (
                       <tr key={p.key} className="border-b border-[#F2F4F7] last:border-0 hover:bg-[#F9FAFB]">
-                        <td className={TD}><div className="flex items-center gap-2.5"><Avatar name={p.name} /><div><div className="font-semibold text-[#101828]">{p.name}</div><div className="text-[11px] text-[#98A2B3]">{p.city}</div></div></div></td>
+                        <td className={TD}><div className="flex items-center gap-2.5"><Avatar name={p.name} /><div><div className="font-semibold text-[#101828]">{p.name}</div><div className="text-[11px] text-[#98A2B3]">{p.partnerType} · {p.city}</div></div></div></td>
                         <td className={TD}><span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={tierBadgeStyle(p.tierColor)}>{p.tierLabel}</span></td>
                         <td className={TD}><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${st.wrap}`}><span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />{p.status}</span></td>
                         <td className={`${TD} font-semibold text-[#101828]`}>{p.students}</td>

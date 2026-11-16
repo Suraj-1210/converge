@@ -518,7 +518,7 @@ export function counsellorAddedEmail(
 
 // 16. Collegepond admin inbox: a counsellor is waiting for approval.
 export function adminCounsellorPendingEmail(
-  c: { name: string; email: string; phone: string; agency: string },
+  c: { name: string; email: string; phone: string; agency: string; orgKind?: "agency" | "institution" },
   appUrl: string,
 ): EmailMessage {
   return build(
@@ -527,7 +527,14 @@ export function adminCounsellorPendingEmail(
     "Hello,",
     [
       { p: `${c.agency} has added a counsellor who needs approval before they can sign in.` },
-      { list: [`Name: ${c.name}`, `Email: ${c.email}`, `Phone: ${c.phone}`, `Agency: ${c.agency}`] },
+      {
+        list: [
+          `Name: ${c.name}`,
+          `Email: ${c.email}`,
+          `Phone: ${c.phone}`,
+          `${c.orgKind === "institution" ? "Institution" : "Agency"}: ${c.agency}`,
+        ],
+      },
       { button: { label: "Review Counsellor Approvals", url: portal(appUrl, "/admin/counselor-approvals") } },
     ],
   );
@@ -553,9 +560,10 @@ export function counsellorApprovedEmail(
 // 18. Agency owner: Collegepond decided on a counsellor they added.
 export function counsellorDecisionOwnerEmail(
   p: PartnerRef,
-  c: { counsellorName: string; approved: boolean; reason?: string | null },
+  c: { counsellorName: string; approved: boolean; reason?: string | null; orgKind?: "agency" | "institution" },
   appUrl: string,
 ): EmailMessage {
+  const yours = c.orgKind === "institution" ? "your institution" : "your agency";
   return build(
     c.approved
       ? `${c.counsellorName} Is Approved as a Counsellor`
@@ -565,8 +573,8 @@ export function counsellorDecisionOwnerEmail(
     [
       {
         p: c.approved
-          ? `${c.counsellorName} has been approved as a counsellor for your agency and can now sign in to the Partner Portal.`
-          : `We were unable to approve ${c.counsellorName} as a counsellor for your agency.`,
+          ? `${c.counsellorName} has been approved as a counsellor for ${yours} and can now sign in to the Partner Portal.`
+          : `We were unable to approve ${c.counsellorName} as a counsellor for ${yours}.`,
       },
       ...(!c.approved && c.reason?.trim() ? [{ quote: c.reason.trim(), label: "Reason" } as Block] : []),
       ...(!c.approved
@@ -818,12 +826,15 @@ export function adminNewSignupEmail(
     email: string;
     phone: string;
     role: "agency" | "independent";
+    // Agency or institution, for an organization.
+    orgKind?: "agency" | "institution";
     company?: string | null;
     location?: string | null;
   },
   appUrl: string,
 ): EmailMessage {
   const who = a.company?.trim() ? `${a.name} (${a.company.trim()})` : a.name;
+  const institution = a.role === "agency" && a.orgKind === "institution";
   return build(
     `New Partner Application: ${who}`,
     "New partner application",
@@ -833,9 +844,9 @@ export function adminNewSignupEmail(
       {
         list: [
           `Application ID: ${a.applicationId}`,
-          `Type: ${a.role === "agency" ? "Agency" : "Independent counsellor"}`,
+          `Type: ${a.role === "independent" ? "Independent counsellor" : institution ? "Institution" : "Agency"}`,
           `Name: ${a.name}`,
-          ...(a.company?.trim() ? [`Company: ${a.company.trim()}`] : []),
+          ...(a.company?.trim() ? [`${institution ? "Institution" : "Company"}: ${a.company.trim()}`] : []),
           `Email: ${a.email}`,
           `Phone: ${a.phone}`,
           ...(a.location?.trim() ? [`Location: ${a.location.trim()}`] : []),

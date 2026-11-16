@@ -99,7 +99,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         userName={userName}
         userInitials={initials}
         userAvatarUrl={me.data?.avatarUrl}
-        roleLabel={kind ? PartnerKindLabel[kind] : "Partner"}
+        roleLabel={me.data?.roleLabel ?? (kind ? PartnerKindLabel[kind] : "Partner")}
         searchPlaceholder="Search students, applications…"
         accountHref={tabs?.includes("account") ? "/partner/account" : undefined}
         notifications={feed.data?.notifications ?? []}

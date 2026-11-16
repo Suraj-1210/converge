@@ -22,27 +22,49 @@ import {
 import { maskEmail, maskPhone } from "~/lib/utils/masking";
 import { counselorRanges, volumeRanges } from "~/lib/constants/location-data";
 import { isPanRequired, normalizePan, panError } from "~/lib/utils/pan";
+import { gstinError, normalizeGstin } from "~/lib/utils/gstin";
+import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { PARTNER_FIELD_LABELS } from "~/lib/constants/partner-labels";
 import { api } from "~/trpc/react";
 
 type Role = "agency" | "independent";
+// The sign-up category (16 Nov 2026). An institution (a school or college)
+// signs up exactly like an agency: same steps, documents and GST rule, with
+// its own wording. Agencies and institutions are both role "agency".
+type Category = "agency" | "institution" | "independent";
+
+const CATEGORY_OPTIONS: { value: Category; label: string; hint: string }[] = [
+  { value: "agency", label: "Agent Owner", hint: "You own or run a study-abroad agency and will add your counsellors." },
+  { value: "independent", label: "Independent Counsellor", hint: "You counsel students on your own, not as part of an agency." },
+  {
+    value: "institution",
+    label: "Institutional Counsellor",
+    hint: "You represent a school, college or other educational institution and will add its counsellors.",
+  },
+];
 
 const agencySteps = ["basic", "otp", "company", "documents", "review"] as const;
 const independentSteps = ["basic", "otp", "documents", "review"] as const;
 
-// Always-required agency uploads. "gst" is required on top of these only when
-// the agency answers "GST Registered? → Yes" in Company Details.
+// The organization documents come from PARTNER_DOC_SLOTS, so the list switches
+// with the category. "gst" is required on top of the always-required ones for
+// an Indian agency / institution (GST isn't asked outside India).
 // Bank details and the cancelled cheque are not part of sign-up: they're added
 // after approval in My Account → Financial Details.
-const AGENCY_REQUIRED_DOCS = [
-  "companyPan",
-  "aadhaar",
-  "partnershipDocs",
-] as const;
+const ORG_DOC_UPLOAD: Record<string, { hint?: string; accept?: string; maxSize?: number }> = {
+  logo: { hint: "JPG or PNG (max 2MB)", accept: ".jpg,.jpeg,.png", maxSize: 2 },
+};
 
 const agencyDisplaySteps = [
   "Basic Information",
   "Company Details",
   "Business Documents",
+  "Review & Submit",
+];
+const institutionDisplaySteps = [
+  "Basic Information",
+  "Institution Details",
+  "Institution Documents",
   "Review & Submit",
 ];
 const independentDisplaySteps = [
@@ -134,7 +156,7 @@ interface FormErrors {
   companyAddress?: string;
   numCounselors?: string;
   annualVolume?: string;
-  gstRegistered?: string;
+  gstNumber?: string;
   pan?: string;
   consent?: string;
   documents?: string;
@@ -163,7 +185,9 @@ async function uploadFile(file: File, folder: string): Promise<string> {
 }
 
 export default function SignupPage() {
-  const [role, setRole] = useState<Role>("agency");
+  const [category, setCategory] = useState<Category>("agency");
+  const role: Role = category === "independent" ? "independent" : "agency";
+  const isInstitution = category === "institution";
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -187,8 +211,9 @@ export default function SignupPage() {
   const [companyAddress, setCompanyAddress] = useState("");
   const [numCounselors, setNumCounselors] = useState("");
   const [annualVolume, setAnnualVolume] = useState("");
-  // "" until answered. "yes" makes the GST certificate a required document.
-  const [gstRegistered, setGstRegistered] = useState<"" | "yes" | "no">("");
+  // GSTIN: mandatory for an organization based in India (with its GST
+  // certificate), not asked elsewhere.
+  const [gstNumber, setGstNumber] = useState("");
 
   // OTP state
   const [emailOtp, setEmailOtp] = useState<string[]>(["", "", "", "", ""]);
@@ -261,10 +286,22 @@ export default function SignupPage() {
   const countryName =
     countryOptions.find((c) => c.value === country)?.label ?? country;
   const panRequired = isPanRequired(role, { country, countryCode });
+  const gstRequired = role === "agency" && country === "IN";
+  // The organization's sign-up documents for this category; the GST
+  // certificate only applies in India.
+  const orgDocSlots = PARTNER_DOC_SLOTS[isInstitution ? "institution" : "agency"].filter(
+    (s) => s.atSignup && (s.key !== "gst" || gstRequired),
+  );
+  const orgDocRequired = (key: string) =>
+    orgDocSlots.find((s) => s.key === key)?.required({ gstRegistered: gstRequired }) ?? false;
+  // Words for the organization: "Company" for an agency, "Institution" for a
+  // school / college.
+  const orgWord = isInstitution ? "Institution" : "Company";
 
   // Computed values
   const steps = role === "agency" ? agencySteps : independentSteps;
-  const displaySteps = role === "agency" ? agencyDisplaySteps : independentDisplaySteps;
+  const displaySteps =
+    role === "independent" ? independentDisplaySteps : isInstitution ? institutionDisplaySteps : agencyDisplaySteps;
   const currentStepName = steps[currentStepIndex] ?? "basic";
 
   // Display index (skip OTP in indicator)
@@ -395,30 +432,30 @@ export default function SignupPage() {
 
   const validateCompany = (): boolean => {
     const newErrors: FormErrors = {};
-    if (!companyName.trim()) newErrors.companyName = "Company name is required";
+    if (!companyName.trim()) newErrors.companyName = `${orgWord} name is required`;
     if (!companyWebsite.trim()) newErrors.companyWebsite = "Website or LinkedIn is required";
     if (!country) newErrors.country = "Country is required";
     else if (statesQuery.isLoading) newErrors.state = "Loading states…";
     else if (hasStates && !state) newErrors.state = "State is required";
     if (!city.trim()) newErrors.city = "City is required";
     if (pan.trim() || panRequired) {
-      const msg = panError(pan, "agency");
+      const msg = panError(pan, isInstitution ? "institution" : "agency");
       if (msg) newErrors.pan = msg;
+    }
+    if (gstRequired) {
+      const msg = gstinError(gstNumber);
+      if (msg) newErrors.gstNumber = msg;
     }
     if (!companyAddress.trim()) newErrors.companyAddress = "Address is required";
     if (!numCounselors) newErrors.numCounselors = "Number of counselors is required";
     if (!annualVolume) newErrors.annualVolume = "Student volume is required";
-    if (!gstRegistered) newErrors.gstRegistered = "Please select an option";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const validateDocuments = (): boolean => {
     if (role === "agency") {
-      const required: string[] = [...AGENCY_REQUIRED_DOCS];
-      // A GST-registered agency must also supply its GST certificate.
-      if (gstRegistered === "yes") required.push("gst");
-      const missing = required.some((k) => !agencyDocs[k]?.name);
+      const missing = orgDocSlots.some((s) => orgDocRequired(s.key) && !agencyDocs[s.key]?.name);
       if (missing) {
         setErrors({ documents: "Please upload all required documents" });
         return false;
@@ -514,14 +551,20 @@ export default function SignupPage() {
     if (!validateConsent()) return;
 
     const docs = role === "agency" ? agencyDocs : independentDocs;
+    // Only this category's documents (a GST certificate uploaded before the
+    // country changed to one outside India isn't sent).
+    const keys = new Set(
+      role === "agency" ? orgDocSlots.map((s) => s.key) : Object.keys(independentDocs),
+    );
     const documents: Record<string, string> = {};
     for (const [k, v] of Object.entries(docs)) {
-      if (v.path) documents[k] = v.path;
+      if (v.path && keys.has(k)) documents[k] = v.path;
     }
 
     submitApp.mutate(
       {
         role,
+        orgKind: role === "agency" ? (isInstitution ? "institution" : "agency") : undefined,
         firstName,
         lastName,
         email,
@@ -535,7 +578,7 @@ export default function SignupPage() {
         companyAddress: role === "agency" ? companyAddress : undefined,
         numCounselors: role === "agency" ? numCounselors : undefined,
         annualVolume: role === "agency" ? annualVolume : undefined,
-        gstRegistered: role === "agency" ? gstRegistered === "yes" : undefined,
+        gstNumber: gstRequired ? normalizeGstin(gstNumber) : undefined,
         documents,
         pan: pan.trim() ? normalizePan(pan) : undefined,
         verification: { email: emailProof, phone: phoneProof },
@@ -554,10 +597,13 @@ export default function SignupPage() {
     );
   };
 
-  const selectRole = (newRole: Role) => {
-    if (newRole === role) return;
-    setRole(newRole);
-    setCurrentStepIndex(0);
+  // Agency <-> institution keeps the same steps; switching to or from an
+  // independent changes them, so start over from the first step.
+  const selectCategory = (next: Category) => {
+    if (next === category) return;
+    const nextRole: Role = next === "independent" ? "independent" : "agency";
+    setCategory(next);
+    if (nextRole !== role) setCurrentStepIndex(0);
     setErrors({});
   };
 
@@ -597,13 +643,7 @@ export default function SignupPage() {
 
   // Document status for review
   const getAgencyDocStatus = () => {
-    const docs = [
-      { key: "companyPan", name: "Company PAN", required: true },
-      { key: "aadhaar", name: "Aadhaar Card", required: true },
-      { key: "partnershipDocs", name: "Partnership Docs", required: true },
-      { key: "logo", name: "Company Logo", required: false },
-      { key: "gst", name: "GST Certificate", required: gstRegistered === "yes" },
-    ];
+    const docs = orgDocSlots.map((s) => ({ key: s.key, name: s.label, required: orgDocRequired(s.key) }));
     return docs.map((d) => ({
       name: d.name,
       status: agencyDocs[d.key]?.name
@@ -679,36 +719,18 @@ export default function SignupPage() {
               Fill in your details to get started with Collegepond.
             </div>
 
-            {/* Role selection */}
-            <div className="mb-3.5 text-[13px] font-semibold tracking-wide text-[#344054] uppercase">
-              I am a
-            </div>
-            <div className="mb-6 flex gap-3.5">
-              <RoleCard
-                selected={role === "agency"}
-                onClick={() => selectRole("agency")}
-                icon={
-                  <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
-                    <rect x="2" y="4" width="16" height="13" rx="2" stroke="#344054" strokeWidth="1.5" />
-                    <path d="M7 4V3a2 2 0 012-2h2a2 2 0 012 2v1" stroke="#344054" strokeWidth="1.5" />
-                    <path d="M2 10h16" stroke="#344054" strokeWidth="1.5" />
-                  </svg>
-                }
-                title="Agency Owner"
-                subtitle="Register your agency"
+            {/* Sign-up category: picks the steps and the document list. */}
+            <div className="mb-6">
+              <FormSelect
+                label="I am a"
+                required
+                options={CATEGORY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                value={category}
+                onChange={(e) => selectCategory(e.target.value as Category)}
               />
-              <RoleCard
-                selected={role === "independent"}
-                onClick={() => selectRole("independent")}
-                icon={
-                  <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
-                    <circle cx="10" cy="7" r="3.5" stroke="#344054" strokeWidth="1.5" />
-                    <path d="M3 18c0-3.5 3.13-6 7-6s7 2.5 7 6" stroke="#344054" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                }
-                title="Independent Counselor"
-                subtitle="Register as individual"
-              />
+              <div className="mt-1.5 text-xs text-[#667085]">
+                {CATEGORY_OPTIONS.find((o) => o.value === category)?.hint}
+              </div>
             </div>
 
             <div className="mb-3.5 text-[13px] font-semibold tracking-wide text-[#344054] uppercase">
@@ -931,23 +953,25 @@ export default function SignupPage() {
         {/* ═══ SCREEN: COMPANY DETAILS (Agency) ═══ */}
         {currentStepName === "company" && (
           <div className="flex flex-1 flex-col animate-[fadeSlide_0.3s_ease]">
-            <div className="mb-1 text-[22px] font-bold text-[#101828]">Company Details</div>
+            <div className="mb-1 text-[22px] font-bold text-[#101828]">{orgWord} Details</div>
             <div className="mb-7 text-sm text-[#667085]">
-              Tell us about your agency so we can customize your experience.
+              {isInstitution
+                ? "Tell us about your school or institution so we can customize your experience."
+                : "Tell us about your agency so we can customize your experience."}
             </div>
 
             <div className="mb-4 flex gap-4">
               <FormInput
-                label="Company / Agency Name"
+                label={isInstitution ? PARTNER_FIELD_LABELS.institutionName : PARTNER_FIELD_LABELS.companyName}
                 required
-                placeholder="Enter company name"
+                placeholder={isInstitution ? "Enter institution / school name" : "Enter company name"}
                 value={companyName}
                 onChange={(e) => { setCompanyName(e.target.value); setErrors((p) => ({ ...p, companyName: undefined })); }}
                 error={!!errors.companyName}
                 errorMessage={errors.companyName}
               />
               <FormInput
-                label="Company Website / LinkedIn"
+                label={`${orgWord} Website / LinkedIn`}
                 required
                 placeholder="https://..."
                 value={companyWebsite}
@@ -970,7 +994,7 @@ export default function SignupPage() {
                   setState("");
                   setCity("");
                   setCityManual(false);
-                  setErrors((p) => ({ ...p, country: undefined, pan: undefined }));
+                  setErrors((p) => ({ ...p, country: undefined, pan: undefined, gstNumber: undefined }));
                 }}
                 error={!!errors.country}
                 errorMessage={errors.country}
@@ -1054,7 +1078,7 @@ export default function SignupPage() {
 
             <div className="mb-4">
               <FormTextarea
-                label="Company Address"
+                label={`${orgWord} Address`}
                 required
                 placeholder="Full address including street, building, floor..."
                 value={companyAddress}
@@ -1088,24 +1112,8 @@ export default function SignupPage() {
             </div>
 
             <div className="mb-4 flex gap-4">
-              <FormSelect
-                label="GST Registered?"
-                required
-                placeholder="Select an option"
-                options={[
-                  { value: "yes", label: "Yes" },
-                  { value: "no", label: "No" },
-                ]}
-                value={gstRegistered}
-                onChange={(e) => {
-                  setGstRegistered(e.target.value as "" | "yes" | "no");
-                  setErrors((p) => ({ ...p, gstRegistered: undefined }));
-                }}
-                error={!!errors.gstRegistered}
-                errorMessage={errors.gstRegistered}
-              />
               <FormInput
-                label="Company PAN"
+                label={isInstitution ? PARTNER_FIELD_LABELS.institutionPan : PARTNER_FIELD_LABELS.companyPan}
                 required={panRequired}
                 placeholder="ABCDE1234F"
                 maxLength={10}
@@ -1115,15 +1123,37 @@ export default function SignupPage() {
                 error={!!errors.pan}
                 errorMessage={errors.pan}
               />
+              {gstRequired ? (
+                <FormInput
+                  label={PARTNER_FIELD_LABELS.gstNumber}
+                  required
+                  placeholder="27ABCDE1234F1Z5"
+                  maxLength={15}
+                  autoComplete="off"
+                  value={gstNumber}
+                  onChange={(e) => {
+                    setGstNumber(normalizeGstin(e.target.value));
+                    setErrors((p) => ({ ...p, gstNumber: undefined }));
+                  }}
+                  error={!!errors.gstNumber}
+                  errorMessage={errors.gstNumber}
+                />
+              ) : (
+                // Keeps the PAN at half-width, matching the rows above.
+                <div className="flex-1" />
+              )}
             </div>
             <div className="-mt-2 mb-4 text-xs text-[#667085]">
-              PAN of the company or firm/LLP — or, for a sole proprietorship, the proprietor&apos;s PAN.
-              Required for agencies based in India.
+              {isInstitution
+                ? "PAN of the institution itself — the trust, society, company or government body that runs it."
+                : "PAN of the company or firm/LLP — or, for a sole proprietorship, the proprietor’s PAN."}{" "}
+              Required in India.
             </div>
 
-            {gstRegistered === "yes" && (
+            {gstRequired && (
               <div className="mb-4 rounded-lg border border-[#B2DDFF] bg-[#EFF8FF] px-3.5 py-2.5 text-[13px] text-[#175CD3]">
-                You&apos;ll need to upload your GST certificate in the next step.
+                GST registration is required for {isInstitution ? "institutions" : "agencies"} based in India.
+                You&apos;ll upload the GST certificate in the next step.
               </div>
             )}
 
@@ -1141,85 +1171,51 @@ export default function SignupPage() {
         {/* ═══ SCREEN: BUSINESS DOCUMENTS (Agency) ═══ */}
         {currentStepName === "documents" && role === "agency" && (
           <div className="flex flex-1 flex-col animate-[fadeSlide_0.3s_ease]">
-            <div className="mb-1 text-[22px] font-bold text-[#101828]">Business Documents</div>
+            <div className="mb-1 text-[22px] font-bold text-[#101828]">
+              {isInstitution ? "Institution Documents" : "Business Documents"}
+            </div>
             <div className="mb-7 text-sm text-[#667085]">
-              Upload the required documents to verify your agency.
+              Upload the required documents to verify your {isInstitution ? "institution" : "agency"}.
             </div>
 
             <div className="mb-3.5 text-[13px] font-semibold tracking-wide text-[#344054] uppercase">
               Required Documents
             </div>
             <div className="mb-4 grid grid-cols-2 gap-3.5">
-              <FileUpload
-                label="Company PAN Card"
-                required
-                hint="PDF, JPG or PNG (max 5MB)"
-                fileName={agencyDocs.companyPan?.name}
-                uploading={agencyDocs.companyPan?.uploading}
-                error={!!errors.documents && !agencyDocs.companyPan?.name}
-                onFileSelect={(f) => void setAgencyDoc("companyPan", f)}
-                onFileRemove={() => removeAgencyDoc("companyPan")}
-              />
-              <FileUpload
-                label="Aadhaar Card of Director"
-                required
-                hint="PDF, JPG or PNG (max 5MB)"
-                fileName={agencyDocs.aadhaar?.name}
-                uploading={agencyDocs.aadhaar?.uploading}
-                error={!!errors.documents && !agencyDocs.aadhaar?.name}
-                onFileSelect={(f) => void setAgencyDoc("aadhaar", f)}
-                onFileRemove={() => removeAgencyDoc("aadhaar")}
-              />
-              <FileUpload
-                label="Company / Partnership Documents"
-                required
-                hint="PDF, JPG or PNG (max 5MB)"
-                fileName={agencyDocs.partnershipDocs?.name}
-                uploading={agencyDocs.partnershipDocs?.uploading}
-                error={!!errors.documents && !agencyDocs.partnershipDocs?.name}
-                onFileSelect={(f) => void setAgencyDoc("partnershipDocs", f)}
-                onFileRemove={() => removeAgencyDoc("partnershipDocs")}
-              />
-              {/* GST certificate is mandatory only for a GST-registered agency;
-                  otherwise it sits under Optional Documents below. */}
-              {gstRegistered === "yes" && (
-                <FileUpload
-                  label="GST Certificate"
-                  required
-                  hint="PDF, JPG or PNG (max 5MB)"
-                  fileName={agencyDocs.gst?.name}
-                  uploading={agencyDocs.gst?.uploading}
-                  error={!!errors.documents && !agencyDocs.gst?.name}
-                  onFileSelect={(f) => void setAgencyDoc("gst", f)}
-                  onFileRemove={() => removeAgencyDoc("gst")}
-                />
-              )}
+              {orgDocSlots
+                .filter((slot) => orgDocRequired(slot.key))
+                .map((slot) => (
+                  <FileUpload
+                    key={slot.key}
+                    label={slot.label}
+                    required
+                    {...ORG_DOC_UPLOAD[slot.key]}
+                    fileName={agencyDocs[slot.key]?.name}
+                    uploading={agencyDocs[slot.key]?.uploading}
+                    error={!!errors.documents && !agencyDocs[slot.key]?.name}
+                    onFileSelect={(f) => void setAgencyDoc(slot.key, f)}
+                    onFileRemove={() => removeAgencyDoc(slot.key)}
+                  />
+                ))}
             </div>
 
             <div className="mb-3.5 mt-6 text-[13px] font-semibold tracking-wide text-[#344054] uppercase">
               Optional Documents
             </div>
             <div className="mb-4 grid grid-cols-2 gap-3.5">
-              <FileUpload
-                label="Company Logo"
-                hint="JPG or PNG (max 2MB)"
-                accept=".jpg,.jpeg,.png"
-                maxSize={2}
-                fileName={agencyDocs.logo?.name}
-                uploading={agencyDocs.logo?.uploading}
-                onFileSelect={(f) => void setAgencyDoc("logo", f)}
-                onFileRemove={() => removeAgencyDoc("logo")}
-              />
-              {gstRegistered !== "yes" && (
-                <FileUpload
-                  label="GST Certificate"
-                  hint="PDF, JPG or PNG (max 5MB)"
-                  fileName={agencyDocs.gst?.name}
-                  uploading={agencyDocs.gst?.uploading}
-                  onFileSelect={(f) => void setAgencyDoc("gst", f)}
-                  onFileRemove={() => removeAgencyDoc("gst")}
-                />
-              )}
+              {orgDocSlots
+                .filter((slot) => !orgDocRequired(slot.key))
+                .map((slot) => (
+                  <FileUpload
+                    key={slot.key}
+                    label={slot.label}
+                    {...ORG_DOC_UPLOAD[slot.key]}
+                    fileName={agencyDocs[slot.key]?.name}
+                    uploading={agencyDocs[slot.key]?.uploading}
+                    onFileSelect={(f) => void setAgencyDoc(slot.key, f)}
+                    onFileRemove={() => removeAgencyDoc(slot.key)}
+                  />
+                ))}
             </div>
 
             {errors.documents && (
@@ -1359,25 +1355,25 @@ export default function SignupPage() {
                     </>
                   ),
                 },
-                { label: "Type", value: "Agency Owner" },
+                { label: "Type", value: isInstitution ? "Institutional Counsellor" : "Agent Owner" },
               ]}
             />
 
             <ReviewCard
-              title="Company Details"
+              title={`${orgWord} Details`}
               onEdit={() => goToStepByName("company")}
               items={[
-                { label: "Company Name", value: companyName },
+                { label: `${orgWord} Name`, value: companyName },
                 { label: "Website", value: companyWebsite },
                 { label: "Location", value: [city, state, countryName].filter(Boolean).join(", ") },
-                { label: "Company PAN", value: pan || "—" },
+                { label: `${orgWord} PAN`, value: pan || "—" },
                 { label: "Team Size", value: `${numCounselors} counselors` },
-                { label: "GST Registered", value: gstRegistered === "yes" ? "Yes" : "No" },
+                ...(gstRequired ? [{ label: "GST Number", value: gstNumber }] : []),
               ]}
             />
 
             <ReviewCard
-              title="Business Documents"
+              title={isInstitution ? "Institution Documents" : "Business Documents"}
               onEdit={() => goToStepByName("documents")}
             >
               <div className="flex flex-wrap gap-2">
@@ -1397,6 +1393,8 @@ export default function SignupPage() {
             {submitApp.error && (
               <div className="mt-3 text-[13px] text-[#F04438]">
                 {submitApp.error.data?.zodError?.fieldErrors.pan?.[0] ??
+                  submitApp.error.data?.zodError?.fieldErrors.gstNumber?.[0] ??
+                  submitApp.error.data?.zodError?.fieldErrors.documents?.[0] ??
                   submitApp.error.data?.zodError?.formErrors[0] ??
                   submitApp.error.message}
               </div>
@@ -1454,7 +1452,7 @@ export default function SignupPage() {
                     </>
                   ),
                 },
-                { label: "Type", value: "Independent Counselor" },
+                { label: "Type", value: "Independent Counsellor" },
               ]}
             />
 
@@ -1480,6 +1478,8 @@ export default function SignupPage() {
             {submitApp.error && (
               <div className="mt-3 text-[13px] text-[#F04438]">
                 {submitApp.error.data?.zodError?.fieldErrors.pan?.[0] ??
+                  submitApp.error.data?.zodError?.fieldErrors.gstNumber?.[0] ??
+                  submitApp.error.data?.zodError?.fieldErrors.documents?.[0] ??
                   submitApp.error.data?.zodError?.formErrors[0] ??
                   submitApp.error.message}
               </div>
@@ -1497,50 +1497,5 @@ export default function SignupPage() {
         )}
       </div>
     </AuthLayout>
-  );
-}
-
-// Role card sub-component
-function RoleCard({
-  selected,
-  onClick,
-  icon,
-  title,
-  subtitle,
-}: {
-  selected: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={`relative flex flex-1 cursor-pointer items-center gap-3 rounded-[10px] border-[1.5px] p-4 transition-all hover:border-[#1570EF] ${
-        selected
-          ? "border-[#1570EF] bg-[rgba(21,112,239,0.04)]"
-          : "border-[#E4E7EC]"
-      }`}
-    >
-      <div
-        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-          selected ? "bg-[rgba(21,112,239,0.1)]" : "bg-[#F2F4F7]"
-        }`}
-      >
-        {icon}
-      </div>
-      <div>
-        <h4 className="text-sm font-semibold text-[#101828]">{title}</h4>
-        <p className="text-xs text-[#667085]">{subtitle}</p>
-      </div>
-      {selected && (
-        <div className="absolute top-2.5 right-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#1570EF]">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M3 6l2 2 4-4" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-      )}
-    </div>
   );
 }

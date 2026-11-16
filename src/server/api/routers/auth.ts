@@ -20,7 +20,8 @@ import { signPartnerSessionJwt } from "~/server/auth/jwt";
 import { buildPartnerSessionCookie, clearPartnerSessionCookie } from "~/server/auth/cookies";
 import { endImpersonationFromLogout, endOwnerImpersonation } from "~/server/auth/impersonation";
 import { DocumentStatus, UserType, partnerKindOf } from "~/server/db/enums";
-import { PARTNER_DOC_SLOTS } from "~/lib/constants/partner-documents";
+import { PARTNER_DOC_SLOTS, partnerDocCategory } from "~/lib/constants/partner-documents";
+import { orgKindOf, partnerKindLabel } from "~/lib/partner-display";
 import { MOU_VERSION, MouSignatureKind, mouSectionsFor } from "~/lib/constants/mou";
 import { MOU_USER_SELECT, executedMouFor, renderExecutedMou } from "~/server/mou-pdf";
 import { currentTierFy, ladderFor } from "~/server/partner-tiers";
@@ -147,6 +148,7 @@ export const authRouter = createTRPCRouter({
         mou_signed_at: true,
         tracking_id: true,
         avatar_url: true,
+        organization: { select: { type: true } },
       },
     });
     if (!user) {
@@ -170,6 +172,8 @@ export const authRouter = createTRPCRouter({
       applicationId: user.tracking_id ?? "",
       // agency (owner) / counsellor / independent: what the portal may offer.
       kind: partnerKindOf(user.type),
+      // "Agency Owner", "Institution Counsellor"…: the portal header's label.
+      roleLabel: partnerKindLabel(partnerKindOf(user.type), user.organization?.type),
       status,
       mouSigned: !!mouSignedAt,
       redirectUrl: partnerRedirectFor(
@@ -195,7 +199,7 @@ export const authRouter = createTRPCRouter({
         is_email_verified: true,
         is_phone_verified: true,
         created_at: true,
-        organization: { select: { gst_registered: true } },
+        organization: { select: { gst_registered: true, type: true } },
       },
     });
     if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Account not found" });
@@ -205,7 +209,10 @@ export const authRouter = createTRPCRouter({
     // Only what sign-up collects: bank proof (the cancelled cheque) lives in
     // My Account → Bank Details, so a legacy cheque isn't listed here.
     const kind = partnerKindOf(user.type);
-    const slots = kind === "counsellor" ? [] : PARTNER_DOC_SLOTS[kind].filter((s) => s.atSignup);
+    const slots =
+      kind === "counsellor"
+        ? []
+        : PARTNER_DOC_SLOTS[partnerDocCategory(kind, orgKindOf(user.organization?.type))].filter((s) => s.atSignup);
     const docs = await ctx.db.document.findMany({
       where: {
         OR: [{ user_id: user.id }, ...(user.org_id ? [{ org_id: user.org_id }] : [])],

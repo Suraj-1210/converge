@@ -8,7 +8,7 @@
 // document stops being collected at sign-up (e.g. the cancelled cheque) —
 // partners who already uploaded one still need it labelled.
 
-import type { PartnerRole } from "~/lib/constants/partner-documents";
+import type { PartnerDocCategory } from "~/lib/constants/partner-documents";
 
 const CANCELLED_CHEQUE = "Cancelled Cheque";
 
@@ -30,15 +30,23 @@ export const BANK_PROOF_LABELS = {
   international: "Bank Letter",
 } as const;
 
-// Where sign-up words a document differently for one partner type.
-const PARTNER_DOC_LABELS_BY_ROLE: Partial<Record<PartnerRole, Record<string, string>>> = {
+// Where sign-up words a document differently for one partner type. An
+// institution (school / college) files the agency documents under the same
+// keys, named for an institution.
+const PARTNER_DOC_LABELS_BY_ROLE: Partial<Record<PartnerDocCategory, Record<string, string>>> = {
   agency: { aadhaar: "Aadhaar Card of Director" },
+  institution: {
+    companyPan: "Institution PAN Card",
+    aadhaar: "Aadhaar Card of Authorised Signatory",
+    partnershipDocs: "Institution Registration / Trust Documents",
+    logo: "Institution Logo",
+  },
 };
 
 // doc_type → label. Pass the partner type where known (an agency's Aadhaar is
 // the director's); unknown keys fall back to a readable form of the key rather
 // than the raw key.
-export function partnerDocLabel(key: string, role?: PartnerRole): string {
+export function partnerDocLabel(key: string, role?: PartnerDocCategory): string {
   return (
     (role && PARTNER_DOC_LABELS_BY_ROLE[role]?.[key]) ??
     PARTNER_DOC_LABELS[key] ??
@@ -52,6 +60,7 @@ export const PARTNER_FIELD_LABELS = {
   email: "Email Address",
   phone: "Phone Number",
   companyName: "Company / Agency Name",
+  institutionName: "Institution / School Name",
   website: "Company Website / LinkedIn",
   country: "Country",
   state: "State / Province",
@@ -61,6 +70,8 @@ export const PARTNER_FIELD_LABELS = {
   annualStudentVolume: "Annual Student Volume",
   gstRegistered: "GST Registered",
   companyPan: "Company PAN",
+  institutionPan: "Institution PAN",
+  gstNumber: "GST Number",
   pan: "PAN Number",
 } as const;
 
