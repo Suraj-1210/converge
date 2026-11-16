@@ -25,6 +25,10 @@ type Rates = Record<string, number>;
 type View = "inr" | "ccy";
 
 const COLORS = {
+  volumeBonus: "#2E90FA",
+  incentive: "#DD2590",
+  uniDeducted: "#F04438",
+  uniCredited: "#15B79E",
   earned: "#0BA5EC",
   billed: "#1570EF",
   collected: "#12B76A",
@@ -53,6 +57,7 @@ const entries = (a: Amounts) =>
     .sort((x, y) => y[1] - x[1]);
 
 const moneyOf = (by: Amounts): Money => ({ by, inr: null });
+const inrMoney = (v: number): Money => ({ by: v > 0 ? { INR: v } : {}, inr: v });
 
 // "$2,970 · £2,150"
 const listAmounts = (a: Amounts) =>
@@ -122,6 +127,43 @@ function MoneyText({
 
 const isFinanceManager = (role: number) => role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_MANAGER;
 
+const hasAmount = (m: Money) => entries(m.by).length > 0;
+
+// A KPI's adjustment line ("−₹40,000 deducted · +$500 credited"), in the
+// chosen view. Nothing when both are empty.
+function AdjustmentLine({
+  minus,
+  plus,
+  minusLabel,
+  plusLabel,
+  view,
+  rates,
+}: {
+  minus: Money;
+  plus: Money;
+  minusLabel: string;
+  plusLabel: string;
+  view: View;
+  rates: Rates;
+}) {
+  const parts = [
+    { m: minus, sign: "−", label: minusLabel },
+    { m: plus, sign: "+", label: plusLabel },
+  ].filter((p) => hasAmount(p.m));
+  if (parts.length === 0) return null;
+  return (
+    <span className="mt-1 block text-[#475467]">
+      {parts.map((p, i) => (
+        <span key={p.label}>
+          {i > 0 && " · "}
+          {p.sign}
+          <MoneyText inline m={p.m} view={view} rates={rates} /> {p.label}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function FinanceDashboard({ firstName, embedded = false }: { firstName?: string; embedded?: boolean }) {
   const me = api.authSession.me.useQuery().data;
   const sections = api.tabAccess.mine.useQuery().data?.sections;
@@ -151,6 +193,14 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
       for (const [c, v] of Object.entries(m.by)) if (v && c !== "INR" && !rates[c]) seen.add(c);
     };
     Object.values(o.flow).forEach(scan);
+    scan(o.uniAdjustments.deducted);
+    scan(o.bonus.volume.accrued);
+    scan(o.bonus.incentive.accrued);
+    scan(o.uniAdjustments.credited);
+    scan(o.standing.university.toRecover);
+    scan(o.standing.university.standingCredit);
+    scan(o.kpis.receivables.deducted);
+    scan(o.kpis.receivables.credited);
     scan(o.kpis.receivables.money);
     scan(o.kpis.notBilled.money);
     o.ageing.forEach((b) => scan(moneyOf(b.by)));
@@ -166,7 +216,12 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
     for (const m of [o.flow.earned, o.flow.billed, o.flow.collected, o.flow.approved])
       for (const [c, v] of Object.entries(m.by)) cpSide[c] = (cpSide[c] ?? 0) + v;
     const first = entries(cpSide).map(([c]) => c);
-    const rest = Object.keys(o.flow.distributed.by).filter((c) => !first.includes(c));
+    const rest = [
+      ...Object.keys(o.bonus.volume.accrued.by),
+      ...Object.keys(o.uniAdjustments.deducted.by),
+      ...Object.keys(o.uniAdjustments.credited.by),
+      ...Object.keys(o.flow.distributed.by),
+    ].filter((c, i, all) => !first.includes(c) && all.indexOf(c) === i);
     return [...first, ...rest];
   }, [o]);
   const [focusCcy, setFocusCcy] = useState<string | null>(null);
@@ -228,6 +283,12 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
           </div>
         </div>
       </div>
+
+      {view === "inr" && (
+        <p className="-mt-3 mb-5 text-[12px] text-[#667085]">
+          Converted at Settings › Exchange Rates; University Billing uses indicative rates, so its ₹ totals can differ.
+        </p>
+      )}
 
       {/* Missing exchange rates */}
       {view === "inr" && unconverted.length > 0 && (
@@ -305,9 +366,26 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
             o ? (
               <>
                 billed − collected in {fyLabel}
+                {hasAmount(o.kpis.receivables.deducted) || hasAmount(o.kpis.receivables.credited) ? ", after adjustments" : ""}
                 {o.kpis.receivables.overdueCount > 0 && (
                   <span className="ml-1 font-semibold text-[#B42318]">· {o.kpis.receivables.overdueCount} overdue</span>
                 )}
+                <AdjustmentLine
+                  minus={o.kpis.receivables.deducted}
+                  plus={o.kpis.receivables.credited}
+                  minusLabel="deducted"
+                  plusLabel="credited"
+                  view={view}
+                  rates={rates}
+                />
+                <AdjustmentLine
+                  minus={o.standing.university.standingCredit}
+                  plus={o.standing.university.toRecover}
+                  minusLabel="standing credit, off the next invoice"
+                  plusLabel="to recover on the next invoice"
+                  view={view}
+                  rates={rates}
+                />
               </>
             ) : undefined
           }
@@ -332,7 +410,22 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
           tone="#7F56D9"
           loading={!o}
           value={o && <MoneyText max={6} m={o.kpis.distributed.money} view={view} rates={rates} />}
-          sub={o ? `${o.kpis.distributed.count} payout${o.kpis.distributed.count === 1 ? "" : "s"} released` : undefined}
+          sub={
+            o ? (
+              <>
+                {o.kpis.distributed.count} payout{o.kpis.distributed.count === 1 ? "" : "s"} released
+                {(o.kpis.distributed.deductedInr > 0 || o.kpis.distributed.creditedInr > 0) && ", net of adjustments"}
+                <AdjustmentLine
+                  minus={inrMoney(o.kpis.distributed.deductedInr)}
+                  plus={inrMoney(o.kpis.distributed.creditedInr)}
+                  minusLabel="recovered"
+                  plusLabel="credited"
+                  view={view}
+                  rates={rates}
+                />
+              </>
+            ) : undefined
+          }
           href={linkable("/admin/invoices") ? "/admin/invoices" : undefined}
         />
         <Kpi
@@ -341,7 +434,21 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
           tone="#E31B54"
           loading={!o}
           value={o && <MoneyText max={6} m={o.kpis.payables.money} view={view} rates={rates} />}
-          sub={o ? `${o.kpis.payables.count} approved claim${o.kpis.payables.count === 1 ? "" : "s"} not yet paid (all FYs)` : undefined}
+          sub={
+            o ? (
+              <>
+                {o.kpis.payables.count} approved claim{o.kpis.payables.count === 1 ? "" : "s"} not yet paid (all FYs)
+                <AdjustmentLine
+                  minus={o.standing.partner.toRecover}
+                  plus={o.standing.partner.standingCredit}
+                  minusLabel="to recover at next release"
+                  plusLabel="standing credit"
+                  view={view}
+                  rates={rates}
+                />
+              </>
+            ) : undefined
+          }
           href={linkable("/admin/reconciliation") ? "/admin/reconciliation" : undefined}
         />
       </div>
@@ -353,7 +460,7 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
           className="lg:col-span-2"
           headerRight={view === "ccy" ? <CurrencyChips list={currencies} value={ccy} onChange={setFocusCcy} /> : undefined}
         >
-          {!o ? <SkeletonRows rows={5} /> : <MoneyFlow flow={o.flow} view={view} rates={rates} ccy={ccy} />}
+          {!o ? <SkeletonRows rows={5} /> : <MoneyFlow flow={o.flow} adjustments={o.uniAdjustments} bonus={o.bonus} view={view} rates={rates} ccy={ccy} />}
         </DashboardCard>
         <DashboardCard title="Needs action" bodyClassName="p-2">
           {!o ? (
@@ -361,7 +468,7 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
               <SkeletonRows rows={6} />
             </div>
           ) : (
-            <NeedsAction actions={o.actions} canAct={canAct} linkable={linkable} />
+            <NeedsAction actions={o.actions} canAct={canAct} isSuperAdmin={role === AdminRole.SUPER_ADMIN} linkable={linkable} />
           )}
         </DashboardCard>
       </div>
@@ -484,17 +591,46 @@ function CurrencyChips({ list, value, onChange }: { list: string[]; value: strin
   );
 }
 
-const FLOW_STAGES: { key: keyof Overview["flow"]; label: string; note: string }[] = [
+type FlowKey = keyof Overview["flow"] | "uniDeducted" | "uniCredited" | "volumeBonus" | "incentive";
+// `optional` rows only show when the FY has some.
+const FLOW_STAGES: { key: FlowKey; label: string; note: string; sign?: "−" | "+"; optional?: boolean }[] = [
   { key: "earned", label: "Earned", note: "CP share of commissions approved" },
+  { key: "volumeBonus", label: "Volume bonus", note: "university bonus income", sign: "+", optional: true },
   { key: "billed", label: "Billed", note: "vendor invoices raised" },
+  { key: "uniDeducted", label: "Deducted", note: "university adjustments", sign: "−", optional: true },
+  { key: "uniCredited", label: "Credited", note: "university adjustments", sign: "+", optional: true },
   { key: "collected", label: "Collected", note: "vendor payments recorded" },
   { key: "approved", label: "Approved", note: "collections approved → claimable" },
   { key: "distributed", label: "Distributed", note: "partner payouts released" },
+  { key: "incentive", label: "Partner incentive", note: "CP-funded bonus to partners", optional: true },
 ];
 
-function MoneyFlow({ flow, view, rates, ccy }: { flow: Overview["flow"]; view: View; rates: Rates; ccy: string }) {
-  const values = FLOW_STAGES.map((s) => {
-    const m = flow[s.key];
+function MoneyFlow({
+  flow,
+  adjustments,
+  bonus,
+  view,
+  rates,
+  ccy,
+}: {
+  flow: Overview["flow"];
+  adjustments: Overview["uniAdjustments"];
+  bonus: Overview["bonus"];
+  view: View;
+  rates: Rates;
+  ccy: string;
+}) {
+  const all: Record<FlowKey, Money> = {
+    ...flow,
+    uniDeducted: adjustments.deducted,
+    uniCredited: adjustments.credited,
+    volumeBonus: bonus.volume.accrued,
+    incentive: bonus.incentive.accrued,
+  };
+  const stages = FLOW_STAGES.filter((s) => !s.optional || hasAmount(all[s.key]));
+  const has = (k: FlowKey) => stages.some((s) => s.key === k);
+  const values = stages.map((s) => {
+    const m = all[s.key];
     if (view === "inr") {
       const { inr, missing } = toInr(m, rates);
       return { ...s, value: inr, missing };
@@ -519,6 +655,7 @@ function MoneyFlow({ flow, view, rates, ccy }: { flow: Overview["flow"]; view: V
             />
           </div>
           <div className="col-span-2 text-right text-[13px] font-bold text-[#101828] sm:col-span-1">
+            {v.sign && v.value > 0 && <span className={v.sign === "−" ? "text-[#B42318]" : "text-[#027A48]"}>{v.sign}</span>}
             {view === "inr" ? (
               v.value === 0 && entries(v.missing).length > 0 ? (
                 <span className="text-[#98A2B3]">—</span>
@@ -536,6 +673,14 @@ function MoneyFlow({ flow, view, rates, ccy }: { flow: Overview["flow"]; view: V
       ))}
       <p className="pt-1 text-[11px] text-[#98A2B3]">
         Earned, billed and collected are CP&apos;s share; distributed is the partners&apos; share paid out.
+        {(has("uniDeducted") || has("uniCredited")) &&
+          " Deducted / credited are university adjustments approved in the FY (by adjustment date), in their own currency."}
+        {has("volumeBonus") &&
+          ` Volume bonus is income on top of Earned (approved commissions in the FY); ${fmtMoney(Math.round(bonus.volume.collectedInr), "INR")} collected.`}
+        {has("incentive") &&
+          ` Partner incentive is a cost paid in full to partners; ${fmtMoney(Math.round(bonus.incentive.paidInr), "INR")} paid is inside Distributed${
+            bonus.incentive.claimableInr > 0 ? `, ${fmtMoney(Math.round(bonus.incentive.claimableInr), "INR")} claimable` : ""
+          }.`}
         {view === "ccy" && ccy !== "INR" && " Partner payouts are mostly in ₹, so the last bar is often empty here."}
       </p>
     </div>
@@ -545,13 +690,15 @@ function MoneyFlow({ flow, view, rates, ccy }: { flow: Overview["flow"]; view: V
 function NeedsAction({
   actions,
   canAct,
+  isSuperAdmin,
   linkable,
 }: {
   actions: Overview["actions"];
   canAct: boolean;
+  isSuperAdmin: boolean;
   linkable: (href: string) => boolean;
 }) {
-  const rows: { label: string; count: number; href: string; fm: boolean; sub?: string }[] = [
+  const rows: { label: string; count: number; href: string; fm: boolean; sa?: boolean; sub?: string }[] = [
     {
       label: "Approve commission",
       count: actions.approveCommission,
@@ -568,6 +715,14 @@ function NeedsAction({
     { label: "Payouts to verify", count: actions.payoutsToVerify, href: "/admin/reconciliation", fm: false },
     { label: "Payouts to release", count: actions.payoutsToRelease, href: "/admin/reconciliation", fm: true },
     { label: "Overdue invoices", count: actions.overdueInvoices, href: "/admin/university-billing?tab=ageing&overdue=1", fm: false, sub: "chase the university" },
+    {
+      label: "Adjustments awaiting Super Admin approval",
+      count: actions.adjustmentsToApprove,
+      href: "/admin/adjustments",
+      fm: false,
+      sa: true,
+      sub: "deductions and credits in draft",
+    },
   ];
   return (
     <ul>
@@ -590,10 +745,17 @@ function NeedsAction({
                     FM
                   </span>
                 )}
+                {r.sa && (
+                  <span className="rounded bg-[#FDF2FA] px-1.5 py-px text-[10px] font-bold text-[#C11574]" title="Only a Super Admin can approve">
+                    SA
+                  </span>
+                )}
               </span>
               {r.sub && <span className="block text-[11px] text-[#98A2B3]">{r.sub}</span>}
             </span>
-            {r.fm && !canAct ? (
+            {r.sa && !isSuperAdmin ? (
+              <span className="text-[11px] font-semibold whitespace-nowrap text-[#98A2B3]">SA approves</span>
+            ) : r.fm && !canAct ? (
               <span className="text-[11px] font-semibold text-[#98A2B3]">FM approves</span>
             ) : open && r.count > 0 ? (
               <span className="text-[12px] font-semibold text-[#1570EF]">Open →</span>
@@ -855,8 +1017,25 @@ function PartnerPayouts({ data, view }: { data: Payouts; view: View }) {
     data.compare.mode === "toDate"
       ? `YoY is same period to date: 1 Apr – ${fmtDay(data.compare.to)} vs 1 Apr – ${fmtDay(data.compare.prevTo)}, in ₹.`
       : `YoY is ${financialYearLabel(fy)} vs ${financialYearLabel(fy - 1)}, full years, in ₹.`;
+  const heldNote =
+    data.heldWithoutPayouts.length > 0 ? (
+      <p className="border-t border-[#F2F4F7] px-5 py-2.5 text-[12px] text-[#667085]">
+        Also on payout hold, with no payouts in these years:{" "}
+        {data.heldWithoutPayouts.map((h, i) => (
+          <span key={h.key}>
+            {i > 0 && ", "}
+            <span className="font-medium text-[#344054]">{h.name}</span> <HoldBadge hold={h} />
+          </span>
+        ))}
+      </p>
+    ) : null;
   if (data.rows.length === 0) {
-    return <EmptyState label="No partner payouts released in these four years." />;
+    return (
+      <>
+        <EmptyState label="No partner payouts released in these four years." />
+        {heldNote}
+      </>
+    );
   }
   return (
     <div>
@@ -903,7 +1082,10 @@ function PartnerPayouts({ data, view }: { data: Payouts; view: View }) {
             {shown.map((r) => (
               <tr key={r.key} className="border-t border-[#F2F4F7] align-top">
                 <td className="px-5 py-2.5">
-                  <div className="font-medium text-[#101828]">{r.name}</div>
+                  <div className="flex flex-wrap items-center gap-1.5 font-medium text-[#101828]">
+                    {r.name}
+                    {r.hold && <HoldBadge hold={r.hold} />}
+                  </div>
                   <div className="text-[11px] text-[#98A2B3]">{r.type === "agency" ? "Agency" : "Independent counsellor"}</div>
                 </td>
                 {data.fys.map((f) => {
@@ -954,12 +1136,26 @@ function PartnerPayouts({ data, view }: { data: Payouts; view: View }) {
           {showAll ? "Show top 12" : `Show all ${rows.length}`}
         </button>
       )}
+      {heldNote}
       <p className="border-t border-[#F2F4F7] px-5 py-2.5 text-[11px] text-[#98A2B3]">
         Flags: <strong>No payouts this FY</strong> = paid last FY, nothing yet this FY; <strong>Down sharply</strong> = 50% or more below
         the comparison period.
         {view === "ccy" && " By currency shows what was actually remitted (₹, or the foreign amount for payees abroad)."}
       </p>
     </div>
+  );
+}
+
+// Payouts paused for this payee (Finance › Adjustments › Payout holds).
+function HoldBadge({ hold }: { hold: { reason: string; placedAt: Date | string } }) {
+  const since = new Date(hold.placedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return (
+    <span
+      className="rounded-full bg-[#FEF3F2] px-2 py-0.5 text-[11px] font-bold whitespace-nowrap text-[#B42318]"
+      title={`Payouts on hold since ${since}: ${hold.reason}`}
+    >
+      On hold
+    </span>
   );
 }
 

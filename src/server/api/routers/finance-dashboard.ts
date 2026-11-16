@@ -2,6 +2,10 @@ import { z } from "zod";
 import { createTRPCRouter, financeProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
+  AdjustmentDirection,
+  AdjustmentSide,
+  AdjustmentStatus,
+  BonusKind,
   DocumentStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
@@ -14,6 +18,14 @@ import {
 } from "~/server/db/enums";
 import { effectiveRate } from "~/server/api/routers/fx";
 import { lineTrancheShares, TRANCHE_LINKS_SELECT } from "~/server/vendor-invoice-tranches";
+import {
+  invoiceAdjustmentTotals,
+  netOutstanding,
+  partnerAdjustmentBalances,
+  payeeKey,
+  standingUniversityBalances,
+} from "~/server/adjustments";
+import { bonusTotals } from "~/server/bonus-schemes";
 
 // ---------------------------------------------------------------------------
 // Finance dashboard (approved by Suraj, 16 Nov 2026): the landing page for
@@ -39,6 +51,26 @@ import { lineTrancheShares, TRANCHE_LINKS_SELECT } from "~/server/vendor-invoice
 //                     commissions) on no vendor invoice
 //   Distributed       partner payouts RELEASED with fy = FY
 //   Partner payables  payouts approved but not released (any FY)
+//
+// Adjustments (the ledger in ~/server/adjustments, APPROVED only):
+//   Receivables       less deductions / plus credits allocated to the FY's
+//                     invoices, in the invoice currency (as University
+//                     Billing stats); ageing and top receivables likewise use
+//                     each open invoice's outstanding after adjustments
+//   Money flow        university deductions / credits dated in the FY
+//                     (adjustment_date), in the adjustment's own currency
+//   Distributed       already net: a release pays the claim − deductions
+//                     recovered + credits added; we show what was netted on
+//                     the FY's released payouts
+//
+// Bonus (~/server/bonus-schemes, approved commissions in the FY):
+//   Volume bonus      university volume bonus: Collegepond income on its own
+//                     tranche, outside Earned (commision_amount is the base)
+//   Partner incentive CP-funded cost, paid 100% to the partner through the
+//                     normal payout, so what's paid is already in Distributed
+//   Standing balances what's approved but not yet applied, as of today:
+//                     university side waits for the counterparty's next
+//                     invoice, partner side for the payee's next release
 // ---------------------------------------------------------------------------
 
 type Amounts = Record<string, number>;
@@ -201,6 +233,8 @@ async function openInvoices() {
     },
   });
   const today = new Date(`${todayIst()}T00:00:00Z`).getTime();
+  // Approved deductions / credits already applied to each invoice.
+  const adj = await invoiceAdjustmentTotals(invoices.map((i) => i.id));
   return invoices.map((inv) => {
     let outstanding = 0;
     for (const it of inv.vendor_invoice_item) {
@@ -224,7 +258,7 @@ async function openInvoices() {
     return {
       id: inv.id,
       currency: inv.currency,
-      outstanding: round2(outstanding),
+      outstanding: netOutstanding(outstanding, adj.get(inv.id)),
       daysOverdue: Math.max(0, daysOverdue),
       notYetDue: inv.due_date == null || daysOverdue < 0,
       // Same buckets as University Billing's ageing report.
@@ -284,6 +318,13 @@ export const financeDashboardRouter = createTRPCRouter({
       billedTrend,
       collectedTrend,
       distributedTrend,
+      invoiceAdjRows,
+      uniAdjRows,
+      nettedRows,
+      standingUni,
+      partnerBalances,
+      adjustmentDrafts,
+      bonusRows,
     ] = await Promise.all([
       storedRates(),
       db.$queryRawUnsafe<{ apps: unknown; students: unknown }[]>(
@@ -381,7 +422,98 @@ export const financeDashboardRouter = createTRPCRouter({
         PayoutStatus.RELEASED,
         fy,
       ),
+      // University adjustments applied to the FY's invoices (invoice currency).
+      db.$queryRawUnsafe<{ ccy: string; dir: unknown; amt: unknown }[]>(
+        `SELECT vi.currency AS ccy, aj.direction AS dir, SUM(al.amount) AS amt
+         FROM adjustment_allocation al
+         JOIN adjustment aj ON aj.id = al.adjustment_id
+         JOIN vendor_invoice vi ON vi.id = al.vendor_invoice_id
+         WHERE vi.fy = ? AND aj.status = ?
+         GROUP BY vi.currency, aj.direction`,
+        fy,
+        AdjustmentStatus.APPROVED,
+      ),
+      // University adjustments dated in the FY (adjustment currency).
+      db.$queryRawUnsafe<{ ccy: string; dir: unknown; amt: unknown; cnt: unknown }[]>(
+        `SELECT aj.currency AS ccy, aj.direction AS dir, SUM(aj.amount) AS amt, COUNT(*) AS cnt
+         FROM adjustment aj
+         WHERE aj.status = ? AND aj.side = ? AND aj.adjustment_date >= ? AND aj.adjustment_date < ?
+         GROUP BY aj.currency, aj.direction`,
+        AdjustmentStatus.APPROVED,
+        AdjustmentSide.UNIVERSITY,
+        start,
+        end,
+      ),
+      // Partner adjustments netted on payouts released in the FY (₹).
+      db.$queryRawUnsafe<{ dir: unknown; amt: unknown }[]>(
+        `SELECT aj.direction AS dir, SUM(al.amount) AS amt
+         FROM adjustment_allocation al
+         JOIN adjustment aj ON aj.id = al.adjustment_id
+         JOIN partner_payout p ON p.id = al.partner_payout_id
+         WHERE p.status = ? AND p.fy = ?
+         GROUP BY aj.direction`,
+        PayoutStatus.RELEASED,
+        fy,
+      ),
+      standingUniversityBalances(),
+      partnerAdjustmentBalances(),
+      db.adjustment.count({ where: { status: AdjustmentStatus.DRAFT } }),
+      bonusTotals({ fy }),
     ]);
+
+    // Bonus: per currency accrued; collected / paid in exact ₹.
+    const volumeBonus = emptyMoney();
+    const incentive = emptyMoney();
+    let volumeCollectedInr = 0;
+    let incentivePaidInr = 0;
+    let incentiveClaimableInr = 0;
+    for (const b of bonusRows) {
+      if (b.kind === BonusKind.VOLUME) {
+        addMoney(volumeBonus, b.currency, b.accrued, null);
+        volumeCollectedInr = round2(volumeCollectedInr + b.collectedInr);
+      } else if (b.kind === BonusKind.INCENTIVE) {
+        addMoney(incentive, b.currency, b.accrued, null);
+        incentivePaidInr = round2(incentivePaidInr + b.paidInr);
+        incentiveClaimableInr = round2(incentiveClaimableInr + b.claimableInr);
+      }
+    }
+
+    // Adjustments
+    const isCredit = (dir: unknown) => n(dir) === AdjustmentDirection.CREDIT;
+    const invDeducted: Amounts = {};
+    const invCredited: Amounts = {};
+    for (const r of invoiceAdjRows) addTo(isCredit(r.dir) ? invCredited : invDeducted, r.ccy, n(r.amt));
+    const uniDeducted = emptyMoney();
+    const uniCredited = emptyMoney();
+    let uniAdjCount = 0;
+    for (const r of uniAdjRows) {
+      addMoney(isCredit(r.dir) ? uniCredited : uniDeducted, r.ccy, n(r.amt), null);
+      uniAdjCount += n(r.cnt);
+    }
+    // Standing university balances: a deduction not yet applied comes off the
+    // counterparty's next invoice (their standing credit with us); a credit
+    // not yet applied is added to it (ours to recover).
+    const uniStandingCredit: Amounts = {};
+    const uniToRecover: Amounts = {};
+    for (const b of standingUni) {
+      if (b.deduction > 0) addTo(uniStandingCredit, b.currency, b.deduction);
+      if (b.credit > 0) addTo(uniToRecover, b.currency, b.credit);
+    }
+    let nettedDeductionsInr = 0;
+    let nettedCreditsInr = 0;
+    for (const r of nettedRows) {
+      if (isCredit(r.dir)) nettedCreditsInr = round2(nettedCreditsInr + n(r.amt));
+      else nettedDeductionsInr = round2(nettedDeductionsInr + n(r.amt));
+    }
+    // Partner balances: deductions to recover from the payee's next release,
+    // credits standing to be paid with it.
+    let partnerToRecoverInr = 0;
+    let partnerStandingCreditInr = 0;
+    for (const b of partnerBalances.values()) {
+      partnerToRecoverInr = round2(partnerToRecoverInr + b.deductionInr);
+      partnerStandingCreditInr = round2(partnerStandingCreditInr + b.creditInr);
+    }
+    const inrMoney = (v: number): Money => ({ by: v > 0 ? { INR: v } : {}, inr: v });
 
     // KPIs
     const earned = emptyMoney();
@@ -404,11 +536,15 @@ export const financeDashboardRouter = createTRPCRouter({
       addMoney(approved, r.ccy, n(r.amt_ok), n(r.inr_ok));
       collectedCount += n(r.cnt);
     }
-    // Receivables: billed − collected per currency (University Billing's
-    // stats compute the same difference in ₹).
+    // Receivables: billed − collected − deductions + credits applied to the
+    // FY's invoices, per currency (University Billing's stats compute the
+    // same difference in ₹).
     const receivables: Amounts = {};
-    for (const ccy of new Set([...Object.keys(billed.by), ...Object.keys(collected.by)])) {
-      const v = round2((billed.by[ccy] ?? 0) - (collected.by[ccy] ?? 0));
+    const recvCcys = [billed.by, collected.by, invDeducted, invCredited].flatMap((a) => Object.keys(a));
+    for (const ccy of new Set(recvCcys)) {
+      const v = round2(
+        (billed.by[ccy] ?? 0) - (collected.by[ccy] ?? 0) - (invDeducted[ccy] ?? 0) + (invCredited[ccy] ?? 0),
+      );
       if (v > 0) receivables[ccy] = v;
     }
     const distributed = emptyMoney();
@@ -477,12 +613,39 @@ export const financeDashboardRouter = createTRPCRouter({
         earned: { money: earned, count: earnedCount },
         billed: { money: billed, count: billedCount },
         collected: { money: collected, count: collectedCount },
-        receivables: { money: { by: receivables, inr: null } as Money, overdueCount: overdueInFy },
+        receivables: {
+          money: { by: receivables, inr: null } as Money,
+          overdueCount: overdueInFy,
+          deducted: { by: invDeducted, inr: null } as Money,
+          credited: { by: invCredited, inr: null } as Money,
+        },
         notBilled: { money: { by: notBilled.by, inr: null } as Money, items: notBilled.items, commissions: notBilled.commissions },
-        distributed: { money: distributed, count: distributedCount },
+        distributed: {
+          money: distributed,
+          count: distributedCount,
+          deductedInr: nettedDeductionsInr,
+          creditedInr: nettedCreditsInr,
+        },
         payables: { money: payables, count: payableRows._count._all },
       },
       flow: { earned, billed, collected, approved, distributed },
+      bonus: {
+        volume: { accrued: volumeBonus, collectedInr: volumeCollectedInr },
+        incentive: { accrued: incentive, paidInr: incentivePaidInr, claimableInr: incentiveClaimableInr },
+      },
+      // University deductions / credits dated in the FY (money-flow bars).
+      uniAdjustments: { deducted: uniDeducted, credited: uniCredited, count: uniAdjCount },
+      // Approved but not yet applied, as of today.
+      standing: {
+        university: {
+          toRecover: { by: uniToRecover, inr: null } as Money,
+          standingCredit: { by: uniStandingCredit, inr: null } as Money,
+        },
+        partner: {
+          toRecover: inrMoney(partnerToRecoverInr),
+          standingCredit: inrMoney(partnerStandingCreditInr),
+        },
+      },
       actions: {
         approveCommission: n(approveCommission[0]?.ready),
         awaitingDepositSlip: n(approveCommission[0]?.waiting),
@@ -492,6 +655,7 @@ export const financeDashboardRouter = createTRPCRouter({
         payoutsToVerify,
         payoutsToRelease,
         overdueInvoices: overdueOpen,
+        adjustmentsToApprove: adjustmentDrafts,
       },
       ageing,
       trend,
@@ -513,7 +677,7 @@ export const financeDashboardRouter = createTRPCRouter({
     const lastYear = new Date(Date.UTC(y - 1, m - 1, Math.min(d, m === 2 ? 28 : d)));
     const cutoffPrev = lastYear.toISOString().slice(0, 10);
 
-    const [rows, prevToDate] = await Promise.all([
+    const [rows, prevToDate, holds] = await Promise.all([
       db.$queryRawUnsafe<
         { org_id: number | null; payee_user_id: number | null; fy: number; ccy: string; amt: unknown; inr: unknown; cnt: unknown }[]
       >(
@@ -537,6 +701,11 @@ export const financeDashboardRouter = createTRPCRouter({
             cutoffPrev,
           )
         : Promise.resolve([]),
+      // Payees whose payouts are paused (Finance › Adjustments › Payout holds).
+      db.payout_hold.findMany({
+        where: { lifted_at: null },
+        select: { org_id: true, payee_user_id: true, reason: true, placed_at: true },
+      }),
     ]);
 
     const keyOf = (r: { org_id: number | null; payee_user_id: number | null }) =>
@@ -570,8 +739,21 @@ export const financeDashboardRouter = createTRPCRouter({
       if (row) row.prevToDateInr = round2(n(r.inr));
     }
 
-    const orgIds = Array.from(map.values()).flatMap((r) => (r.orgId != null ? [r.orgId] : []));
-    const userIds = Array.from(map.values()).flatMap((r) => (r.userId != null ? [r.userId] : []));
+    // A held payee with no released payouts in these four FYs still has to be
+    // visible, so it's listed under the table.
+    const holdOf = new Map(holds.map((h) => [payeeKey(h), h]));
+    const heldElsewhere = holds
+      .filter((h) => !map.has(keyOf(h)))
+      .map((h) => ({ ...h, isOrg: h.org_id != null, id: (h.org_id ?? h.payee_user_id)! }));
+
+    const orgIds = [
+      ...Array.from(map.values()).flatMap((r) => (r.orgId != null ? [r.orgId] : [])),
+      ...heldElsewhere.filter((h) => h.isOrg).map((h) => h.id),
+    ];
+    const userIds = [
+      ...Array.from(map.values()).flatMap((r) => (r.userId != null ? [r.userId] : [])),
+      ...heldElsewhere.filter((h) => !h.isOrg).map((h) => h.id),
+    ];
     const [orgs, users] = await Promise.all([
       orgIds.length ? db.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } }) : [],
       userIds.length
@@ -600,6 +782,7 @@ export const financeDashboardRouter = createTRPCRouter({
                 ? "returning"
                 : "new"
               : null;
+      const hold = holdOf.get(payeeKey({ org_id: row.orgId, payee_user_id: row.userId }));
       return {
         key: row.key,
         name:
@@ -614,6 +797,7 @@ export const financeDashboardRouter = createTRPCRouter({
         baseInr: base,
         yoyPct,
         flag,
+        hold: hold ? { reason: hold.reason, placedAt: hold.placed_at } : null,
       };
     });
     out.sort((a, b) => b.currentInr - a.currentInr || (b.byFy[fy - 1]?.inr ?? 0) - (a.byFy[fy - 1]?.inr ?? 0));
@@ -623,6 +807,12 @@ export const financeDashboardRouter = createTRPCRouter({
         ? { mode: "toDate" as const, from: fyStart(fy).toISOString().slice(0, 10), to: todayStr, prevTo: cutoffPrev }
         : { mode: "full" as const },
       rows: out,
+      heldWithoutPayouts: heldElsewhere.map((h) => ({
+        key: keyOf(h),
+        name: h.isOrg ? (orgName.get(h.id) ?? `Partner #${h.id}`) : (userName.get(h.id) ?? `Counsellor #${h.id}`),
+        reason: h.reason,
+        placedAt: h.placed_at,
+      })),
     };
   }),
 
