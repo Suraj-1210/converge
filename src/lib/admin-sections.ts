@@ -31,6 +31,9 @@ import { AdminRole } from "~/server/db/enums";
 //                                       is BDM of (~/server/staff-access).
 //   Finance, Content (1, 2, 7)        → what they had before
 //   Users, Settings, Audit Logs        → Super Admin only, not switchable
+//   Reports & Analytics                → Super Admin only, not switchable
+//                                       (16 Nov 2026: its data spans every
+//                                       partner, RM and counsellor)
 //
 // Switching a tab on opens its pages; it never widens whose data the user
 // sees (staff-access scoping still applies, and tabs whose data isn't scoped
@@ -57,6 +60,7 @@ export type AdminSection =
   | "adjustments"
   | "universities"
   | "events"
+  | "reports"
   | "system";
 
 const {
@@ -118,12 +122,13 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   adjustments: FINANCE,
   universities: ABOVE_COUNSELLOR,
   events: NOT_BDM,
+  reports: [SUPER_ADMIN],
   system: [SUPER_ADMIN],
 };
 
 // The tabs a Super Admin can switch, in sidebar order. Not here: Dashboard
-// (everyone's landing page), Notes (hidden page) and System (Users, Settings,
-// Audit Logs), which stay at their built-in default.
+// (everyone's landing page), Notes (hidden page), Reports & Analytics and
+// System (Users, Settings, Audit Logs), which stay at their built-in default.
 export const SWITCHABLE_SECTIONS: { section: AdminSection; label: string; group: string }[] = [
   { section: "partners", label: "Partners", group: "Operations" },
   { section: "students", label: "Students", group: "Operations" },
@@ -242,6 +247,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/reconciliation", "reconciliation"],
   ["/admin/bank-verifications", "bankVerifications"],
   ["/admin/adjustments", "adjustments"],
+  ["/admin/reports", "reports"],
   ["/admin/users", "system"],
   ["/admin/settings", "system"],
   ["/admin/audit-logs", "system"],
@@ -298,6 +304,7 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["bankVerification.list", "bankVerifications"],
   ["bankVerification.counts", "bankVerifications"],
   ["adjustments.", "adjustments"],
+  ["reports.", "reports"],
 ];
 
 export function sectionForProcedure(path: string): AdminSection | null {

@@ -230,12 +230,12 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     label: "System",
     items: [
+      // Reports & Analytics: Super Admin only (16 Nov 2026).
       {
-        label: "Reports",
+        label: "Reports & Analytics",
         href: "/admin/reports",
         icon: <BarChartIcon />,
-        disabled: true,
-        section: "system",
+        section: "reports",
       },
       { label: "Users", href: "/admin/users", icon: <UsersIcon />, section: "system" },
       { label: "Settings", href: "/admin/settings", icon: <SettingsIcon />, section: "system" },
