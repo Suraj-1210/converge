@@ -48,7 +48,7 @@ function StatusPill({ status }: { status: number }) {
   return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ${cls}`}>{label}</span>;
 }
 
-export function HoldBadge({ title }: { title?: string }) {
+function HoldBadge({ title }: { title?: string }) {
   return (
     <span title={title} className="ml-1.5 inline-block rounded-[10px] bg-[#FEF3F2] px-2 py-0.5 align-middle text-[10px] font-semibold text-[#B42318]">
       On hold
