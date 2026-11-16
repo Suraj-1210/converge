@@ -286,7 +286,19 @@ function UniversityBilling() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const [tab, setTab] = useState<"confirmed" | "billing" | "ageing">("confirmed");
+  // The Finance dashboard links here with ?tab=billing|ageing, and into the
+  // ageing report with ?bucket=0-3, ?overdue=1 or ?university=<name>.
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [tab, setTab] = useState<"confirmed" | "billing" | "ageing">(
+    tabParam === "billing" || tabParam === "ageing" ? tabParam : "confirmed",
+  );
+  const bucketParam = Number(searchParams.get("bucket"));
+  const ageingFilter: AgeingFilter = {
+    bucket: searchParams.get("bucket") != null && [0, 1, 2, 3].includes(bucketParam) ? bucketParam : null,
+    overdueOnly: searchParams.get("overdue") === "1",
+    university: searchParams.get("university") ?? "",
+  };
   const [fy, setFy] = useState<number | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
 
@@ -310,7 +322,6 @@ function UniversityBilling() {
   // ?recordPayment=<vendorInvoiceId>: show that invoice on the Vendor Billing
   // tab and open its Record Payment modal. Handled once, then the param is
   // dropped so closing the modal doesn't reopen it.
-  const searchParams = useSearchParams();
   const router = useRouter();
   const deepLinkId = Number(searchParams.get("recordPayment")) || null;
   const invoicesQ = api.universityBilling.listVendorInvoices.useQuery(undefined, {
@@ -422,7 +433,7 @@ function UniversityBilling() {
           onOpenRecordPayment={(invoice) => setModal({ kind: "recordPayment", invoice })}
         />
       )}
-      {tab === "ageing" && <AgeingTab />}
+      {tab === "ageing" && <AgeingTab initial={ageingFilter} />}
 
       {modal?.kind === "createInvoice" && (
         <CreateInvoiceModal vendorId={modal.vendorId} vendorName={modal.vendorName} students={modal.students} onClose={() => setModal(null)} onToast={showToast} />
@@ -1296,14 +1307,30 @@ function InvoicesView({
 // =============================================================================
 // Tab 3 — Ageing Report
 // =============================================================================
+function FilterChip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-[#EFF8FF] px-2.5 py-1 font-semibold text-[#175CD3]">
+      {label}
+      <button type="button" aria-label={`Clear ${label}`} onClick={onClear} className="text-[#175CD3] hover:text-[#101828]">
+        ×
+      </button>
+    </span>
+  );
+}
+
 const AGEING_BUCKETS = ["Current (0–30 days)", "31–60 days", "61–90 days", "90+ days"];
 const SEVERITY = ["Current", "31–60d", "61–90d", "90+d"];
 type SortKey = "vendor" | "university" | "outstanding" | "due" | "days";
 
-function AgeingTab() {
+type AgeingFilter = { bucket: number | null; overdueOnly: boolean; university: string };
+
+function AgeingTab({ initial }: { initial: AgeingFilter }) {
   const q = api.universityBilling.ageing.useQuery();
   const data = q.data;
   const [vendorFilter, setVendorFilter] = useState<string>("");
+  const [bucketFilter, setBucketFilter] = useState<number | null>(initial.bucket);
+  const [overdueOnly, setOverdueOnly] = useState(initial.overdueOnly);
+  const [uniFilter, setUniFilter] = useState(initial.university);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "days", dir: -1 });
 
   const vendors = useMemo(
@@ -1313,6 +1340,9 @@ function AgeingTab() {
   const rows = useMemo(() => {
     let r = data?.rows ?? [];
     if (vendorFilter) r = r.filter((x) => x.vendorName === vendorFilter);
+    if (bucketFilter != null) r = r.filter((x) => x.bucket === bucketFilter);
+    if (overdueOnly) r = r.filter((x) => x.daysOverdue > 0);
+    if (uniFilter) r = r.filter((x) => x.university === uniFilter);
     const key = sort.key;
     const val = (row: AgeingRow): string | number =>
       key === "vendor" ? row.vendorName
@@ -1326,7 +1356,7 @@ function AgeingTab() {
       if (av > bv) return 1 * sort.dir;
       return 0;
     });
-  }, [data, vendorFilter, sort]);
+  }, [data, vendorFilter, bucketFilter, overdueOnly, uniFilter, sort]);
 
   const setSortKey = (key: SortKey) =>
     setSort((p) => (p.key === key ? { key, dir: p.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
@@ -1343,7 +1373,21 @@ function AgeingTab() {
         {AGEING_BUCKETS.map((label, i) => {
           const b = data?.buckets.find((x) => x.bucket === i);
           return (
-            <div key={i} className="rounded-xl border border-[#E4E7EC] bg-white p-4">
+            <div
+              key={i}
+              role="button"
+              tabIndex={0}
+              aria-pressed={bucketFilter === i}
+              title="Show only this bucket"
+              onClick={() => setBucketFilter((cur) => (cur === i ? null : i))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setBucketFilter((cur) => (cur === i ? null : i));
+                }
+              }}
+              className={`cursor-pointer rounded-xl border bg-white p-4 ${bucketFilter === i ? "border-[#1570EF] ring-1 ring-[#1570EF]" : "border-[#E4E7EC] hover:border-[#84caff]"}`}
+            >
               <div className={`text-[26px] font-extrabold ${i >= 2 ? "text-[#B42318]" : "text-[#101828]"}`}>{b?.count ?? 0}</div>
               <div className="mt-1 text-[13px] font-medium text-[#667085]">{label}</div>
               <div className="mt-0.5 text-xs text-[#98A2B3]">{formatINR(b?.inrTotal ?? 0)}</div>
@@ -1362,7 +1406,25 @@ function AgeingTab() {
             onChange={(e) => setVendorFilter(e.target.value)}
           />
         </div>
-        <Button variant="secondary" onClick={() => { setVendorFilter(""); setSort({ key: "days", dir: -1 }); }}>Reset</Button>
+        {(bucketFilter != null || overdueOnly || uniFilter) && (
+          <div className="flex flex-wrap items-center gap-2 pb-1 text-[12px]">
+            {bucketFilter != null && <FilterChip label={AGEING_BUCKETS[bucketFilter]!} onClear={() => setBucketFilter(null)} />}
+            {overdueOnly && <FilterChip label="Overdue only" onClear={() => setOverdueOnly(false)} />}
+            {uniFilter && <FilterChip label={uniFilter} onClear={() => setUniFilter("")} />}
+          </div>
+        )}
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setVendorFilter("");
+            setBucketFilter(null);
+            setOverdueOnly(false);
+            setUniFilter("");
+            setSort({ key: "days", dir: -1 });
+          }}
+        >
+          Reset
+        </Button>
       </div>
 
       <DashboardCard

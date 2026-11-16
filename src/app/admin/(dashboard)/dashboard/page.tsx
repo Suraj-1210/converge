@@ -23,6 +23,8 @@ import {
 } from "~/components/dashboard/widgets";
 import { Stagger, FadeUp } from "~/components/dashboard/motion";
 import { AutoAssignCard } from "./auto-assign-card";
+import { FinanceDashboard } from "./finance-dashboard";
+import { useUrlState } from "~/lib/url-state";
 import { tierBadgeStyle } from "~/lib/partner-tiers";
 import { AdminRole } from "~/server/db/enums";
 
@@ -76,6 +78,10 @@ function activityStyle(action: string): { icon: string; bg: string } {
 
 const isCounsellor = (role: number) =>
   role === AdminRole.COUNSELLOR || role === AdminRole.COUNSELLOR_LEAD;
+
+// Finance Manager / Executive land on the Finance dashboard (16 Nov 2026).
+const isFinanceStaff = (role: number) =>
+  role === AdminRole.FINANCE_MANAGER || role === AdminRole.FINANCE_EXECUTIVE;
 
 type QuickAction = { label: string; href: string; badge?: number };
 
@@ -149,12 +155,45 @@ function QuickActions({
 
 export default function DashboardPage() {
   const me = api.authSession.me.useQuery().data;
-  // Counsellors get their own dashboard; wait for the role before choosing.
+  // Counsellors and Finance get their own dashboards; wait for the role
+  // before choosing.
   if (!me) return null;
-  return isCounsellor(me.role) ? (
-    <CounsellorDashboard role={me.role} firstName={me.firstName} />
-  ) : (
-    <AdminDashboard />
+  if (isCounsellor(me.role)) return <CounsellorDashboard role={me.role} firstName={me.firstName} />;
+  if (isFinanceStaff(me.role)) return <FinanceDashboard firstName={me.firstName} />;
+  if (me.role === AdminRole.SUPER_ADMIN) return <SuperAdminDashboard />;
+  return <AdminDashboard />;
+}
+
+// Super Admin: the general dashboard plus the Finance dashboard as a tab
+// (?view=finance keeps the tab across a refresh).
+function SuperAdminDashboard() {
+  const [state, setState] = useUrlState({ view: "overview" });
+  const tab = state.view === "finance" ? "finance" : "overview";
+  return (
+    <>
+      <div className="mb-5 flex gap-2 border-b border-[#E4E7EC]" role="tablist">
+        {(
+          [
+            ["overview", "Overview"],
+            ["finance", "Finance"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setState({ view: id })}
+            className={`-mb-px border-b-2 px-3 py-2.5 text-sm font-semibold transition ${
+              tab === id ? "border-[#1570EF] text-[#1570EF]" : "border-transparent text-[#667085] hover:text-[#344054]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "finance" ? <FinanceDashboard embedded /> : <AdminDashboard />}
+    </>
   );
 }
 
