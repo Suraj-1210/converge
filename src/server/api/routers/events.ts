@@ -189,17 +189,45 @@ export const eventsRouter = createTRPCRouter({
   }),
 
   // Approved agency partners available to invite (owner user id + agency name).
+  // Every approved partner user who can be invited: agency owners (shown by
+  // agency name), their agency counsellors, and independent counsellors.
+  // Only owners were listed before (16 Nov: "not all counsellors are shown").
   partnersForInvite: protectedAdminProcedure.query(async () => {
-    const owners = await db.user.findMany({
+    const users = await db.user.findMany({
       where: {
-        type: UserType.AGENCY_OWNER,
         status: UserStatus.APPROVED,
-        org_id: { not: null },
+        type: {
+          in: [UserType.AGENCY_OWNER, UserType.AGENCY_COUNSELLOR, UserType.INDEPENDENT_COUNSELLOR],
+        },
       },
-      orderBy: { created_at: "desc" },
-      select: { id: true, organization: { select: { name: true } } },
+      select: {
+        id: true,
+        type: true,
+        first_name: true,
+        last_name: true,
+        organization: { select: { name: true } },
+      },
     });
-    return owners.map((o) => ({ userId: o.id, name: o.organization?.name ?? "—" }));
+    const kindOf = (t: number) =>
+      t === UserType.AGENCY_OWNER
+        ? ("owner" as const)
+        : t === UserType.AGENCY_COUNSELLOR
+          ? ("agencyCounsellor" as const)
+          : ("independent" as const);
+    return users
+      .map((u) => {
+        const person = `${u.first_name} ${u.last_name}`.trim();
+        const org = u.organization?.name ?? null;
+        const kind = kindOf(u.type);
+        return {
+          userId: u.id,
+          kind,
+          // Owner: the agency; agency counsellor: person + agency; independent: person.
+          name: kind === "owner" ? (org ?? person) : person,
+          detail: kind === "owner" ? person : kind === "agencyCounsellor" ? org : null,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   }),
 
   create: protectedAdminProcedure

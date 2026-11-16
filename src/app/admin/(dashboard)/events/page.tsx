@@ -14,6 +14,13 @@ import { Stagger, FadeUp } from "~/components/dashboard/motion";
 
 type EventRow = RouterOutputs["events"]["list"][number];
 
+// Invite picker groups, in display order.
+const INVITE_GROUPS = [
+  { kind: "owner", label: "Agencies (owners)" },
+  { kind: "agencyCounsellor", label: "Agency counsellors" },
+  { kind: "independent", label: "Independent counsellors" },
+] as const;
+
 const TYPE_BADGE: Record<number, string> = {
   [EventType.UNIVERSITY_FAIR]: "bg-[#EFF8FF] text-[#175CD3]",
   [EventType.WEBINAR]: "bg-[#F0FDF4] text-[#067647]",
@@ -182,6 +189,23 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
         ? [...s.invitePartnerIds, id]
         : s.invitePartnerIds.filter((x) => x !== id),
     }));
+  const [inviteQuery, setInviteQuery] = useState("");
+  const q = inviteQuery.trim().toLowerCase();
+  const shownPartners = q
+    ? partners.filter((p) => `${p.name} ${p.detail ?? ""}`.toLowerCase().includes(q))
+    : partners;
+  const allShownPicked =
+    shownPartners.length > 0 && shownPartners.every((p) => f.invitePartnerIds.includes(p.userId));
+  const toggleAllShown = () =>
+    setF((s) => {
+      const ids = shownPartners.map((p) => p.userId);
+      return {
+        ...s,
+        invitePartnerIds: allShownPicked
+          ? s.invitePartnerIds.filter((x) => !ids.includes(x))
+          : Array.from(new Set([...s.invitePartnerIds, ...ids])),
+      };
+    });
 
   function submit() {
     if (f.title.trim() === "") return setErr("Event name is required.");
@@ -338,25 +362,60 @@ function EventModal({ event, onClose }: { event: EventRow | null; onClose: () =>
           </div>
           <div>
             <label className={label}>Partners to Invite</label>
-            <div className="max-h-32 overflow-y-auto rounded-lg border border-[#D0D5DD] p-2">
+            {partners.length > 0 && (
+              <div className="mb-2 flex items-center gap-2">
+                <input
+                  className={`${input} flex-1`}
+                  value={inviteQuery}
+                  onChange={(e) => setInviteQuery(e.target.value)}
+                  placeholder="Search agencies and counsellors…"
+                />
+                <button
+                  type="button"
+                  onClick={toggleAllShown}
+                  disabled={shownPartners.length === 0}
+                  className="shrink-0 cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 py-2 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {allShownPicked ? "Clear" : "Select all"}
+                  {q ? " shown" : ""}
+                </button>
+              </div>
+            )}
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-[#D0D5DD] p-2">
               {partners.length === 0 ? (
                 <p className="px-1 py-1 text-[12px] text-[#98A2B3]">
                   No approved partners yet.
                 </p>
+              ) : shownPartners.length === 0 ? (
+                <p className="px-1 py-1 text-[12px] text-[#98A2B3]">No match.</p>
               ) : (
-                partners.map((p) => (
-                  <label
-                    key={p.userId}
-                    className="flex items-center gap-2 rounded px-1 py-1 text-[13px] text-[#344054] hover:bg-[#F9FAFB]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={f.invitePartnerIds.includes(p.userId)}
-                      onChange={(e) => toggleInvite(p.userId, e.target.checked)}
-                    />
-                    {p.name}
-                  </label>
-                ))
+                INVITE_GROUPS.map((g) => {
+                  const rows = shownPartners.filter((p) => p.kind === g.kind);
+                  if (rows.length === 0) return null;
+                  return (
+                    <div key={g.kind} className="mb-1 last:mb-0">
+                      <div className="px-1 pt-1 pb-0.5 text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">
+                        {g.label} · {rows.length}
+                      </div>
+                      {rows.map((p) => (
+                        <label
+                          key={p.userId}
+                          className="flex items-center gap-2 rounded px-1 py-1 text-[13px] text-[#344054] hover:bg-[#F9FAFB]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={f.invitePartnerIds.includes(p.userId)}
+                            onChange={(e) => toggleInvite(p.userId, e.target.checked)}
+                          />
+                          <span className="min-w-0 truncate">
+                            {p.name}
+                            {p.detail && <span className="text-[#98A2B3]"> · {p.detail}</span>}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  );
+                })
               )}
             </div>
             <span className="mt-1 block text-[11px] text-[#98A2B3]">
