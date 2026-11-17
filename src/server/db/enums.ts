@@ -849,29 +849,8 @@ export const VARIANCE_REASON_CODES = Object.values(
   VarianceReason,
 ) as VarianceReason[];
 
-// Indicative per-currency → INR rates, used ONLY to present cross-currency
-// figures (Expected / Outstanding / ageing) in a single ₹ headline. Actual
-// money received is always the exact ₹ deposited (recorded at payment time);
-// these are display estimates, not booked FX. CP-editable rates can override
-// later — for now these are the house defaults.
-export const INDICATIVE_FX_RATES: Record<string, number> = {
-  USD: 83.5,
-  GBP: 105.8,
-  EUR: 90.6,
-  AUD: 54.2,
-  CAD: 61.3,
-  NZD: 49.8,
-  SGD: 62.1,
-  CHF: 95.4,
-  HKD: 10.7,
-  JPY: 0.56,
-  INR: 1,
-};
-export const toINR = (
-  amount: number,
-  currency: string | null | undefined,
-): number =>
-  Math.round(amount * (INDICATIVE_FX_RATES[currency ?? "INR"] ?? 1) * 100) / 100;
+// ₹ conversions of foreign amounts use ONE reference: Settings › Exchange
+// Rates, via src/server/fx-rates.ts (no hard-coded rates).
 
 // commission_tranche.status — per-tranche lifecycle for tranche-based deals
 // (e.g. 90% on enrollment, 10% on completion). "RECEIVED" = available for the

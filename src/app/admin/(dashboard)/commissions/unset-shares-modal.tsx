@@ -7,7 +7,8 @@ import { Button } from "~/components/ui/button";
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
 const TD = "px-3 py-2.5 text-[13px] text-[#344054] whitespace-nowrap";
-const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+const inr = (n: number | null) =>
+  n == null ? "Not converted" : `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const day = (iso: string) =>
   new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
 
@@ -38,7 +39,7 @@ export function UnsetSharesModal({ onClose, onDone }: { onClose: () => void; onD
   });
 
   const chosen = rows.filter((r) => picked.has(r.commissionId));
-  const before = chosen.reduce((s, r) => s + r.beforeShareInr, 0);
+  const before = chosen.reduce((s, r) => s + (r.beforeShareInr ?? 0), 0);
   const after = chosen.reduce((s, r) => s + (r.afterShareInr ?? 0), 0);
   const toggle = (id: number) =>
     setPicked((p) => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { inrOf, loadInrRates } from "~/server/fx-rates";
 import {
   createTRPCRouter,
   financeManagerProcedure,
@@ -20,7 +21,6 @@ import {
   PayoutStatus,
   TrancheStatus,
   VendorInvoiceStatus,
-  toINR,
 } from "~/server/db/enums";
 
 type Decimalish = { toNumber: () => number } | null;
@@ -102,7 +102,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
       },
     });
     // Payee-level: payout hold and adjustments still to net (Finance › Adjustments).
-    const [holds, adjBalances] = await Promise.all([activeHolds(), partnerAdjustmentBalances()]);
+    const [holds, adjBalances, fx] = await Promise.all([activeHolds(), partnerAdjustmentBalances(), loadInrRates()]);
 
     return invoices.map((inv) => {
       const items = inv.invoice_item.map((it) => {
@@ -128,10 +128,11 @@ export const partnerPayoutsRouter = createTRPCRouter({
             amountReceived = num(tranche.amount_inr);
           }
         } else if (vInv && vii) {
-          const expectedInr = toINR(num(vInv.total_expected_amount), vInv.currency);
+          // Reference rate (Settings › Exchange Rates); no rate → can't compare.
+          const expectedInr = inrOf(fx, num(vInv.total_expected_amount), vInv.currency) ?? 0;
           const paidInr = vInv.vendor_payment.reduce((s, p) => s + num(p.amount_inr), 0);
           const ratio = expectedInr > 0 ? paidInr / expectedInr : 0;
-          const studentExpectedInr = toINR(num(vii.expected_amount), vInv.currency);
+          const studentExpectedInr = inrOf(fx, num(vii.expected_amount), vInv.currency) ?? 0;
           if (vInv.status === VendorInvoiceStatus.FULLY_PAID || ratio >= 0.99) {
             match = "verified";
             amountReceived =

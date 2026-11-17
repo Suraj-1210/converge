@@ -39,7 +39,8 @@ type TrancheRow = Row["tranches"][number];
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap text-[#667085]";
 const TD = "px-3.5 py-3 text-sm whitespace-nowrap text-[#344054]";
-const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+const inr = (n: number | null) =>
+  n == null ? "Not converted" : `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 
 // The 5 lifecycle stages in order, with the card icon/tone for the pipeline.
 const STAGES = [
@@ -200,7 +201,7 @@ export default function AdminCommissionsPage() {
     for (const r of rows) {
       const e = m.get(r.status) ?? { count: 0, inr: 0 };
       e.count += 1;
-      e.inr += r.commissionInr;
+      e.inr += r.commissionInr ?? 0;
       m.set(r.status, e);
     }
     return m;
@@ -255,7 +256,7 @@ export default function AdminCommissionsPage() {
       let g = m.get(r.partner);
       if (!g) { g = { partner: r.partner, records: [], inr: 0, counts: new Map() }; m.set(r.partner, g); }
       g.records.push(r);
-      g.inr += r.commissionInr;
+      g.inr += r.commissionInr ?? 0;
       g.counts.set(r.status, (g.counts.get(r.status) ?? 0) + 1);
     }
     return Array.from(m.values()).sort((a, b) => b.inr - a.inr);

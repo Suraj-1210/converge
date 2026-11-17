@@ -1,5 +1,6 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
+import { inrOf, loadInrRates } from "~/server/fx-rates";
 import { db } from "~/server/db";
 import {
   AdjustmentDirection,
@@ -7,7 +8,6 @@ import {
   AdjustmentStatus,
   VendorInvoiceStatus,
   financialYearOf,
-  toINR,
 } from "~/server/db/enums";
 import { payeeWhere, type Payee } from "~/server/payee";
 import {
@@ -475,10 +475,11 @@ export async function standingUniversityBalances() {
 
 /**
  * Approved adjustment totals for a financial year (by adjustment_date), INR at
- * the indicative rate, plus what's still unapplied. For the Finance dashboard's
+ * the reference rate (Settings › Exchange Rates), plus what's still unapplied. For the Finance dashboard's
  * "Deductions" in receivables and payouts.
  */
 export async function adjustmentTotals(fy?: number) {
+  const fx = await loadInrRates();
   const rows = await db.adjustment.findMany({
     where: { status: AdjustmentStatus.APPROVED },
     select: {
@@ -495,8 +496,9 @@ export async function adjustmentTotals(fy?: number) {
   for (const r of rows) {
     if (fy != null && financialYearOf(r.adjustment_date) !== fy) continue;
     const t = r.side === AdjustmentSide.PARTNER ? out.partner : out.university;
-    const amt = toINR(num(r.amount), r.currency);
-    const bal = toINR(num(r.amount) - r.adjustment_allocation.reduce((s, a) => s + num(a.amount), 0), r.currency);
+    // ₹ at the reference rate (Settings › Exchange Rates); no rate → left out.
+    const amt = inrOf(fx, num(r.amount), r.currency) ?? 0;
+    const bal = inrOf(fx, num(r.amount) - r.adjustment_allocation.reduce((s, a) => s + num(a.amount), 0), r.currency) ?? 0;
     t.count += 1;
     if (r.direction === AdjustmentDirection.CREDIT) {
       t.creditsInr = round2(t.creditsInr + amt);

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { inrOf, loadInrRates } from "~/server/fx-rates";
 import {
   adminSectionProcedure,
   createTRPCRouter,
@@ -13,7 +14,6 @@ import {
   TrancheKind,
   TrancheStatus,
   financialYearOf,
-  toINR,
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
 import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
@@ -171,6 +171,7 @@ export const commissionsRouter = createTRPCRouter({
         : []
       ).map((u) => [u.id, `${u.first_name} ${u.last_name}`.trim()]),
     );
+    const fx = await loadInrRates();
 
     return comms.map((c) => {
       // Stamped from the partner's tier at billing confirmation. Unset (rows
@@ -285,7 +286,8 @@ export const commissionsRouter = createTRPCRouter({
               ? "Part paid · awaiting collection"
               : null;
 
-      const commissionInr = toINR(num(c.commision_amount), c.currency);
+      // ₹ at the reference rate (Settings › Exchange Rates); null = no rate.
+      const commissionInr = inrOf(fx, num(c.commision_amount), c.currency);
       const intake =
         [c.application.course.intake_month, c.application.course.intake_year].filter(Boolean).join(" ") || null;
 
@@ -321,9 +323,10 @@ export const commissionsRouter = createTRPCRouter({
           c.cp_share_pct == null
             ? num(c.commision_amount)
             : round2((num(c.commision_amount) * num(c.cp_share_pct)) / 100),
-        partnerShareInr: share(
-          c.cp_share_pct == null ? commissionInr : round2((commissionInr * num(c.cp_share_pct)) / 100),
-        ),
+        partnerShareInr:
+          commissionInr == null
+            ? null
+            : share(c.cp_share_pct == null ? commissionInr : round2((commissionInr * num(c.cp_share_pct)) / 100)),
         status,
         statusLabel,
         bonuses: c.commission_bonus.map((b) => ({
@@ -507,9 +510,10 @@ export const commissionsRouter = createTRPCRouter({
       },
     });
     const out = [];
+    const fx = await loadInrRates();
     for (const c of rows) {
       const s = await shareForConfirmation(payeeOf(c), c.application.student.id, { at: c.created_at });
-      const grossInr = toINR(num(c.commision_amount), c.currency);
+      const grossInr = inrOf(fx, num(c.commision_amount), c.currency);
       const unclaimedCollectedInr = c.commission_tranche
         .filter((t) => t.status === TrancheStatus.RECEIVED && t.invoice_item == null)
         .reduce((a, t) => a + num(t.amount_inr), 0);
@@ -521,13 +525,13 @@ export const commissionsRouter = createTRPCRouter({
         partner: payeeLabel(c).partner,
         studentName: `${c.application.student.first_name} ${c.application.student.last_name}`.trim(),
         confirmedAt: c.created_at.toISOString(),
-        grossInr: round2(grossInr),
+        grossInr: grossInr == null ? null : round2(grossInr),
         // Before: no share, which the old code paid as 100%.
         beforeSharePct: null,
-        beforeShareInr: round2(grossInr),
+        beforeShareInr: grossInr == null ? null : round2(grossInr),
         afterTier: s?.tier.name ?? null,
         afterSharePct: s?.sharePct ?? null,
-        afterShareInr: s ? round2(grossInr * (s.sharePct / 100)) : null,
+        afterShareInr: s && grossInr != null ? round2(grossInr * (s.sharePct / 100)) : null,
         fyStudents: s?.students ?? null,
         unclaimedCollectedInr: round2(unclaimedCollectedInr),
         // Already invoiced by the partner (at 100%); stamping doesn't change those invoices.

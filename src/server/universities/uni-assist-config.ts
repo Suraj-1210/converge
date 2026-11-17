@@ -4,24 +4,18 @@ import {
   type BracketConfig,
   type InrRates,
 } from "~/lib/fx-convert";
+import { loadInrRates as loadReferenceRates } from "~/server/fx-rates";
 
-// Mid-market INR-per-unit from fx_rate, for Uni Assist's tuition conversion.
-// Refreshed by Settings → Exchange Rates (or /api/cron/fx when scheduled).
+// INR-per-unit for Uni Assist's tuition conversion: the same reference rate
+// every module uses (Settings › Exchange Rates, src/server/fx-rates.ts).
 export async function loadInrRates(): Promise<{
   rates: InrRates;
   fetchedAt: string | null;
 }> {
-  const rows = await db.fx_rate.findMany({
-    select: { currency: true, mid_rate: true, fetched_at: true },
-  });
-  const rates: InrRates = {};
-  let latest: Date | null = null;
-  for (const r of rows) {
-    const mid = Number(r.mid_rate);
-    if (mid > 0) rates[r.currency] = mid;
-    if (r.fetched_at && (!latest || r.fetched_at > latest)) latest = r.fetched_at;
-  }
-  return { rates, fetchedAt: latest ? latest.toISOString() : null };
+  const { rates, fetchedAt } = await loadReferenceRates();
+  const out: InrRates = {};
+  for (const [ccy, r] of Object.entries(rates)) if (ccy !== "INR") out[ccy] = r;
+  return { rates: out, fetchedAt: fetchedAt ? fetchedAt.toISOString() : null };
 }
 
 // Tuition bracket breakpoints per currency (Settings → Uni Assist Brackets).

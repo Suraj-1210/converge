@@ -1,6 +1,6 @@
-// Tuition conversion for Uni Assist, off the fx_rate table (mid-market INR
-// per 1 unit; INR itself is the base and has no row). Mid-market, not the
-// bank-margin "effective" rate: this compares fees, it doesn't quote money,
+// Tuition conversion for Uni Assist, off the reference rates (Settings › Exchange Rates, INR
+// per 1 unit; INR itself is the base). The same effective rate every module
+// uses (manual override, else mid less margin). It compares fees, it doesn't quote money,
 // so converted amounts are always labelled approximate.
 export type InrRates = Record<string, number>;
 

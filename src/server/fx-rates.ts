@@ -27,6 +27,26 @@ export async function loadInrRates(): Promise<InrRates> {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * The reference rate for BOOKING money in ₹ (e.g. a bonus becoming
+ * claimable). If the currency has no stored rate, refresh from the feed once;
+ * if there's still none, refuse rather than guess.
+ */
+export async function bookingInrRate(currency: string): Promise<number> {
+  if (currency === "INR") return 1;
+  let fx = await loadInrRates();
+  if (fx.rates[currency] == null) {
+    const { refreshFxRates } = await import("~/server/api/routers/fx");
+    await refreshFxRates().catch(() => undefined);
+    fx = await loadInrRates();
+  }
+  const rate = fx.rates[currency];
+  if (rate == null) {
+    throw new Error(`No exchange rate for ${currency}. Refresh Settings › Exchange Rates and try again.`);
+  }
+  return rate;
+}
+
 /** ₹ for an amount, or null when the currency has no stored rate. */
 export function inrOf(rates: InrRates, amount: number, currency: string | null | undefined): number | null {
   const ccy = currency ?? "INR";

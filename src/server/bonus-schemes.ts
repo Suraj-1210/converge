@@ -3,7 +3,6 @@ import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
 import {
   BonusKind,
-  INDICATIVE_FX_RATES,
   TrancheKind,
   TrancheStatus,
   UniApplicationStatus,
@@ -11,6 +10,7 @@ import {
   financialYearOf,
 } from "~/server/db/enums";
 import { payeeWhere, type Payee } from "~/server/payee";
+import { bookingInrRate, inrOf, loadInrRates, type InrRates } from "~/server/fx-rates";
 
 // Bonus schemes (16 Nov 2026, Suraj item 7). Two kinds, kept apart:
 //
@@ -135,20 +135,16 @@ function scopeMatches(s: Scoped, c: { country: string | null; universityId: numb
 
 /**
  * INR per 1 unit, for fixing a non-INR incentive's INR when it becomes
- * claimable: the Settings FX rate (manual override, else mid less margin),
- * else the indicative rate.
+ * claimable: the Settings FX rate (manual override, else mid less margin);
+ * refreshed once if missing, else refused (src/server/fx-rates.ts).
  */
-export async function inrRate(currency: string, client: Client = db): Promise<number> {
-  if (currency === "INR") return 1;
-  const r = await client.fx_rate.findUnique({ where: { currency } });
-  if (r) {
-    if (r.manual_rate != null) return num(r.manual_rate);
-    return Math.round(num(r.mid_rate) * (1 - num(r.margin_pct) / 100) * 100) / 100;
-  }
-  return INDICATIVE_FX_RATES[currency] ?? 1;
+export async function inrRate(currency: string, _client: Client = db): Promise<number> {
+  return bookingInrRate(currency);
 }
-const indicativeInr = (amount: number, currency: string) =>
-  amount * (INDICATIVE_FX_RATES[currency] ?? 1);
+// For comparing schemes in different currencies: ₹ at the stored reference
+// rate (Settings › Exchange Rates); a currency with no rate compares as-is.
+const comparableInr = (fx: InrRates, amount: number, currency: string) =>
+  inrOf(fx, amount, currency) ?? amount;
 
 // ---- Calculation ------------------------------------------------------------
 
@@ -232,6 +228,7 @@ export async function volumeBonusFor(ctx: VolumeContext, client: Client = db) {
   ).filter((c) => countedIntake(c) === ctx.intake);
 
   let best: (BonusPick & { counted: Counted[] }) | null = null;
+  let fx: InrRates | undefined;
   for (const s of schemes) {
     const counted = prior.filter((c) => inWindow(s, approvedAt(c)));
     const count = counted.length + 1;
@@ -248,7 +245,8 @@ export async function volumeBonusFor(ctx: VolumeContext, client: Client = db) {
       perStudent: num(slab.amount_per_student),
       counted,
     };
-    if (!best || indicativeInr(pick.perStudent, pick.currency) > indicativeInr(best.perStudent, best.currency)) {
+    fx ??= await loadInrRates();
+    if (!best || comparableInr(fx, pick.perStudent, pick.currency) > comparableInr(fx, best.perStudent, best.currency)) {
       best = pick;
     }
   }
@@ -352,7 +350,8 @@ export async function incentiveCandidates(ctx: IncentiveContext, client: Client 
       perStudent: num(slab.amount_per_student),
     });
   }
-  return out.sort((a, b) => indicativeInr(b.perStudent, b.currency) - indicativeInr(a.perStudent, a.currency));
+  const fx = await loadInrRates();
+  return out.sort((a, b) => comparableInr(fx, b.perStudent, b.currency) - comparableInr(fx, a.perStudent, a.currency));
 }
 
 // ---- Stamping (Approve commission) -------------------------------------------
