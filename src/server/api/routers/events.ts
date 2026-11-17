@@ -20,6 +20,8 @@ import {
   eventVisibleTo,
   isPdfUrl,
   materialSnapshot,
+  cancelEventShares,
+  eventAudienceIds,
   shareEvent,
 } from "~/server/event-sharing";
 import {
@@ -424,6 +426,7 @@ export const eventsRouter = createTRPCRouter({
       const before = await db.event.findUnique({
         where: { id: input.id },
         select: {
+          is_active: true,
           event_date: true,
           start_time: true,
           end_time: true,
@@ -446,6 +449,20 @@ export const eventsRouter = createTRPCRouter({
       });
       await syncInvites(input.id, input.audience === "selected" ? input.invitePartnerIds : undefined);
       await syncEventBanner(input.id, input.showOnDashboard, ctx.cpUser.id);
+      // Unpublished: cancel the calendar invite for everyone told. Still
+      // published: cancel it for anyone who has dropped out of the audience.
+      let cancelled = 0;
+      if (before.is_active === 1 && !input.isActive) {
+        cancelled = await cancelEventShares(input.id);
+      } else if (input.isActive) {
+        const ev = await db.event.findUnique({ where: { id: input.id }, select: { audience: true } });
+        const audience = new Set(ev ? await eventAudienceIds(input.id, ev.audience) : []);
+        const told = await db.event_share.findMany({ where: { event_id: input.id }, select: { user_id: true } });
+        cancelled = await cancelEventShares(
+          input.id,
+          told.map((t) => t.user_id).filter((id) => !audience.has(id)),
+        );
+      }
       const shared = await shareEvent(input.id);
       const updatesSent = changed ? await announceEventUpdate(input.id, shared.batch) : 0;
       await db.audit_log.create({
@@ -453,15 +470,17 @@ export const eventsRouter = createTRPCRouter({
           action: "event.updated",
           entity_type: "event",
           entity_id: input.id,
-          metadata: { byCpUserId: ctx.cpUser.id, notified: shared.notified, updatesSent },
+          metadata: { byCpUserId: ctx.cpUser.id, notified: shared.notified, updatesSent, cancelled },
         },
       });
-      return { id: input.id, notified: shared.notified, updatesSent };
+      return { id: input.id, notified: shared.notified, updatesSent, cancelled };
     }),
 
   delete: protectedAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      // Cancel calendar invites first: event_share cascades with the event.
+      const cancelled = await cancelEventShares(input.id);
       // event_registration, event_share and the event's banner slides cascade.
       await db.event.delete({ where: { id: input.id } });
       await db.audit_log.create({
@@ -469,7 +488,7 @@ export const eventsRouter = createTRPCRouter({
           action: "event.deleted",
           entity_type: "event",
           entity_id: input.id,
-          metadata: { byCpUserId: ctx.cpUser.id },
+          metadata: { byCpUserId: ctx.cpUser.id, cancelled },
         },
       });
       return { success: true as const };

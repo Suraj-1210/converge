@@ -1066,3 +1066,22 @@ export function partnerEventEmail(
     e.updated ? `New details for ${e.title}` : `${e.title}: ${e.lines[0] ?? ""}`,
   );
 }
+
+// A shared event that's off for this partner: deleted, unpublished, or they
+// were taken off its invite list. The .ics CANCEL removes it from their calendar.
+export function partnerEventCancelledEmail(
+  r: { name: string },
+  e: { title: string; lines: string[] },
+): EmailMessage {
+  return build(
+    `Event cancelled: ${e.title}`,
+    `Cancelled: ${e.title}`,
+    hello(r.name),
+    [
+      { p: "This Collegepond event is no longer going ahead for you, so it has been removed from your calendar." },
+      { list: e.lines },
+      { p: "If you have questions, reply to this email or contact your Collegepond relationship manager." },
+    ],
+    `${e.title} has been cancelled`,
+  );
+}

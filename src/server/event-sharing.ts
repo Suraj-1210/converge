@@ -5,6 +5,7 @@ import { createNotifications } from "~/server/notify";
 import {
   appUrl,
   emailFromAddress,
+  partnerEventCancelledEmail,
   partnerEventEmail,
   sendEmail,
 } from "~/server/email";
@@ -211,6 +212,8 @@ function instant(day: string, t: Date | null): Date | null {
 function calendarFor(
   e: EventRow,
   attendee: { name: string; email: string },
+  method: "REQUEST" | "CANCEL" = "REQUEST",
+  sequence = e.ics_sequence,
 ): string {
   const day = dateKey(e.event_date);
   const start = instant(day, e.start_time);
@@ -219,9 +222,9 @@ function calendarFor(
   const page = absoluteUrl(eventPath(e.id));
   const where =
     e.is_virtual === 1 ? (e.meeting_url ?? "Online") : (e.location ?? "");
-  return buildIcs("REQUEST", {
+  return buildIcs(method, {
     uid: `partner-event-${e.id}@collegepond.com`,
-    sequence: e.ics_sequence,
+    sequence,
     date: day,
     start,
     end,
@@ -371,6 +374,63 @@ export async function announceEventUpdate(
     console.error("[event-share] update failed:", err),
   );
   return shares.length;
+}
+
+// Cancel a shared event for some (or all) of the partners already told about
+// it: deleted, unpublished, or taken off the invite list (16 Nov follow-up).
+// Each gets a "cancelled" email whose .ics CANCEL (same UID, a higher
+// SEQUENCE) removes the invite from their calendar, and their event_share row
+// is removed so a later re-publish or re-invite announces it afresh. Past
+// events are left alone. Call BEFORE deleting the event (shares cascade).
+// Returns how many were cancelled; the emails go out after the call returns.
+export async function cancelEventShares(
+  eventId: number,
+  userIds?: number[],
+): Promise<number> {
+  if (userIds?.length === 0) return 0;
+  const e = await loadEvent(eventId);
+  if (!e || dateKey(e.event_date) < istToday()) return 0;
+  const shares = await db.event_share.findMany({
+    where: { event_id: e.id, ...(userIds ? { user_id: { in: userIds } } : {}) },
+    select: { id: true, user_id: true, email_sent_at: true },
+  });
+  if (shares.length === 0) return 0;
+  // A higher SEQUENCE than any invite sent; a later re-invite goes higher still.
+  const sequence = e.ics_sequence + 1;
+  await db.event.update({ where: { id: e.id }, data: { ics_sequence: sequence } });
+  await db.event_share.deleteMany({ where: { id: { in: shares.map((s) => s.id) } } });
+  // Only people whose invite email actually went out have it in a calendar.
+  const toEmail = shares.filter((s) => s.email_sent_at != null).map((s) => s.user_id);
+  void sendCancelEmails(e, sequence, toEmail).catch((err) =>
+    console.error("[event-share] cancel failed:", err),
+  );
+  return shares.length;
+}
+
+async function sendCancelEmails(e: EventRow, sequence: number, userIds: number[]) {
+  if (userIds.length === 0) return;
+  const users = await db.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, email: true, first_name: true, last_name: true },
+  });
+  const { date, time } = eventWhen(e);
+  const place = placeOf(e);
+  const lines = [`Date: ${date}`, ...(time ? [`Time: ${time}`] : []), ...(place ? [`Where: ${place}`] : [])];
+  for (const u of users) {
+    if (!u.email) continue;
+    try {
+      await sendEmail(u.email, partnerEventCancelledEmail({ name: u.first_name }, { title: e.title, lines }), {
+        calendar: {
+          method: "CANCEL",
+          ics: calendarFor(e, { name: `${u.first_name} ${u.last_name}`.trim(), email: u.email }, "CANCEL", sequence),
+          fileName: "event.ics",
+        },
+      });
+    } catch (err) {
+      // The user id, never the address, so a failure can be traced.
+      console.error(`[event-share] cancel email failed for event ${e.id}, user ${u.id}:`, err);
+    }
+  }
 }
 
 // The fields whose change makes an "updated" email.
