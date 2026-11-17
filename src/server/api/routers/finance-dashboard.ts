@@ -16,7 +16,7 @@ import {
   VendorType,
   financialYearOf,
 } from "~/server/db/enums";
-import { effectiveRate } from "~/server/api/routers/fx";
+import { loadInrRates } from "~/server/fx-rates";
 import { lineTrancheShares, TRANCHE_LINKS_SELECT } from "~/server/vendor-invoice-tranches";
 import {
   invoiceAdjustmentTotals,
@@ -131,20 +131,12 @@ const OPEN_INVOICE_STATES: number[] = [VendorInvoiceStatus.SENT, VendorInvoiceSt
 
 // Stored Settings › Exchange Rates: ₹ per 1 unit (effective = manual override,
 // else mid − bank margin). Empty until rates are refreshed.
+// Shared with University Billing (src/server/fx-rates.ts) so both pages' ₹
+// figures agree. The dashboard handles INR itself, so drop the INR entry.
 async function storedRates() {
-  const rows = await db.fx_rate.findMany();
-  const rates: Record<string, number> = {};
-  let fetchedAt: Date | null = null;
-  for (const r of rows) {
-    const rate = effectiveRate(
-      Number(r.mid_rate),
-      Number(r.margin_pct),
-      r.manual_rate == null ? null : Number(r.manual_rate),
-    );
-    if (rate > 0) rates[r.currency] = rate;
-    if (r.fetched_at && (!fetchedAt || r.fetched_at > fetchedAt)) fetchedAt = r.fetched_at;
-  }
-  return { rates, fetchedAt };
+  const { rates, fetchedAt } = await loadInrRates();
+  const foreign = Object.fromEntries(Object.entries(rates).filter(([ccy]) => ccy !== "INR"));
+  return { rates: foreign, fetchedAt };
 }
 
 // Instalments (or whole commissions without tranche rows) on no vendor

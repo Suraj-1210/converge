@@ -14,9 +14,9 @@ import {
   TrancheStatus,
   VARIANCE_REASON_CODES,
   financialYearOf,
-  toINR,
 } from "~/server/db/enums";
 import { shareForConfirmation } from "~/server/partner-tiers";
+import { inrAccumulator, inrOf, loadInrRates } from "~/server/fx-rates";
 import { PAYEE_LABEL_SELECT, payeeData, payeeForApplication, payeeLabel } from "~/server/payee";
 import { trancheScheduleIssue } from "~/server/commission-schedule";
 import { FINANCE_CURRENCIES } from "~/lib/currency";
@@ -1085,6 +1085,7 @@ export const universityBillingRouter = createTRPCRouter({
     });
     // Approved adjustments applied to each invoice (their own lines).
     const adjLines = await invoiceAdjustmentLines(invoices.map((i) => i.id));
+    const fx = await loadInrRates();
 
     return invoices.map((inv) => {
       const paidInr = inv.vendor_payment.reduce((s, p) => s + num(p.amount_inr), 0);
@@ -1096,6 +1097,8 @@ export const universityBillingRouter = createTRPCRouter({
       const deducted = round2(adjustments.filter((a) => a.direction === "deduction").reduce((s, a) => s + a.amount, 0));
       const credited = round2(adjustments.filter((a) => a.direction === "credit").reduce((s, a) => s + a.amount, 0));
       const outstanding = netOutstanding(instalmentOutstanding, { deducted, credited });
+      // ₹ at Settings › Exchange Rates (null = no stored rate for the currency).
+      const outstandingInr = inrOf(fx, outstanding, inv.currency);
       return {
         id: inv.id,
         invoiceNumber: inv.invoice_number,
@@ -1112,6 +1115,7 @@ export const universityBillingRouter = createTRPCRouter({
         // (invoice currency) − approved deductions + credits applied to it.
         // Recorded part-payments that complete no instalment don't reduce it.
         outstanding,
+        outstandingInr,
         collected,
         // Deductions / credits applied to this invoice, each its own line.
         adjustments,
@@ -1632,6 +1636,7 @@ export const universityBillingRouter = createTRPCRouter({
         },
       });
       const today = new Date();
+      const fx = await loadInrRates();
       const adj = await invoiceAdjustmentTotals(invoices.map((i) => i.id));
       const rows = invoices.map((inv) => {
         const daysOverdue = inv.due_date
@@ -1657,7 +1662,8 @@ export const universityBillingRouter = createTRPCRouter({
           currency: inv.currency,
           students: inv.vendor_invoice_item.length,
           outstanding,
-          outstandingInr: toINR(outstanding, inv.currency),
+          // ₹ at Settings › Exchange Rates; null = no stored rate (not converted).
+          outstandingInr: inrOf(fx, outstanding, inv.currency),
           dueDate: inv.due_date,
           daysOverdue: Math.max(0, daysOverdue),
           bucket:
@@ -1666,15 +1672,13 @@ export const universityBillingRouter = createTRPCRouter({
         };
       }).filter((r) => r.outstanding > 0); // fully offset by adjustments: nothing to chase
       const buckets = [0, 1, 2, 3].map((b) => {
+        const acc = inrAccumulator(fx);
         const inBucket = rows.filter((r) => r.bucket === b);
-        return {
-          bucket: b,
-          count: inBucket.length,
-          inrTotal:
-            Math.round(inBucket.reduce((s, r) => s + r.outstandingInr, 0) * 100) / 100,
-        };
+        for (const r of inBucket) acc.add(r.outstanding, r.currency);
+        const { inr, notConverted } = acc.result();
+        return { bucket: b, count: inBucket.length, inrTotal: inr, notConverted };
       });
-      return { rows, buckets };
+      return { rows, buckets, ratesAsOf: fx.fetchedAt };
     }),
 
   // KPI cards — counts + exact INR received (cross-currency expected isn't
@@ -1693,29 +1697,29 @@ export const universityBillingRouter = createTRPCRouter({
           due_date: true,
         },
       });
-      // Approved adjustments applied to these invoices (INR, indicative rate).
+      // ₹ at Settings › Exchange Rates — the same rates the Finance dashboard
+      // uses. Amounts in a currency with no stored rate aren't guessed at:
+      // they're returned per currency in notConverted.
+      const fx = await loadInrRates();
+      // Approved adjustments applied to these invoices.
       const adjTotals = await invoiceAdjustmentTotals(invoices.map((i) => i.id));
       const curOf = new Map(invoices.map((i) => [i.id, i.currency]));
-      let deductionsInr = 0;
-      let creditsInr = 0;
+      const ded = inrAccumulator(fx);
+      const cred = inrAccumulator(fx);
       for (const [id, t] of adjTotals) {
-        deductionsInr += toINR(t.deducted, curOf.get(id));
-        creditsInr += toINR(t.credited, curOf.get(id));
+        ded.add(t.deducted, curOf.get(id));
+        cred.add(t.credited, curOf.get(id));
       }
-      deductionsInr = round2(deductionsInr);
-      creditsInr = round2(creditsInr);
+      const deductionsInr = ded.result().inr;
+      const creditsInr = cred.result().inr;
       const payments = await db.vendor_payment.findMany({
         where: input?.fy ? { fy: input.fy } : {},
         select: { amount_inr: true },
       });
       const today = new Date();
-      const expectedInr =
-        Math.round(
-          invoices.reduce(
-            (s, i) => s + toINR(num(i.total_expected_amount), i.currency),
-            0,
-          ) * 100,
-        ) / 100;
+      const exp = inrAccumulator(fx);
+      for (const i of invoices) exp.add(num(i.total_expected_amount), i.currency);
+      const { inr: expectedInr, notConverted } = exp.result();
       const receivedInr =
         Math.round(payments.reduce((s, p) => s + num(p.amount_inr), 0) * 100) / 100;
       const outstandingInr = Math.max(
@@ -1733,7 +1737,18 @@ export const universityBillingRouter = createTRPCRouter({
         expectedInr > 0
           ? Math.min(100, Math.round((receivedInr / expectedInr) * 100))
           : 0;
-      return { expectedInr, receivedInr, outstandingInr, overdueCount, collectionRate, deductionsInr, creditsInr };
+      return {
+        expectedInr,
+        receivedInr,
+        outstandingInr,
+        overdueCount,
+        collectionRate,
+        deductionsInr,
+        creditsInr,
+        // Expected amounts with no stored rate, per currency (left out of the ₹ figures).
+        notConverted,
+        ratesAsOf: fx.fetchedAt,
+      };
     }),
 
   // Financial years present in the data, for the stats dropdown.

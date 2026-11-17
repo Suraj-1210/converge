@@ -286,7 +286,7 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
 
       {view === "inr" && (
         <p className="-mt-3 mb-5 text-[12px] text-[#667085]">
-          Converted at Settings › Exchange Rates; University Billing uses indicative rates, so its ₹ totals can differ.
+          Converted at Settings › Exchange Rates, the same rates University Billing uses.
         </p>
       )}
 

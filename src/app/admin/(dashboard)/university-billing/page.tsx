@@ -27,7 +27,6 @@ import {
   VarianceReasonLabel,
   VARIANCE_REASON_CODES,
   financialYearLabel,
-  toINR,
   TrancheStatus,
   TrancheStatusLabel,
 } from "~/server/db/enums";
@@ -389,8 +388,8 @@ function UniversityBilling() {
       {/* Stat cards + FY filter */}
       <div className="mb-5 flex items-end justify-between gap-3">
         <div className="grid flex-1 grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatCard icon="revenue" tone="blue" label="Expected (All Invoices)" sub="Converted to INR" value={s ? formatINR(s.expectedInr) : "—"} />
-          <StatCard icon="revenue" tone="green" label="Received" sub="Converted to INR" value={s ? formatINR(s.receivedInr) : "—"} />
+          <StatCard icon="revenue" tone="blue" label="Expected (All Invoices)" sub={s ? notConvertedNote(s.notConverted) ?? "At Settings › Exchange Rates" : undefined} value={s ? formatINR(s.expectedInr) : "—"} />
+          <StatCard icon="revenue" tone="green" label="Received" sub="₹ actually received" value={s ? formatINR(s.receivedInr) : "—"} />
           <StatCard icon="clock" tone="orange" label="Outstanding" sub={s ? `${s.overdueCount} overdue${s.deductionsInr > 0 ? ` · after ${formatINR(s.deductionsInr)} adjustments` : ""}` : undefined} value={s ? formatINR(s.outstandingInr) : "—"} />
           <StatCard icon="trophy" tone="purple" label="Collection Rate" value={s ? `${s.collectionRate}%` : "—"} />
         </div>
@@ -799,10 +798,10 @@ function VendorBillingTab({
     (i) => i.status === VendorInvoiceStatus.SENT || i.status === VendorInvoiceStatus.PARTIAL_PAYMENT,
   );
   const fullyPaidInvoices = invoices.filter((i) => i.status === VendorInvoiceStatus.FULLY_PAID);
-  const outstandingInr = outstandingInvoices.reduce(
-    (s, i) => s + Math.max(0, toINR(i.totalExpected, i.currency) - i.paidInr),
-    0,
-  );
+  // ₹ at Settings › Exchange Rates (from the server); invoices in a currency
+  // with no stored rate are counted, not converted.
+  const outstandingInr = outstandingInvoices.reduce((s, i) => s + Math.max(0, i.outstandingInr ?? 0), 0);
+  const outstandingNotConverted = outstandingInvoices.filter((i) => i.outstandingInr == null && i.outstanding > 0).length;
   const paidInr = fullyPaidInvoices.reduce((s, i) => s + i.paidInr, 0);
 
   const clickCard = (f: Exclude<VbFilter, null>, v: "students" | "invoices") => {
@@ -838,7 +837,7 @@ function VendorBillingTab({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon="applications" tone="blue" label="Total Invoiced" value={invoicedStudents} sub="students" active={filter === "total"} onClick={() => clickCard("total", "invoices")} />
         <StatCard icon="clock" tone="orange" label="Not Yet Invoiced" value={notInvoiced} sub="students" active={filter === "not-invoiced"} onClick={() => clickCard("not-invoiced", "students")} />
-        <StatCard icon="deposit" tone="orange" label="Outstanding" value={outstandingInvoices.length} sub={formatINR(Math.round(outstandingInr * 100) / 100)} active={filter === "outstanding"} onClick={() => clickCard("outstanding", "invoices")} />
+        <StatCard icon="deposit" tone="orange" label="Outstanding" value={outstandingInvoices.length} sub={`${formatINR(Math.round(outstandingInr * 100) / 100)}${outstandingNotConverted > 0 ? ` + ${outstandingNotConverted} not converted` : ""}`} active={filter === "outstanding"} onClick={() => clickCard("outstanding", "invoices")} />
         <StatCard icon="revenue" tone="green" label="Fully Paid" value={fullyPaidInvoices.length} sub={formatINR(Math.round(paidInr * 100) / 100)} active={filter === "paid"} onClick={() => clickCard("paid", "invoices")} />
       </div>
 
@@ -1388,7 +1387,7 @@ function AgeingTab({ initial }: { initial: AgeingFilter }) {
     const val = (row: AgeingRow): string | number =>
       key === "vendor" ? row.vendorName
       : key === "university" ? row.university
-      : key === "outstanding" ? row.outstandingInr
+      : key === "outstanding" ? (row.outstandingInr ?? -1)
       : key === "due" ? (row.dueDate ? new Date(row.dueDate).getTime() : 0)
       : row.daysOverdue;
     return [...r].sort((a, b) => {
@@ -1431,7 +1430,10 @@ function AgeingTab({ initial }: { initial: AgeingFilter }) {
             >
               <div className={`text-[26px] font-extrabold ${i >= 2 ? "text-[#B42318]" : "text-[#101828]"}`}>{b?.count ?? 0}</div>
               <div className="mt-1 text-[13px] font-medium text-[#667085]">{label}</div>
-              <div className="mt-0.5 text-xs text-[#98A2B3]">{formatINR(b?.inrTotal ?? 0)}</div>
+              <div className="mt-0.5 text-xs text-[#98A2B3]">
+                {formatINR(b?.inrTotal ?? 0)}
+                {b && notConvertedNote(b.notConverted) ? <span className="block">{notConvertedNote(b.notConverted)}</span> : null}
+              </div>
             </div>
           );
         })}
@@ -1500,7 +1502,15 @@ function AgeingTab({ initial }: { initial: AgeingFilter }) {
                   <td className={TD}>{r.university}</td>
                   <td className={TD}>{r.invoiceNumber}</td>
                   <td className={TD}>{r.students}</td>
-                  <td className={`${TD} font-semibold text-[#101828]`}>{formatINR(r.outstandingInr)}</td>
+                  <td className={`${TD} font-semibold text-[#101828]`}>
+                    {r.outstandingInr == null ? (
+                      <span title="No exchange rate stored for this currency. Refresh rates in Settings › Exchange Rates." className="font-normal text-[#98A2B3]">
+                        Not converted
+                      </span>
+                    ) : (
+                      formatINR(r.outstandingInr)
+                    )}
+                  </td>
                   <td className={TD}>{r.currency}</td>
                   <td className={TD}>{r.dueDate ? formatDate(r.dueDate) : "—"}</td>
                   <td className={`${TD} ${r.daysOverdue > 0 ? "font-semibold text-[#B42318]" : ""}`}>{r.daysOverdue > 0 ? `${r.daysOverdue}d` : "—"}</td>
@@ -2004,4 +2014,12 @@ function RecordPaymentModal({
       {err && <p className="text-xs font-medium text-[#F04438]">{err}</p>}
     </Modal>
   );
+}
+
+// "+ USD 1,500 not converted" for amounts in a currency with no stored rate
+// (Settings › Exchange Rates), or null when everything converted.
+function notConvertedNote(nc: Record<string, number> | undefined): string | null {
+  const parts = Object.entries(nc ?? {}).filter(([, a]) => a > 0);
+  if (parts.length === 0) return null;
+  return `+ ${parts.map(([c, a]) => `${c} ${a.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`).join(", ")} not converted`;
 }
