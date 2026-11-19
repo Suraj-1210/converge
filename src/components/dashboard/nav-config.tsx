@@ -164,6 +164,9 @@ export const NAV_SECTIONS: NavSection[] = [
         section: "notes",
       },
       { label: "Uni Assist", href: "/admin/uni-assist", icon: <SearchIcon />, section: "uniAssist" },
+      // Loan referrals shared with the Enrollment App. Super Admin only
+      // ("system" section); sits with Operations, above Business Dev (19 Nov).
+      { label: "Loan Referrals", href: "/admin/loan-referrals", icon: <BankIcon />, section: "system" },
     ],
   },
   {
@@ -253,7 +256,6 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Users", href: "/admin/users", icon: <UsersIcon />, section: "system" },
       { label: "Settings", href: "/admin/settings", icon: <SettingsIcon />, section: "system" },
       { label: "Audit Logs", href: "/admin/audit-logs", icon: <AuditLogIcon />, section: "system" },
-      { label: "Loan Referrals", href: "/admin/loan-referrals", icon: <BankIcon />, section: "system" },
     ],
   },
 ];
