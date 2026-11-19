@@ -247,7 +247,7 @@ const MILESTONES: { key: keyof RouterOutputs["shortlistFollowUp"]["milestones"][
   { key: "assigned", label: "Assigned to counsellor" },
   { key: "reviewStarted", label: "Profile review started", hint: "when the assigned counsellor first opened the profile" },
   { key: "reviewCompleted", label: "Profile review completed", manual: "review_completed_at" },
-  { key: "docsVerified", label: "Documents verified", manual: "docs_verified_at" },
+  { key: "docsVerified", label: "Documents verified", manual: "docs_verified_at", hint: "filled when the passport and CV are uploaded" },
   { key: "shortlistingStarted", label: "Shortlisting started", hint: "first university shortlisted" },
   { key: "shortlistingCompleted", label: "Shortlisting completed", manual: "shortlisting_completed_at" },
   { key: "shared", label: "Shortlist shared with partner" },
@@ -310,7 +310,9 @@ export function FollowUpHistoryTab({
                     <div className="text-[12px] font-semibold text-[#344054]">{x.label}</div>
                     <div className={`text-[12px] ${at ? "text-[#101828]" : "text-[#98A2B3]"}`}>{at ? fmtIstDateTime(at, true) : x.hint ?? "—"}</div>
                   </div>
-                  {x.manual && canMark && (
+                  {x.key === "docsVerified" && m.docsVerifiedAuto ? (
+                    <span className="text-[11px] whitespace-nowrap text-[#98A2B3]">auto · passport + CV</span>
+                  ) : x.manual && canMark && (
                     <button
                       type="button"
                       disabled={mark.isPending}
