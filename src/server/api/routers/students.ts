@@ -20,6 +20,9 @@ import {
   notifyPartnerOfDecision,
   notifyPartnerOfProposal,
 } from "~/server/shortlist-approval";
+import { completeBeginApplicationTasks, syncShortlistCases } from "~/server/shortlist-follow-up";
+import { noteProfileOpened, stampMilestone } from "~/server/shortlisting-tat";
+import { markLinkedTasksDirty } from "~/server/tasks";
 import {
   academicsSnapshot,
   diffSnapshots,
@@ -1531,6 +1534,8 @@ export const studentsRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       await requireStaffStudent(ctx.cpUser, input.id);
       const full = await loadStudentFull(input.id);
+      // Shortlisting TAT: the assigned counsellor's first look (19 Nov 2026).
+      void noteProfileOpened(ctx.cpUser, input.id);
       return { ...full, partnerUpdates: await pendingPartnerUpdates(input.id) };
     }),
 
@@ -1654,6 +1659,8 @@ export const studentsRouter = createTRPCRouter({
           collegepond_user_id: ctx.cpUser.id,
         },
       });
+      // A reminder is also a My Tasks task (src/server/tasks.ts).
+      if (input.isTask) markLinkedTasksDirty();
       return { id: note.id };
     }),
 
@@ -1685,6 +1692,7 @@ export const studentsRouter = createTRPCRouter({
           is_done: input.isDone === undefined ? undefined : input.isDone ? 1 : 0,
         },
       });
+      markLinkedTasksDirty();
       return { ok: true };
     }),
 
@@ -1693,6 +1701,7 @@ export const studentsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       await requireStaffNote(ctx.cpUser, input.id);
       await db.student_note.deleteMany({ where: { id: input.id } });
+      markLinkedTasksDirty();
       return { ok: true };
     }),
 
@@ -1837,6 +1846,16 @@ export const studentsRouter = createTRPCRouter({
         ],
       });
       const asked = fresh.filter(hasPartnerSide);
+      // Shortlisting TAT + the partner-confirmation follow-up (19 Nov 2026):
+      // sharing with the partner opens the case and starts its timer.
+      for (const s of fresh) await stampMilestone(s.id, "shortlisting_started_at");
+      if (asked.length > 0) {
+        await syncShortlistCases({
+          studentIds: asked.map((s) => s.id),
+          sharedCourseIds: [input.courseId],
+          actorCpUserId: ctx.cpUser.id,
+        });
+      }
       void Promise.all([
         ...asked.map((s) =>
           notifyPartnerOfProposal({ studentId: s.id, courseIds: [input.courseId] }),
@@ -1971,6 +1990,11 @@ export const studentsRouter = createTRPCRouter({
           },
         },
       });
+      await syncShortlistCases({
+        studentIds: [input.studentId],
+        sharedCourseIds: [input.courseId],
+        actorCpUserId: ctx.cpUser.id,
+      });
       void notifyPartnerOfProposal({
         studentId: input.studentId,
         courseIds: [input.courseId],
@@ -2005,6 +2029,7 @@ export const studentsRouter = createTRPCRouter({
         })),
       });
       if (result.count > 0) {
+        await syncShortlistCases({ studentIds: input.studentIds });
         void notifyColleagueCourseAction(input.studentIds, ctx.cpUser.id, "Removed from the shortlist:", input.courseId);
       }
       return { removed: result.count };
@@ -2105,6 +2130,7 @@ export const studentsRouter = createTRPCRouter({
         },
       });
       void notifyColleagueApplicationAction(app.id, ctx.cpUser.id, "Started an application");
+      await completeBeginApplicationTasks(input.studentId, ctx.cpUser.id);
       return { applicationId: app.id, created: true };
     }),
 
@@ -2637,6 +2663,7 @@ export const studentsRouter = createTRPCRouter({
             proposerCpUserId: existing.collegepond_user_id,
             approved: true,
           });
+          await syncShortlistCases({ studentIds: [student.id] });
           return { added: 0, approved: 1 };
         }
         return { added: 0, approved: 0 };
@@ -2721,6 +2748,8 @@ export const studentsRouter = createTRPCRouter({
           metadata: { courseId: input.courseId, byPartnerUserId: ctx.cpPartner.id, reason },
         },
       });
+      // Stops (or advances) the shortlist follow-up (19 Nov 2026).
+      await syncShortlistCases({ studentIds: [student.id] });
       void notifyCollegepondOfDecision({
         studentId: student.id,
         courseId: input.courseId,

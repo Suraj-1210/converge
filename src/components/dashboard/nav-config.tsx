@@ -19,6 +19,7 @@ import {
   SearchIcon,
   SettingsIcon,
   StudentsIcon,
+  TasksIcon,
   UsersIcon,
 } from "./nav-icons";
 
@@ -142,6 +143,16 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/admin/tat-management",
         icon: <ClockIcon />,
         section: "tat",
+      },
+      // My Tasks (19 Nov 2026): the counselling team's daily task list,
+      // shortlist follow-ups, carry-forward and ageing. Also the topbar's
+      // Tasks button.
+      {
+        label: "My Tasks",
+        href: "/admin/tasks",
+        icon: <TasksIcon />,
+        badgeKey: "tasks",
+        section: "tasks",
       },
       // Deprecated in favour of TAT Management (itself deferred to phase 2).
       // Hidden from the nav; set `hidden: false` to restore.

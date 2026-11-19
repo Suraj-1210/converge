@@ -44,6 +44,7 @@ import { chatRouter } from "~/server/api/routers/chat";
 import { partnerChatRouter } from "~/server/api/routers/partner-chat";
 import { tatRouter } from "~/server/api/routers/tat";
 import { followUpsRouter } from "~/server/api/routers/follow-ups";
+import { shortlistFollowUpRouter, tasksRouter } from "~/server/api/routers/tasks";
 import { applicationsRouter } from "~/server/api/routers/applications";
 import { applicationPipelineRouter } from "~/server/api/routers/application-pipeline";
 import { notesRouter } from "~/server/api/routers/notes";
@@ -99,6 +100,8 @@ export const appRouter = createTRPCRouter({
   partnerChat: partnerChatRouter,
   tat: tatRouter,
   followUps: followUpsRouter,
+  tasks: tasksRouter,
+  shortlistFollowUp: shortlistFollowUpRouter,
   applications: applicationsRouter,
   applicationPipeline: applicationPipelineRouter,
   notes: notesRouter,

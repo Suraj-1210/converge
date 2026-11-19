@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { syncShortlistCases } from "~/server/shortlist-follow-up";
 import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
@@ -401,6 +402,8 @@ export const applicationPipelineRouter = createTRPCRouter({
           },
         },
       });
+      // An inactive student's shortlist follow-up stops (19 Nov 2026).
+      await syncShortlistCases({ studentIds: [input.studentId] });
       void notifyColleagueAction(
         input.studentId,
         ctx.cpUser.id,

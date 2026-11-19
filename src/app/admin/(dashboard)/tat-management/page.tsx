@@ -6,12 +6,14 @@ import { Toast } from "~/components/ui/toast";
 import { StatCard } from "~/components/dashboard/widgets";
 import { ChatResponseTat } from "./chat-response";
 import { OverdueFollowUps } from "./overdue-follow-ups";
+import { ShortlistingTat } from "./shortlisting-tat";
 import { AdminRole } from "~/server/db/enums";
 import { SHOW_DEMO_DATA } from "~/lib/demo";
 
 // TAT Management. Chat Response (partner chat) is the first action measured
 // for real (./chat-response.tsx, src/server/tat.ts), then overdue application
-// follow-ups (./overdue-follow-ups.tsx). The other actions below are
+// follow-ups (./overdue-follow-ups.tsx) and Shortlisting (./shortlisting-tat.tsx,
+// 19 Nov 2026). The other actions below are
 // still illustrative seed data: shown only in local dev, labelled as samples,
 // and never in production, until each is wired to the same TAT master.
 export default function TATManagementPage() {
@@ -19,6 +21,7 @@ export default function TATManagementPage() {
     <div>
       <ChatResponseTat />
       <OverdueFollowUps />
+      <ShortlistingTat />
       {SHOW_DEMO_DATA && (
         <div className="mt-12 border-t-2 border-dashed border-[#D0D5DD] pt-8">
           <div className="mb-4 rounded-lg border border-[#FEC84B] bg-[#FFFAEB] px-4 py-2.5 text-[13px] font-medium text-[#B54708]">

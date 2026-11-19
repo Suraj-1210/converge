@@ -2,7 +2,7 @@
 
 import { type ReactNode, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { Topbar, type NotificationItem } from "./topbar";
 import { GlobalSearch } from "./global-search";
@@ -87,6 +87,15 @@ export function DashboardShell({
   const pathname = usePathname();
   const pageSection = sectionForPath(pathname);
   const sections = api.tabAccess.mine.useQuery().data?.sections;
+  const router = useRouter();
+  // My Tasks (19 Nov 2026): the topbar's Tasks button opens it, with the
+  // count of open tasks due today or earlier.
+  const hasTasks = hasSection(sections, "tasks");
+  const taskBadge = api.tasks.badge.useQuery(undefined, {
+    enabled: hasTasks,
+    refetchInterval: 120_000,
+    retry: false,
+  }).data?.count;
 
   // Live admin signals (pending approvals, payouts ready, invoices awaiting
   // review, new students). Drives both the bell and the sidebar approvals badge.
@@ -105,8 +114,10 @@ export function DashboardShell({
 
   // Resolution order: explicit prop override → real live data → dev-only demo
   // (empty in prod, never synthetic).
-  const effectiveBadges =
-    badges ?? signals?.badges ?? (SHOW_DEMO_DATA ? { approvals: 7 } : {});
+  const effectiveBadges = {
+    ...(badges ?? signals?.badges ?? (SHOW_DEMO_DATA ? { approvals: 7 } : {})),
+    ...(taskBadge ? { tasks: taskBadge } : {}),
+  };
   const liveNotifications =
     notifications ??
     signals?.notifications ??
@@ -166,7 +177,8 @@ export function DashboardShell({
         userInitials={initials}
         roleLabel={roleLabel}
         notifications={shownNotifications}
-        taskCount={taskCount}
+        taskCount={taskCount || (hasTasks ? (taskBadge ?? 0) : 0)}
+        onTasksClick={hasTasks ? () => router.push("/admin/tasks") : undefined}
         onMarkAllRead={() => {
           setAllRead(true);
           if ((feed?.unread ?? 0) > 0) markFeedRead.mutate();

@@ -4,6 +4,8 @@ import { partnerLabel } from "~/lib/partner-display";
 import { adminSectionProcedure, createTRPCRouter, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { staffStudentScope } from "~/server/staff-access";
+import { shortlistingTatReport } from "~/server/shortlisting-tat";
+import { isDateKey } from "~/lib/follow-ups";
 import {
   CHAT_RESPONSE,
   getTatConfig,
@@ -68,6 +70,18 @@ async function readMaster() {
 
 export const tatRouter = createTRPCRouter({
   config: tatViewProcedure.query(() => readMaster()),
+
+  // Shortlisting TAT (19 Nov 2026; src/server/shortlisting-tat.ts): students
+  // added by partners in the period, in the viewer's Students visibility.
+  shortlisting: tatViewProcedure
+    .input(
+      z.object({
+        from: z.string().refine(isDateKey),
+        to: z.string().refine(isDateKey),
+        counsellorId: z.number().int().positive().optional(),
+      }),
+    )
+    .query(({ ctx, input }) => shortlistingTatReport(ctx.cpUser, input)),
 
   // Super Admin only (Settings -> TAT Settings).
   master: superAdminProcedure.query(() => readMaster()),
