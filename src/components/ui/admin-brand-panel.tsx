@@ -1,5 +1,7 @@
 "use client";
 
+import { Logo } from "./logo";
+
 interface BrandFeature {
   icon: React.ReactNode;
   label: string;
@@ -55,27 +57,7 @@ export function AdminBrandPanel({ features = defaultFeatures }: AdminBrandPanelP
       <div className="pointer-events-none absolute -bottom-20 -left-20 h-[300px] w-[300px] rounded-full bg-white/[0.04]" />
 
       {/* Logo */}
-      <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl border border-white/20 bg-white/15 backdrop-blur-[10px]">
-        <svg viewBox="0 0 36 36" fill="none" className="h-9 w-9">
-          <path
-            d="M18 3L4 10v16l14 7 14-7V10L18 3z"
-            fill="rgba(255,255,255,0.2)"
-            stroke="#fff"
-            strokeWidth="1.5"
-          />
-          <path
-            d="M12 17l4 4 8-8"
-            stroke="#fff"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </div>
-
-      <div className="mb-1.5 text-center text-[28px] font-extrabold tracking-tight text-white">
-        Collegepond
-      </div>
+      <Logo height={44} className="relative z-[1] mb-3" />
       <div className="mb-10 text-[13px] font-semibold uppercase tracking-[2px] text-white/70">
         Admin Portal
       </div>

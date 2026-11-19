@@ -1,12 +1,19 @@
-export function Logo({ className = "" }: { className?: string }) {
+// The Collegepond logo (white, for the blue brand panels). The artwork is
+// public/brand/collegepond-logo-white.png (400x72), cut from the official
+// logo; collegepond-mark-white.png is the cap mark on its own.
+export const BRAND_LOGO_WHITE = "/brand/collegepond-logo-white.png";
+export const BRAND_MARK_WHITE = "/brand/collegepond-mark-white.png";
+
+export function Logo({ className = "", height = 32 }: { className?: string; height?: number }) {
   return (
-    <div className={`flex items-center gap-2.5 ${className}`}>
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/20">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-        </svg>
-      </div>
-      <span className="text-lg font-bold text-white">Collegepond</span>
-    </div>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={BRAND_LOGO_WHITE}
+      alt="Collegepond"
+      width={Math.round((height * 400) / 72)}
+      height={height}
+      className={`block select-none ${className}`}
+      draggable={false}
+    />
   );
 }

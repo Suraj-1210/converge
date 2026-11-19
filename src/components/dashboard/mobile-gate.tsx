@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { CollegepondLogoIcon } from "./nav-icons";
+import { BRAND_MARK_WHITE } from "~/components/ui/logo";
 
 /**
  * The portals are dense desktop dashboards and aren't built for small screens.
@@ -12,7 +12,8 @@ export function MobileGate({ children }: { children: ReactNode }) {
     <>
       <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#F5F6FA] px-8 text-center lg:hidden">
         <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#1570EF]">
-          <CollegepondLogoIcon className="h-8 w-8" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={BRAND_MARK_WHITE} alt="Collegepond" className="h-9 w-9" />
         </span>
         <div>
           <h1 className="text-xl font-bold text-[#101828]">Best viewed on desktop</h1>
