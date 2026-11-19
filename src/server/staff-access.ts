@@ -64,22 +64,20 @@ export async function teamMemberIds(leadId: number): Promise<number[]> {
 }
 
 // The counsellors a staff user may hand a student to: a lead → themselves and
-// their team; a counsellor → their lead, their teammates and themselves.
-// null = anyone (non-counselling roles).
+// their team; a counsellor → only themselves (a student they add). null =
+// anyone (non-counselling roles).
 export async function assignableCounsellorIds(user: StaffUser): Promise<number[] | null> {
   if (user.role === AdminRole.COUNSELLOR_LEAD) {
     return [user.id, ...(await teamMemberIds(user.id))];
   }
-  if (user.role === AdminRole.COUNSELLOR) {
-    const team = await db.counsellor_team.findFirst({
-      where: { member: { some: { cp_user_id: user.id } } },
-      select: { lead_cp_user_id: true, member: { select: { cp_user_id: true } } },
-    });
-    if (!team) return [user.id];
-    return [...new Set([user.id, team.lead_cp_user_id, ...team.member.map((m) => m.cp_user_id)])];
-  }
+  if (user.role === AdminRole.COUNSELLOR) return [user.id];
   return null;
 }
+
+// Assigning or reassigning an existing student is for a Counsellor Lead and
+// above; a Counsellor can't move their leads (19 Nov). Out-of-office cover
+// doesn't change the assignment, so it isn't affected.
+export const canReassignStudents = (role: number) => role !== AdminRole.COUNSELLOR;
 
 // ---- Scopes -----------------------------------------------------------------
 

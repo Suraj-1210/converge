@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
+import { GlobalSearch } from "./global-search";
 import { MobileGate } from "./mobile-gate";
 import { PARTNER_NAV_SECTIONS } from "./partner-nav-config";
 import { api } from "~/trpc/react";
@@ -45,6 +46,12 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
   const setRead = api.partnerNotifications.setRead.useMutation({
+    onSuccess: () => void utils.partnerNotifications.list.invalidate(),
+  });
+  const setCleared = api.partnerNotifications.setCleared.useMutation({
+    onSuccess: () => void utils.partnerNotifications.list.invalidate(),
+  });
+  const clearAll = api.partnerNotifications.clearAll.useMutation({
     onSuccess: () => void utils.partnerNotifications.list.invalidate(),
   });
 
@@ -100,13 +107,17 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
         userInitials={initials}
         userAvatarUrl={me.data?.avatarUrl}
         roleLabel={me.data?.roleLabel ?? (kind ? PartnerKindLabel[kind] : "Partner")}
-        searchPlaceholder="Search students, applications…"
+        search={tabs?.includes("students") ? <GlobalSearch portal="partner" /> : <div className="hidden md:block md:w-[300px]" />}
         accountHref={tabs?.includes("account") ? "/partner/account" : undefined}
         notifications={feed.data?.notifications ?? []}
         onMarkAllRead={() => {
           if ((feed.data?.unread ?? 0) > 0) markAllRead.mutate();
         }}
         notificationsHref="/partner/notifications"
+        onClear={(n) => {
+          if (/^\d+$/.test(n.id)) setCleared.mutate({ id: Number(n.id), cleared: true });
+        }}
+        onClearAll={() => clearAll.mutate()}
         onNotificationClick={(n) => {
           if (n.unread && /^\d+$/.test(n.id)) setRead.mutate({ id: Number(n.id), read: true });
         }}

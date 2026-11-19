@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Button } from "~/components/ui/button";
 import { FormInput } from "~/components/ui/form-input";
 import { FormSelect } from "~/components/ui/form-select";
@@ -10,6 +10,7 @@ import {
   INTAKE_OPTIONS,
 } from "~/components/students/status";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { fileProblem, uploadOne } from "./upload-documents-modal";
 
 // ----- Shared constants ----------------------------------------------------
 
@@ -79,6 +80,16 @@ const PROGRAM_OPTIONS = [
   "Law",
   "Media & Communications",
 ];
+
+// Uploaded with the registration itself (19 Nov): a partner can't add a
+// student without them. Keys are the student document types.
+export const MANDATORY_DOCS = [
+  { key: "passport", label: "Passport" },
+  { key: "resume", label: "Updated CV / Resume" },
+] as const;
+type MandatoryKey = (typeof MANDATORY_DOCS)[number]["key"];
+type DocFiles = Record<MandatoryKey, File | null>;
+const noFiles = (): DocFiles => ({ passport: null, resume: null });
 
 // ----- Types ----------------------------------------------------------------
 
@@ -161,6 +172,53 @@ export function AddStudentModal({
   const [errors, setErrors] = useState<FormErrors>({});
   const [duplicate, setDuplicate] = useState<Duplicate | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [files, setFiles] = useState<DocFiles>(noFiles());
+  const [fileErrors, setFileErrors] = useState<Partial<Record<MandatoryKey, string>>>({});
+  const [uploading, setUploading] = useState(false);
+  // Created, but a document didn't upload: offer a retry for just those.
+  const [partial, setPartial] = useState<{
+    student: CreatedStudent;
+    failed: { key: MandatoryKey; label: string; error: string }[];
+  } | null>(null);
+
+  const pickFile = (key: MandatoryKey, f: File | null) => {
+    setFiles((cur) => ({ ...cur, [key]: f }));
+    setFileErrors((e) => ({ ...e, [key]: f ? (fileProblem(f) ?? undefined) : undefined }));
+  };
+
+  // Upload the mandatory files for a just-created student; returns failures.
+  const uploadDocs = async (studentId: number, keys: MandatoryKey[]) => {
+    const failed: { key: MandatoryKey; label: string; error: string }[] = [];
+    for (const d of MANDATORY_DOCS) {
+      const f = files[d.key];
+      if (!keys.includes(d.key) || !f) continue;
+      try {
+        await uploadOne(studentId, d.key, f);
+      } catch (err) {
+        failed.push({ key: d.key, label: d.label, error: err instanceof Error ? err.message : "Upload failed" });
+      }
+    }
+    return failed;
+  };
+
+  const finish = async (student: CreatedStudent) => {
+    await utils.students.partnerList.invalidate();
+    setForm(emptyForm());
+    setErrors({});
+    setFiles(noFiles());
+    setFileErrors({});
+    setPartial(null);
+    onCreated(student);
+  };
+
+  const retryUploads = async () => {
+    if (!partial) return;
+    setUploading(true);
+    const failed = await uploadDocs(partial.student.id, partial.failed.map((f) => f.key));
+    setUploading(false);
+    if (failed.length === 0) await finish(partial.student);
+    else setPartial({ ...partial, failed });
+  };
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -175,6 +233,12 @@ export function AddStudentModal({
   // Keep typed values on accidental close (backdrop click); only the
   // transient error/duplicate state resets. Form clears after a success.
   const handleClose = () => {
+    // Closing after a partial upload: the student exists, so finish (the list
+    // shows what's still missing).
+    if (partial) {
+      void finish(partial.student);
+      return;
+    }
     setDuplicate(null);
     setSubmitError(null);
     onClose();
@@ -183,7 +247,14 @@ export function AddStudentModal({
   const handleSubmit = async () => {
     const nextErrors = validate(form);
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) return;
+    const nextFileErrors: Partial<Record<MandatoryKey, string>> = {};
+    for (const d of MANDATORY_DOCS) {
+      const f = files[d.key];
+      const problem = f ? fileProblem(f) : `${d.label} is required`;
+      if (problem) nextFileErrors[d.key] = problem;
+    }
+    setFileErrors(nextFileErrors);
+    if (Object.keys(nextErrors).length > 0 || Object.keys(nextFileErrors).length > 0) return;
     setSubmitError(null);
     try {
       const res = await createStudent.mutateAsync({
@@ -203,11 +274,16 @@ export function AddStudentModal({
         setDuplicate(res.duplicate);
         return;
       }
-      await utils.students.partnerList.invalidate();
-      setForm(emptyForm());
-      setErrors({});
-      onCreated(res.student);
+      setUploading(true);
+      const failed = await uploadDocs(res.student.id, MANDATORY_DOCS.map((d) => d.key));
+      setUploading(false);
+      if (failed.length > 0) {
+        setPartial({ student: res.student, failed });
+        return;
+      }
+      await finish(res.student);
     } catch (err) {
+      setUploading(false);
       setSubmitError(
         err instanceof Error
           ? err.message
@@ -221,11 +297,20 @@ export function AddStudentModal({
   return (
     <Modal
       open={open}
-      title={duplicate ? "Duplicate Student Found" : "Add New Student"}
+      title={partial ? "Student Added: Documents Pending" : duplicate ? "Duplicate Student Found" : "Add New Student"}
       onClose={handleClose}
       width="w-[640px]"
       footer={
-        duplicate ? (
+        partial ? (
+          <>
+            <Button variant="secondary" onClick={handleClose} disabled={uploading}>
+              Upload later
+            </Button>
+            <Button onClick={() => void retryUploads()} loading={uploading}>
+              Retry upload
+            </Button>
+          </>
+        ) : duplicate ? (
           <>
             <Button variant="secondary" onClick={handleClose}>
               Cancel
@@ -237,14 +322,30 @@ export function AddStudentModal({
             <Button variant="secondary" onClick={handleClose}>
               Cancel
             </Button>
-            <Button onClick={handleSubmit} loading={createStudent.isPending}>
-              Add Student
+            <Button onClick={handleSubmit} loading={createStudent.isPending || uploading}>
+              {uploading ? "Uploading documents…" : "Add Student"}
             </Button>
           </>
         )
       }
     >
-      {duplicate ? (
+      {partial ? (
+        <div className="space-y-3">
+          <div className="rounded-lg border border-[#FEDF89] bg-[#FFFAEB] p-4 text-sm text-[#B54708]">
+            {partial.student.firstName} {partial.student.lastName} was added as CP-{partial.student.id},
+            but {partial.failed.length === 1 ? "this document" : "these documents"} didn&apos;t upload.
+            Retry now, or upload {partial.failed.length === 1 ? "it" : "them"} later from the student&apos;s Documents.
+          </div>
+          <ul className="space-y-1.5 text-sm">
+            {partial.failed.map((f) => (
+              <li key={f.key} className="text-[#344054]">
+                <span className="font-semibold">{f.label}</span>
+                <span className="text-[#B42318]"> · {f.error}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : duplicate ? (
         <DuplicateNotice duplicate={duplicate} />
       ) : (
         <>
@@ -388,6 +489,19 @@ export function AddStudentModal({
             />
           </Section>
 
+          <Section title="Mandatory Documents">
+            <p className="-mt-1 text-xs text-[#667085]">PDF only, up to 10 MB each.</p>
+            {MANDATORY_DOCS.map((d) => (
+              <FilePick
+                key={d.key}
+                label={d.label}
+                file={files[d.key]}
+                error={fileErrors[d.key]}
+                onPick={(f) => pickFile(d.key, f)}
+              />
+            ))}
+          </Section>
+
           {submitError && (
             <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] p-3 text-sm text-[#B42318]">
               {submitError}
@@ -462,6 +576,63 @@ function DuplicateRow({
 }
 
 // ----- Small atoms -----------------------------------------------------------
+
+function FilePick({
+  label,
+  file,
+  error,
+  onPick,
+}: {
+  label: string;
+  file: File | null;
+  error?: string;
+  onPick: (f: File | null) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <div>
+      <div className="mb-1.5 text-[13px] font-medium text-[#344054]">
+        {label} <span className="text-[#F04438]">*</span>
+      </div>
+      <div
+        className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
+          error ? "border-[#FDA29B]" : "border-[#D0D5DD]"
+        }`}
+      >
+        <span className={`min-w-0 flex-1 truncate text-sm ${file ? "text-[#101828]" : "text-[#98A2B3]"}`}>
+          {file ? file.name : "No file chosen"}
+        </span>
+        {file && (
+          <button
+            type="button"
+            onClick={() => {
+              onPick(null);
+              if (ref.current) ref.current.value = "";
+            }}
+            className="cursor-pointer text-xs font-semibold text-[#667085] hover:text-[#B42318]"
+          >
+            Remove
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => ref.current?.click()}
+          className="h-8 shrink-0 cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-xs font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+        >
+          {file ? "Change" : "Choose PDF"}
+        </button>
+        <input
+          ref={ref}
+          type="file"
+          accept=".pdf,application/pdf"
+          className="hidden"
+          onChange={(e) => onPick(e.target.files?.[0] ?? null)}
+        />
+      </div>
+      {error && <div className="mt-1 text-xs text-[#F04438]">{error}</div>}
+    </div>
+  );
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (

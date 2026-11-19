@@ -17,6 +17,7 @@ import { counsellingTeamsRouter } from "~/server/api/routers/counselling-teams";
 import { partnersRouter } from "~/server/api/routers/partners";
 import { universitiesRouter } from "~/server/api/routers/universities";
 import { studentsRouter } from "~/server/api/routers/students";
+import { globalSearchRouter } from "~/server/api/routers/global-search";
 import { placementsRouter } from "~/server/api/routers/placements";
 import { counsellorsRouter } from "~/server/api/routers/counsellors";
 import { eventsRouter } from "~/server/api/routers/events";
@@ -52,6 +53,7 @@ import { reportsRouter } from "~/server/api/routers/reports";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
 export const appRouter = createTRPCRouter({
+  globalSearch: globalSearchRouter,
   account: accountRouter,
   auth: authRouter,
   authSession: authSessionRouter,

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { Topbar, type NotificationItem } from "./topbar";
+import { GlobalSearch } from "./global-search";
 import { MobileGate } from "./mobile-gate";
 import { NAV_SECTIONS, navRoleFromCode } from "./nav-config";
 import { AdminRoleLabel, isAdminRole } from "~/server/db/enums";
@@ -96,6 +97,8 @@ export function DashboardShell({
   const refreshFeed = () => void utils.staffNotifications.recent.invalidate();
   const markFeedRead = api.staffNotifications.markAllRead.useMutation({ onSuccess: refreshFeed });
   const setFeedRead = api.staffNotifications.setRead.useMutation({ onSuccess: refreshFeed });
+  const clearFeed = api.staffNotifications.setCleared.useMutation({ onSuccess: refreshFeed });
+  const clearAllFeed = api.staffNotifications.clearAll.useMutation({ onSuccess: refreshFeed });
   const branding = api.settings.branding.useQuery().data;
   const [allRead, setAllRead] = useState(false);
   const [oooOpen, setOooOpen] = useState(false);
@@ -158,6 +161,8 @@ export function DashboardShell({
       />
       <Topbar
         userName={userName}
+        // Student search for anyone with the Students tab; nothing otherwise.
+        search={sections?.includes("students") ? <GlobalSearch portal="admin" /> : <div className="hidden md:block md:w-[300px]" />}
         userInitials={initials}
         roleLabel={roleLabel}
         notifications={shownNotifications}
@@ -167,6 +172,11 @@ export function DashboardShell({
           if ((feed?.unread ?? 0) > 0) markFeedRead.mutate();
         }}
         notificationsHref="/admin/notifications"
+        onClear={(n) => {
+          const item = stored.find((s) => s.id === n.id);
+          if (item) clearFeed.mutate({ id: item.dbId, cleared: true });
+        }}
+        onClearAll={() => clearAllFeed.mutate()}
         onNotificationClick={(n) => {
           const item = stored.find((s) => s.id === n.id);
           if (item?.unread) setFeedRead.mutate({ id: item.dbId, read: true });

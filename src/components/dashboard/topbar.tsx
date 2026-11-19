@@ -20,6 +20,8 @@ export interface NotificationItem {
   body?: string;
   /** When set, the notification row links to the relevant page on click. */
   href?: string;
+  /** Stored items can be cleared from the bell (live signals can't). */
+  clearable?: boolean;
 }
 
 interface TopbarProps {
@@ -37,8 +39,14 @@ interface TopbarProps {
    */
   accountHref?: string;
   onSearch?: (value: string) => void;
+  /** Replaces the plain search input (the global student search). */
+  search?: ReactNode;
   onTasksClick?: () => void;
   onMarkAllRead?: () => void;
+  /** Clear one stored notification from the bell (it stays in history). */
+  onClear?: (n: NotificationItem) => void;
+  /** Clear every stored notification from the bell. */
+  onClearAll?: () => void;
   onLogout?: () => void;
   /** Extra controls rendered before the Tasks button (e.g. Impersonate). */
   actions?: ReactNode;
@@ -73,8 +81,11 @@ export function Topbar({
   searchPlaceholder = "Search partners, students, applications...",
   accountHref,
   onSearch,
+  search,
   onTasksClick,
   onMarkAllRead,
+  onClear,
+  onClearAll,
   onLogout,
   actions,
   notificationsHref,
@@ -112,6 +123,7 @@ export function Topbar({
       <div className="flex-1" />
 
       {/* Search */}
+      {search ?? (
       <div className="hidden h-9 w-[280px] items-center gap-2 rounded-lg border border-[#E4E7EC] bg-[#F9FAFB] px-3 md:flex">
         <SearchIcon className="h-4 w-4 shrink-0 stroke-[#98A2B3]" />
         <input
@@ -124,6 +136,7 @@ export function Topbar({
           ⌘K
         </span>
       </div>
+      )}
 
       {actions}
 
@@ -163,13 +176,24 @@ export function Topbar({
               <h3 className="text-sm font-semibold text-[#101828]">
                 Notifications
               </h3>
-              <button
-                type="button"
-                onClick={onMarkAllRead}
-                className="cursor-pointer border-none bg-transparent text-xs font-medium text-[#1570EF] hover:underline"
-              >
-                Mark all as read
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onMarkAllRead}
+                  className="cursor-pointer border-none bg-transparent text-xs font-medium text-[#1570EF] hover:underline"
+                >
+                  Mark all as read
+                </button>
+                {onClearAll && notifications.some((n) => n.clearable) && (
+                  <button
+                    type="button"
+                    onClick={onClearAll}
+                    className="cursor-pointer border-none bg-transparent text-xs font-medium text-[#667085] hover:text-[#B42318] hover:underline"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
             </div>
             <div className="max-h-[380px] overflow-y-auto">
               {notifications.length === 0 ? (
@@ -178,7 +202,7 @@ export function Topbar({
                 </div>
               ) : (
                 notifications.map((n) => {
-                  const rowClass = `block cursor-pointer border-b border-[#F2F4F7] px-4 py-3 transition-colors last:border-b-0 ${
+                  const rowClass = `group relative block cursor-pointer border-b border-[#F2F4F7] px-4 py-3 transition-colors last:border-b-0 ${
                     n.unread
                       ? "bg-[#F0F7FF] hover:bg-[#E0EFFF]"
                       : "hover:bg-[#FAFBFC]"
@@ -201,6 +225,21 @@ export function Topbar({
                           {n.time}
                         </div>
                       </div>
+                      {n.clearable && onClear && (
+                        <button
+                          type="button"
+                          aria-label="Clear notification"
+                          title="Clear"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onClear(n);
+                          }}
+                          className="-mt-0.5 -mr-1 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[15px] leading-none text-[#98A2B3] opacity-0 group-hover:opacity-100 hover:bg-[#F2F4F7] hover:text-[#B42318] focus:opacity-100"
+                        >
+                          ×
+                        </button>
+                      )}
                     </div>
                   );
                   return n.href ? (
@@ -229,11 +268,11 @@ export function Topbar({
             </div>
             {notificationsHref && (
               <Link
-                href={notificationsHref}
+                href={`${notificationsHref}?view=everything`}
                 onClick={() => setNotifOpen(false)}
                 className="block shrink-0 border-t border-[#E4E7EC] px-4 py-2.5 text-center text-xs font-semibold text-[#1570EF] hover:bg-[#F9FAFB]"
               >
-                View all notifications
+                See older notifications
               </Link>
             )}
           </div>

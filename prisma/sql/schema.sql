@@ -1781,10 +1781,13 @@ CREATE TABLE IF NOT EXISTS `notification` (
   `link`       VARCHAR(255)  NULL DEFAULT NULL,
   `tone`       VARCHAR(10)   NOT NULL DEFAULT 'blue',
   `read_at`    TIMESTAMP     NULL DEFAULT NULL,
+  -- Cleared from the bell; still on the Notifications page (19 Nov).
+  `archived_at` TIMESTAMP    NULL DEFAULT NULL,
   `created_at` TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_notification_user_created` (`user_id` ASC, `created_at` ASC) VISIBLE,
   INDEX `idx_notification_user_read`    (`user_id` ASC, `read_at` ASC) VISIBLE,
+  INDEX `idx_notification_user_archived` (`user_id` ASC, `archived_at` ASC, `created_at` ASC) VISIBLE,
   CONSTRAINT `fk_notification_user`
     FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE
@@ -2216,10 +2219,13 @@ CREATE TABLE IF NOT EXISTS `cp_notification` (
   `link`       VARCHAR(255) NULL DEFAULT NULL,
   `tone`       VARCHAR(10)  NOT NULL DEFAULT 'blue',
   `read_at`    TIMESTAMP    NULL DEFAULT NULL,
+  -- Cleared from the bell; still on the Notifications page (19 Nov).
+  `archived_at` TIMESTAMP   NULL DEFAULT NULL,
   `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_cp_notification_user_created` (`cp_user_id` ASC, `created_at` ASC) VISIBLE,
   INDEX `idx_cp_notification_user_read` (`cp_user_id` ASC, `read_at` ASC) VISIBLE,
+  INDEX `idx_cp_notification_user_archived` (`cp_user_id` ASC, `archived_at` ASC, `created_at` ASC) VISIBLE,
   CONSTRAINT `fk_cp_notification_user`
     FOREIGN KEY (`cp_user_id`) REFERENCES `cp_user` (`id`)
     ON DELETE CASCADE

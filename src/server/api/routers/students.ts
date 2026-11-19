@@ -41,6 +41,7 @@ import {
   autoAssignStudents,
   bdmOrgScope,
   bdmUserScope,
+  canReassignStudents,
   canSeeStudent,
   isCounsellingRole,
   requireAssignableCounsellor,
@@ -83,6 +84,7 @@ import {
   GENDER_CODES,
   MARITAL_STATUS_CODES,
   NOTE_PRIORITY_CODES,
+  MANDATORY_STUDENT_DOCS,
   STUDENT_DOC_TYPES,
   STUDENT_STATUS_CODES,
   ShortlistApproval,
@@ -2384,8 +2386,15 @@ export const studentsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      // Only students the assigner can see, only to someone in their team
-      // (counselling roles); a manual pick replaces any auto-assignment.
+      // A Counsellor Lead and above only. Only students the assigner can see,
+      // only to someone in their team (counselling roles); a manual pick
+      // replaces any auto-assignment.
+      if (!canReassignStudents(ctx.cpUser.role)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only a Counsellor Lead or above can assign or reassign students.",
+        });
+      }
       await requireStaffStudents(ctx.cpUser, input.ids);
       const counsellor = await requireAssignableCounsellor(ctx.cpUser, input.cpCounsellorId);
       const before = await db.student.findMany({
@@ -2427,8 +2436,23 @@ export const studentsRouter = createTRPCRouter({
       take: LIST_CAP,
       include: studentInclude,
     });
+    // Which mandatory registration documents (Passport, CV) each student
+    // still lacks: students added before they were required, or whose upload
+    // failed at registration.
+    const have = await db.document.findMany({
+      where: {
+        student_id: { in: rows.map((r) => r.id) },
+        doc_type: { in: [...MANDATORY_STUDENT_DOCS] },
+        is_most_recent: 1,
+      },
+      select: { student_id: true, doc_type: true },
+    });
+    const held = new Set(have.map((d) => `${d.student_id}:${d.doc_type}`));
     // Partners don't see CP-internal assignment details.
-    return rows.map(toPartnerApi);
+    return rows.map((r) => ({
+      ...toPartnerApi(r),
+      missingMandatoryDocs: MANDATORY_STUDENT_DOCS.filter((k) => !held.has(`${r.id}:${k}`)),
+    }));
   }),
 
   partnerCreate: protectedPartnerProcedure

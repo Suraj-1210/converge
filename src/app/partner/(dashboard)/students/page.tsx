@@ -762,6 +762,14 @@ function StudentRow({
               {s.firstName} {s.lastName}
             </Link>
             <div className="text-xs text-[#98A2B3]">CP-{s.id}</div>
+            {s.missingMandatoryDocs.length > 0 && (
+              <div
+                className="mt-0.5 inline-block rounded-full bg-[#FFFAEB] px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap text-[#B54708]"
+                title="Required at registration: upload from the student's Documents"
+              >
+                {s.missingMandatoryDocs.map((k) => (k === "passport" ? "Passport" : "CV")).join(" & ")} missing
+              </div>
+            )}
           </div>
         </div>
       </td>

@@ -18,6 +18,7 @@ import {
   studentStatusGroup,
 } from "~/components/students/status";
 import { api } from "~/trpc/react";
+import { AdminRole } from "~/server/db/enums";
 import { useExportLog } from "~/lib/export-log";
 import { SkeletonTable } from "~/components/dashboard/widgets";
 import {
@@ -175,6 +176,9 @@ export default function StudentsPage() {
   // Only the counsellors this user may assign to (their team, for leads and
   // counsellors); the server enforces the same rule.
   const counsellorsQuery = api.users.assignableCounsellors.useQuery();
+  // Counsellors can't assign or reassign (Counsellor Lead and above only).
+  const myRole = api.authSession.me.useQuery().data?.role;
+  const canReassign = myRole != null && myRole !== AdminRole.COUNSELLOR;
 
   const students = useMemo(
     () => studentsQuery.data ?? [],
@@ -702,6 +706,7 @@ export default function StudentsPage() {
                       onToggle={() => toggleRow(s.id)}
                       onView={() => openStudent(s.id)}
                       counsellors={counsellors}
+                      canAssign={canReassign}
                       onAssign={(cpCounsellorId) =>
                         assignSingleMut.mutate({ ids: [s.id], cpCounsellorId })
                       }
@@ -727,13 +732,15 @@ export default function StudentsPage() {
           >
             Update Status
           </Button>
-          <Button
-            variant="secondary"
-            onClick={() => setAssignModalOpen(true)}
-            className="!h-[36px] !px-4 !text-[13px]"
-          >
-            Assign / Reassign Counselor
-          </Button>
+          {canReassign && (
+            <Button
+              variant="secondary"
+              onClick={() => setAssignModalOpen(true)}
+              className="!h-[36px] !px-4 !text-[13px]"
+            >
+              Assign / Reassign Counselor
+            </Button>
+          )}
           <Button
             variant="secondary"
             onClick={exportCsv}
@@ -791,6 +798,7 @@ export default function StudentsPage() {
         <StudentSlideOver
           student={slideStudent}
           counsellors={counsellors}
+          canReassign={canReassign}
           onClose={() => setSlideOverId(null)}
           onReassign={(cpCounsellorId) =>
             assignSingleMut.mutate({ ids: [slideStudent.id], cpCounsellorId })
@@ -819,6 +827,7 @@ function StudentRow({
   onToggle,
   onView,
   counsellors,
+  canAssign,
   onAssign,
   assigning,
 }: {
@@ -828,6 +837,7 @@ function StudentRow({
   onToggle: () => void;
   onView: () => void;
   counsellors: { id: number; firstName: string; lastName: string; email: string }[];
+  canAssign: boolean;
   onAssign: (cpCounsellorId: number) => void;
   assigning: boolean;
 }) {
@@ -926,6 +936,7 @@ function StudentRow({
             Auto-assigned
           </div>
         )}
+        {canAssign && (
         <select
           value=""
           onChange={(e) => {
@@ -942,6 +953,7 @@ function StudentRow({
             </option>
           ))}
         </select>
+        )}
       </td>
       <td
         className={`${td} whitespace-nowrap`}

@@ -282,6 +282,7 @@ export function canAccessAdminPath(sections: readonly AdminSection[] | undefined
 // universities, tat, users) are gated there instead.
 const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["students.adminList", "students"],
+  ["globalSearch.adminStudents", "students"],
   ["students.listOrgs", "students"],
   ["students.bulkUpdateStatus", "students"],
   ["students.adminGet", "students"],

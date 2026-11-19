@@ -23,12 +23,14 @@ export function StudentSlideOver({
   student,
   counsellors,
   onClose,
+  canReassign,
   onReassign,
   assigning,
 }: {
   student: AdminStudent;
   counsellors: CpCounsellor[];
   onClose: () => void;
+  canReassign: boolean;
   onReassign: (cpCounsellorId: number) => void;
   assigning: boolean;
 }) {
@@ -162,6 +164,7 @@ export function StudentSlideOver({
                     : (student.cpCounsellorName ?? "Unassigned")}
                 </div>
               </div>
+              {canReassign && (
               <select
                 value={String(student.cpCounsellorId ?? "")}
                 onChange={(e) => {
@@ -179,6 +182,7 @@ export function StudentSlideOver({
                   </option>
                 ))}
               </select>
+              )}
             </div>
             <div className="border-t border-[#F2F4F7] pt-3">
               <div className="text-[11px] font-semibold tracking-wider text-[#98A2B3] uppercase">

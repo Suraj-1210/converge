@@ -302,6 +302,10 @@ export const STUDENT_DOC_TYPES: StudentDocType[] = [
 
 export const EXPECTED_STUDENT_DOC_TYPES = STUDENT_DOC_TYPES.filter((d) => d.expected);
 
+// Required when a partner registers a student (19 Nov); the partner list flags
+// any student still missing one.
+export const MANDATORY_STUDENT_DOCS = ["passport", "resume"] as const;
+
 // The checklist slot an uploaded document fills. Older profile uploads
 // (per-level education documents, per-attempt test reports, from before
 // uploads moved to the Documents tab only) count toward the matching item.

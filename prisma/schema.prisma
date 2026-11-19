@@ -502,11 +502,14 @@ model notification {
   link       String?   @db.VarChar(255)
   tone       String    @default("blue") @db.VarChar(10)
   read_at    DateTime? @db.Timestamp(0)
+  // Cleared from the bell; still on the Notifications page.
+  archived_at DateTime? @db.Timestamp(0)
   created_at DateTime  @default(now()) @db.Timestamp(0)
   user       user      @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notification_user")
 
   @@index([user_id, created_at], map: "idx_notification_user_created")
   @@index([user_id, read_at], map: "idx_notification_user_read")
+  @@index([user_id, archived_at, created_at], map: "idx_notification_user_archived")
 }
 
 // WhatsApp messages (Periskope) — one row per message in a student ↔ counsellor
@@ -1782,11 +1785,14 @@ model cp_notification {
   link       String?          @db.VarChar(255)
   tone       String           @default("blue") @db.VarChar(10)
   read_at    DateTime?        @db.Timestamp(0)
+  // Cleared from the bell; still on the Notifications page.
+  archived_at DateTime?       @db.Timestamp(0)
   created_at DateTime         @default(now()) @db.Timestamp(0)
   cp_user    collegepond_user @relation(fields: [cp_user_id], references: [id], onDelete: Cascade, map: "fk_cp_notification_user")
 
   @@index([cp_user_id, created_at], map: "idx_cp_notification_user_created")
   @@index([cp_user_id, read_at], map: "idx_cp_notification_user_read")
+  @@index([cp_user_id, archived_at, created_at], map: "idx_cp_notification_user_archived")
 }
 
 // Tab on/off switches (src/server/tab-access.ts). A type's saved default,

@@ -46,14 +46,14 @@ export function expectedProgress(docs: StudentDoc[] | undefined) {
   return { done, total: EXPECTED_STUDENT_DOC_TYPES.length };
 }
 
-function fileProblem(f: File): string | null {
+export function fileProblem(f: File): string | null {
   const ext = (f.name.split(".").pop() ?? "").toLowerCase();
   if (!ALLOWED.has(ext)) return "PDF only: scan or save the document as a PDF.";
   if (f.size > MAX_BYTES) return "Too large (max 10 MB).";
   return null;
 }
 
-async function uploadOne(studentId: number, docType: string, file: File) {
+export async function uploadOne(studentId: number, docType: string, file: File) {
   const problem = fileProblem(file);
   if (problem) throw new Error(problem);
   const fd = new FormData();
