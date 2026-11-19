@@ -85,6 +85,8 @@ import {
   MARITAL_STATUS_CODES,
   NOTE_PRIORITY_CODES,
   MANDATORY_STUDENT_DOCS,
+  REJECTION_REASON_CODES,
+  RejectionReason,
   STUDENT_DOC_TYPES,
   STUDENT_STATUS_CODES,
   ShortlistApproval,
@@ -513,6 +515,7 @@ const shortlistCardSelect = {
   proposal_note: true,
   decided_at: true,
   reject_reason: true,
+  reject_reason_code: true,
   collegepond_user: { select: { first_name: true, last_name: true } },
   added_by_user: { select: { first_name: true, last_name: true } },
   decided_by_user: { select: { first_name: true, last_name: true } },
@@ -531,6 +534,7 @@ function toShortlistCard(r: {
   proposal_note: string | null;
   decided_at: Date | null;
   reject_reason: string | null;
+  reject_reason_code: number | null;
   collegepond_user: Who;
   added_by_user: Who;
   decided_by_user: Who;
@@ -563,7 +567,8 @@ function toShortlistCard(r: {
       : r.decided_by_cp_user
         ? fullName(r.decided_by_cp_user)
         : null,
-    rejectReason: r.reject_reason,
+    rejectReason: rejectionReasonText(r.reject_reason_code, r.reject_reason) ?? r.reject_reason,
+    rejectReasonCode: r.reject_reason_code,
     ...toCourseCard(r.course),
   };
 }
@@ -587,11 +592,18 @@ const decisionInput = z
     courseId: z.number().int().positive(),
     approve: z.boolean(),
     reason: z.string().trim().max(500).optional(),
+    // Collegepond rejecting: a RejectionReason code (19 Nov); "Other" needs
+    // the note. Partners still write a reason.
+    reasonCode: z.number().int().refine((c) => (REJECTION_REASON_CODES as number[]).includes(c)).optional(),
   })
-  .refine((v) => v.approve || (v.reason ?? "").length >= 3, {
-    message: "Give a reason for the rejection",
-    path: ["reason"],
-  });
+  .refine(
+    (v) =>
+      v.approve ||
+      (v.reasonCode != null
+        ? v.reasonCode !== RejectionReason.OTHER || (v.reason ?? "").length >= 3
+        : (v.reason ?? "").length >= 3),
+    { message: "Give a reason for the rejection", path: ["reason"] },
+  );
 
 const reproposeInput = z.object({
   studentId: z.number().int().positive(),
@@ -1799,6 +1811,7 @@ export const studentsRouter = createTRPCRouter({
             decided_by_cp_user_id: ctx.cpUser.id,
             decided_by_user_id: null,
             reject_reason: null,
+            reject_reason_code: null,
           },
         });
       }
@@ -1862,7 +1875,14 @@ export const studentsRouter = createTRPCRouter({
           message: "Collegepond proposed this university, so the partner approves or rejects it.",
         });
       }
-      const reason = input.approve ? null : (input.reason ?? null);
+      if (!input.approve && input.reasonCode == null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a rejection reason" });
+      }
+      const noteText = input.reason?.trim() ?? "";
+      const note = input.approve || noteText === "" ? null : noteText;
+      const reasonCode = input.approve ? null : (input.reasonCode ?? null);
+      // As shown to the partner and in the audit log: "Low Academic Profile (note)".
+      const reason = input.approve ? null : rejectionReasonText(reasonCode, note);
       const result = await db.shortlist.updateMany({
         where: { id: row.id, approval_status: ShortlistApproval.PENDING },
         data: {
@@ -1870,7 +1890,8 @@ export const studentsRouter = createTRPCRouter({
           decided_at: new Date(),
           decided_by_cp_user_id: ctx.cpUser.id,
           decided_by_user_id: null,
-          reject_reason: reason,
+          reject_reason: note,
+          reject_reason_code: reasonCode,
         },
       });
       if (result.count === 0) {
@@ -1928,6 +1949,7 @@ export const studentsRouter = createTRPCRouter({
           decided_by_user_id: null,
           decided_by_cp_user_id: null,
           reject_reason: null,
+          reject_reason_code: null,
         },
       });
       if (result.count === 0) {
@@ -2595,6 +2617,7 @@ export const studentsRouter = createTRPCRouter({
               decided_by_user_id: ctx.cpPartner.id,
               decided_by_cp_user_id: null,
               reject_reason: null,
+              reject_reason_code: null,
             },
           });
           await db.audit_log.create({
@@ -2735,6 +2758,7 @@ export const studentsRouter = createTRPCRouter({
           decided_by_user_id: null,
           decided_by_cp_user_id: null,
           reject_reason: null,
+          reject_reason_code: null,
         },
       });
       if (result.count === 0) {

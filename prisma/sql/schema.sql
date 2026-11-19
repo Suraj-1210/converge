@@ -1176,6 +1176,8 @@ CREATE TABLE IF NOT EXISTS `shortlist` (
   `decided_by_user_id`    INT NULL DEFAULT NULL,
   `decided_by_cp_user_id` INT NULL DEFAULT NULL,
   `reject_reason`         VARCHAR(500) NULL DEFAULT NULL,
+  -- Collegepond's rejection reason (RejectionReason); reject_reason = note.
+  `reject_reason_code`    TINYINT UNSIGNED NULL DEFAULT NULL,
   `created_at`          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uq_shortlist_student_course` (`student_id` ASC, `course_id` ASC) VISIBLE,

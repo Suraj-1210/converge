@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { Modal } from "~/components/ui/modal";
-import { ShortlistApproval } from "~/server/db/enums";
+import {
+  REJECTION_REASON_CODES,
+  RejectionReason,
+  RejectionReasonLabel,
+  ShortlistApproval,
+} from "~/server/db/enums";
 
 // University assignment approval UI, shared by the admin and partner student
 // profiles (rules: src/server/shortlist-approval.ts). Each shortlist row is
@@ -119,12 +124,15 @@ export function ShortlistApprovalNotes({
   );
 }
 
-// Reject (reason required) or re-propose (note optional).
+// Reject (reason required) or re-propose (note optional). With reasonList
+// (Collegepond rejecting a partner's pick, 19 Nov) the reason is picked from
+// the same list as an application moved to Rejected; "Other" needs the note.
 export function ShortlistTextDialog({
   open,
   mode,
   subject,
   busy,
+  reasonList = false,
   onClose,
   onSubmit,
 }: {
@@ -132,16 +140,26 @@ export function ShortlistTextDialog({
   mode: "reject" | "repropose";
   subject: string;
   busy: boolean;
+  reasonList?: boolean;
   onClose: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, reasonCode?: number) => void;
 }) {
   const [text, setText] = useState("");
+  const [code, setCode] = useState<number | null>(null);
   useEffect(() => {
-    if (open) setText("");
+    if (open) {
+      setText("");
+      setCode(null);
+    }
   }, [open]);
   const reject = mode === "reject";
+  const picking = reject && reasonList;
   const trimmed = text.trim();
-  const valid = reject ? trimmed.length >= 3 : true;
+  const valid = picking
+    ? code !== null && (code !== RejectionReason.OTHER || trimmed.length >= 3)
+    : reject
+      ? trimmed.length >= 3
+      : true;
   return (
     <Modal
       open={open}
@@ -159,7 +177,7 @@ export function ShortlistTextDialog({
           <button
             type="button"
             disabled={!valid || busy}
-            onClick={() => onSubmit(trimmed)}
+            onClick={() => onSubmit(trimmed, picking && code !== null ? code : undefined)}
             className={`cursor-pointer rounded-lg px-4 py-2 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
               reject ? "bg-[#D92D20] hover:bg-[#B42318]" : "bg-[#1570EF] hover:bg-[#1260d4]"
             }`}
@@ -170,17 +188,51 @@ export function ShortlistTextDialog({
       }
     >
       <p className="text-[13px] text-[#475467]">{subject}</p>
+      {picking && (
+        <label className="block">
+          <span className="mb-1 block text-[12px] font-semibold text-[#344054]">
+            Rejection reason <span className="text-[#D92D20]">*</span>
+          </span>
+          <select
+            autoFocus
+            value={code ?? ""}
+            onChange={(e) => setCode(e.target.value ? Number(e.target.value) : null)}
+            className="h-10 w-full cursor-pointer rounded-lg border border-[#D0D5DD] bg-white px-3 text-[13px] text-[#344054] outline-none focus:border-[#1570EF]"
+          >
+            <option value="">Choose a reason…</option>
+            {REJECTION_REASON_CODES.map((c) => (
+              <option key={c} value={c}>
+                {RejectionReasonLabel[c]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="block">
         <span className="mb-1 block text-[12px] font-semibold text-[#344054]">
-          {reject ? "Reason (shown to the other side)" : "Note (optional)"}
+          {picking ? (
+            code === RejectionReason.OTHER ? (
+              <>
+                Describe the reason <span className="text-[#D92D20]">*</span>
+              </>
+            ) : (
+              "Note (optional, shown to the partner)"
+            )
+          ) : reject ? (
+            "Reason (shown to the other side)"
+          ) : (
+            "Note (optional)"
+          )}
         </span>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value.slice(0, 500))}
           rows={3}
-          autoFocus
+          autoFocus={!picking}
           placeholder={
-            reject
+            picking
+              ? "Anything the partner should know"
+              : reject
               ? "e.g. Budget is too high for the family"
               : "e.g. Scholarship now confirmed for this intake"
           }

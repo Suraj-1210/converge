@@ -1058,6 +1058,8 @@ model shortlist {
   decided_by_user_id    Int?
   decided_by_cp_user_id Int?
   reject_reason         String?           @db.VarChar(500)
+  // Collegepond's rejection reason (RejectionReason); reject_reason = note.
+  reject_reason_code    Int?              @db.UnsignedTinyInt
   created_at          DateTime          @default(now()) @db.Timestamp(0)
   student             student           @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_shortlist_student")
   course              course            @relation(fields: [course_id], references: [id], onDelete: Cascade, map: "fk_shortlist_course")
