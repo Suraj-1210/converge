@@ -89,7 +89,11 @@ created the lead answers `created` again.
    - New → create the loan lead: source `Converge (B2B)`, category `p2p`,
      status `open`, `businessPartnerId`, and
      `convergeRef: { referralId, partnerKey, convergeStudentId }`; consent time
-     kept as `partnerConsentAt`; assign by the loan round-robin.
+     kept as `partnerConsentAt`. Assign it to the partner's loan counsellor
+     (`businessPartners.loanOwnerUid`, set by a Super Admin in Loan →
+     Partners), never round-robin, so the partner always works with the same
+     person. No owner (or an inactive one): the lead waits unassigned with a
+     timeline note until an admin picks one.
    - Existing → add an activity `type: "note"`, message
      `Also referred by a business partner via Converge` (plus the partner's
      note); the business partner id goes in the note's metadata, never the name
@@ -263,3 +267,5 @@ again for a repeated `messageId`). **400** malformed or bad file (permanent),
   `created`, outbox TTL.
 - 19 Nov 2026: Phase 2 contract — shared notes (3a), partner messages with
   inline PDF files (3b).
+- 19 Nov 2026: partner leads go to the partner's own loan counsellor, not
+  round-robin (Suraj).
