@@ -1125,3 +1125,22 @@ export function loanMilestoneEmail(
     ],
   );
 }
+
+// A message from Collegepond's loan team in a loan lead's chat, unread for 15
+// minutes (~/server/loan-sharing). Preference: chat.message.
+export function loanChatEmail(
+  r: { name: string },
+  c: { student: string; from: string; text: string; count: number; url: string },
+): EmailMessage {
+  const more = c.count > 1 ? ` (${c.count} new messages)` : "";
+  return build(
+    `New message from the loan team: ${c.student}`,
+    "New message from Collegepond's loan team",
+    hello(r.name),
+    [
+      { p: `${c.from} wrote about ${c.student}'s education loan${more}:` },
+      { quote: c.text.length > 600 ? `${c.text.slice(0, 600)}…` : c.text },
+      { button: { label: "Reply in the partner portal", url: c.url } },
+    ],
+  );
+}

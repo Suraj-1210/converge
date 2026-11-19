@@ -2961,6 +2961,8 @@ CREATE TABLE IF NOT EXISTS `loan_referral_message` (
   `id`              INT               NOT NULL AUTO_INCREMENT,
   `public_id`       CHAR(36)          NOT NULL,
   `referral_id`     INT               NOT NULL,
+  `side`            VARCHAR(10)       NOT NULL DEFAULT 'partner',
+  `external_id`     VARCHAR(80)       NULL DEFAULT NULL,
   `author_user_id`  INT               NULL DEFAULT NULL,
   `author_name`     VARCHAR(150)      NOT NULL,
   `body`            VARCHAR(2000)     NOT NULL DEFAULT '',
@@ -2969,10 +2971,12 @@ CREATE TABLE IF NOT EXISTS `loan_referral_message` (
   `next_attempt_at` TIMESTAMP         NULL DEFAULT NULL,
   `last_error`      VARCHAR(500)      NULL DEFAULT NULL,
   `activity_id`     VARCHAR(64)       NULL DEFAULT NULL,
+  `emailed_at`      TIMESTAMP         NULL DEFAULT NULL,
   `created_at`      TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`      TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uq_loan_referral_message_public_id` (`public_id` ASC) VISIBLE,
+  UNIQUE INDEX `uq_loan_referral_message_external` (`external_id` ASC) VISIBLE,
   INDEX `idx_loan_referral_message_referral` (`referral_id` ASC, `created_at` ASC) VISIBLE,
   INDEX `idx_loan_referral_message_send` (`send_status` ASC, `next_attempt_at` ASC) VISIBLE,
   INDEX `idx_loan_referral_message_author` (`author_user_id` ASC) VISIBLE,
@@ -2996,6 +3000,20 @@ CREATE TABLE IF NOT EXISTS `loan_referral_message_file` (
   INDEX `idx_loan_referral_message_file_message` (`message_id` ASC) VISIBLE,
   CONSTRAINT `fk_loan_referral_message_file_message`
     FOREIGN KEY (`message_id`) REFERENCES `loan_referral_message` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS `loan_chat_read` (
+  `referral_id` INT          NOT NULL,
+  `user_id`     INT          NOT NULL,
+  `read_at`     TIMESTAMP(3) NOT NULL,
+  PRIMARY KEY (`referral_id`, `user_id`),
+  INDEX `idx_loan_chat_read_user` (`user_id` ASC) VISIBLE,
+  CONSTRAINT `fk_loan_chat_read_referral`
+    FOREIGN KEY (`referral_id`) REFERENCES `loan_referral` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_loan_chat_read_user`
+    FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 

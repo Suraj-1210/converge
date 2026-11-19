@@ -8,7 +8,7 @@ import { createNotifications } from "~/server/notify";
 import { createStaffNotifications } from "~/server/staff-notify";
 import { appUrl } from "~/server/email";
 import { emailPartners, type Recipient } from "~/server/email/partners";
-import { loanMilestoneEmail } from "~/server/email/templates";
+import { loanChatEmail, loanMilestoneEmail } from "~/server/email/templates";
 import { readStoredFile } from "~/server/storage";
 import {
   LOAN_STAGES,
@@ -382,7 +382,9 @@ function safeJson(text: string): unknown {
 }
 
 // Cron: every referral still waiting whose next try is due.
-export async function retryDueLoanReferrals(limit = 50): Promise<{ tried: number; messages: number }> {
+export async function retryDueLoanReferrals(
+  limit = 50,
+): Promise<{ tried: number; messages: number; chatEmails: number }> {
   const due = await db.loan_referral.findMany({
     where: {
       send_status: LoanReferralSendStatus.SENDING,
@@ -403,7 +405,108 @@ export async function retryDueLoanReferrals(limit = 50): Promise<{ tried: number
     select: { id: true },
   });
   for (const { id } of dueMessages) await sendPartnerMessage(id);
-  return { tried: due.length, messages: dueMessages.length };
+  const chatEmails = await emailUnreadLoanChats();
+  return { tried: due.length, messages: dueMessages.length, chatEmails };
+}
+
+// ── Loan chat (contract 4) ──────────────────────────────────────────────────
+
+const CHAT_EMAIL_AFTER_MS = 15 * 60_000;
+
+// A counsellor's chat message, stored once (external_id), with a bell for the
+// referrer and the agency owner. The email follows only if it stays unread.
+async function applyStaffChat(
+  r: { id: number; public_id: string; student_name: string; partner_user_id: number; org_id: number | null },
+  chat: { messageId: string; text: string; by: string | null; at: string },
+): Promise<void> {
+  try {
+    await db.loan_referral_message.create({
+      data: {
+        public_id: crypto.randomUUID(),
+        referral_id: r.id,
+        side: "staff",
+        external_id: chat.messageId,
+        author_name: (chat.by ?? "Loan team").slice(0, 150),
+        body: chat.text.slice(0, 2000),
+        send_status: LoanReferralSendStatus.RECEIVED,
+        created_at: new Date(chat.at),
+      },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return;
+    throw e;
+  }
+  await createNotifications(await referralAudience(r), {
+    type: "loan_chat",
+    title: `${r.student_name}: new message from the loan team`,
+    body: chat.text.slice(0, 200),
+    link: `${leadLink(r.public_id)}#chat`,
+  });
+}
+
+// Partner users' unread loan-chat messages per referral (staff messages newer
+// than what that user has read).
+export async function unreadLoanChats(userId: number, referralIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  if (referralIds.length === 0) return out;
+  const [reads, msgs] = await Promise.all([
+    db.loan_chat_read.findMany({ where: { user_id: userId, referral_id: { in: referralIds } } }),
+    db.loan_referral_message.findMany({
+      where: { side: "staff", referral_id: { in: referralIds } },
+      select: { referral_id: true, created_at: true },
+    }),
+  ]);
+  const readAt = new Map(reads.map((x) => [x.referral_id, x.read_at.getTime()]));
+  for (const m of msgs) {
+    if (m.created_at.getTime() > (readAt.get(m.referral_id) ?? 0)) {
+      out.set(m.referral_id, (out.get(m.referral_id) ?? 0) + 1);
+    }
+  }
+  return out;
+}
+
+// Cron: a counsellor message the referrer still hasn't read after 15 minutes
+// gets one email per referral (preference "New chat messages from
+// Collegepond", like the application chat). Read in time = settled, no email.
+export async function emailUnreadLoanChats(): Promise<number> {
+  const cutoff = new Date(Date.now() - CHAT_EMAIL_AFTER_MS);
+  const due = await db.loan_referral_message.findMany({
+    where: { side: "staff", emailed_at: null, created_at: { lte: cutoff, gte: new Date(Date.now() - 2 * 864e5) } },
+    include: { referral: { select: { id: true, public_id: true, student_name: true, partner_user_id: true } } },
+    orderBy: { created_at: "asc" },
+    take: 200,
+  });
+  const byReferral = new Map<number, typeof due>();
+  for (const m of due) byReferral.set(m.referral_id, [...(byReferral.get(m.referral_id) ?? []), m]);
+  let sent = 0;
+  for (const [referralId, msgs] of byReferral) {
+    const r = msgs[0]!.referral;
+    const read = await db.loan_chat_read.findUnique({
+      where: { referral_id_user_id: { referral_id: referralId, user_id: r.partner_user_id } },
+    });
+    const unread = msgs.filter((m) => !read || m.created_at > read.read_at);
+    if (unread.length > 0) {
+      const latest = unread.at(-1)!;
+      sent += await emailPartners(
+        await recipientsFor([r.partner_user_id]),
+        (to) =>
+          loanChatEmail(to, {
+            student: r.student_name,
+            from: latest.author_name,
+            text: latest.body,
+            count: unread.length,
+            url: `${appUrl()}${leadLink(r.public_id)}#chat`,
+          }),
+        "loan chat unread",
+        "chat.message",
+      );
+    }
+    await db.loan_referral_message.updateMany({
+      where: { id: { in: msgs.map((m) => m.id) } },
+      data: { emailed_at: new Date() },
+    });
+  }
+  return sent;
 }
 
 // ── Partner messages (Converge → Enrollment, contract 3b) ────────────────────
@@ -575,6 +678,17 @@ const enrollmentEvent = z.discriminatedUnion("kind", [
     timeline: z.object({ type: z.literal("note"), noteId: z.string().min(1).max(64), at: isoDate }),
   }),
   z.object({ ...base, kind: z.literal("application.updated"), application: applicationState }),
+  // The loan counsellor wrote in the lead's partner chat (contract 4b).
+  z.object({
+    ...base,
+    kind: z.literal("chat.message"),
+    chat: z.object({
+      messageId: z.string().min(1).max(80),
+      text: z.string().min(1).max(2000),
+      by: z.string().max(150).nullable(),
+      at: isoDate,
+    }),
+  }),
   z.object({
     ...base,
     kind: z.literal("snapshot"),
@@ -690,6 +804,9 @@ async function applyOne(ev: EnrollmentEvent): Promise<boolean> {
     }
     case "application.updated":
       await applyApplication(r, at, ev.application, eventRowId);
+      break;
+    case "chat.message":
+      await applyStaffChat(r, ev.chat);
       break;
   }
   return true;

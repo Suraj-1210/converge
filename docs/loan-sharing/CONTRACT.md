@@ -249,16 +249,66 @@ Enrollment:
 2. Checks each file's size, `%PDF` header and SHA-256 (**400** on mismatch), and
    stores it at `loanLeads/{loanLeadId}/partner/{messageId}/{n}-{safe name}`
    in Firebase Storage (loan staff may read; nobody writes from a client).
-3. Adds an activity `type: "partner_message"`: `message` = text, `files` =
-   `[{ name, path, size }]`, `createdBy: "converge"`, shown as
-   "Message from the referring partner" (author kept as hidden metadata, no
-   partner names on the timeline — business partners are private).
+3. Writes the message into the lead's partner chat (section 4a) as
+   `partnerChat/pm_{messageId}`, `side: "partner"`, with `files` =
+   `[{ name, path, size }]`; no partner names (business partners are private).
+   (Before section 4 this was a `partner_message` timeline activity.)
 4. If the lead is in an open stage, sets `nextFollowUpAt` to now so it
    surfaces in the counsellor's Follow Ups.
 
 Response **200** `{ "result": "stored", "activityId": "..." }` (the same answer
 again for a repeated `messageId`). **400** malformed or bad file (permanent),
 **404** unknown lead (permanent), **401**, **503**, **5xx** (Converge retries).
+
+## 4. Chat between the loan counsellor and the partner (19 Nov 2026)
+
+The lead has two partner-facing channels, kept apart:
+
+- **Updates** (sections 2 and 3a): stage changes, lender results, and notes the
+  counsellor ticks *Share with partner*. One-way, read-only for the partner.
+- **Chat** (this section): a two-way conversation per lead. Everything a
+  partner writes (3b) and everything a counsellor types in the lead's
+  *Partner chat* tab.
+
+### 4a. Where the chat lives in the Enrollment App
+
+`loanLeads/{leadId}/partnerChat/{msgId}`:
+
+| field | |
+| --- | --- |
+| `side` | `"staff"` or `"partner"` |
+| `text` | 0–2000 characters |
+| `files` | `[{ name, path, size }]` (partner PDFs only; staff send text only for now) |
+| `authorUid` | staff: the counsellor's uid; partner: `null` |
+| `authorName` | staff: the counsellor's name; partner: `"Referring partner"` (no partner names) |
+| `createdAt` | server time |
+
+- Partner messages (3b) are written here as `partnerChat/pm_{messageId}`
+  instead of a `partner_message` timeline activity. Files keep the 3b Storage path.
+- Staff create only `side: "staff"`, as themselves, with no files, on leads
+  they may edit; nobody updates or deletes a chat message.
+- On the lead: `partnerChatUnread` (partner messages the loan team hasn't
+  opened; +1 per partner message, reset to 0 when a counsellor opens the
+  tab), `partnerChatLastAt`, `partnerChatLastSide`. A partner message still
+  sets `nextFollowUpAt` to now on an open lead.
+
+### 4b. Counsellor message — Enrollment → Converge
+
+A staff chat message is sent through the outbox as:
+
+```json
+{
+  "eventId": "chat:<leadId>:<msgId>",
+  "kind": "chat.message",
+  "referralId": "...", "loanLeadId": "...", "occurredAt": "<ISO>",
+  "chat": { "messageId": "<msgId>", "text": "...", "by": "Anita Rao", "at": "<ISO>" }
+}
+```
+
+`text` 1–2000 characters; `by` the counsellor's name (or `null`). Partner
+messages are never echoed back. Converge stores it once per `messageId`.
+
+Read state is not synced: each side tracks its own unread counts.
 
 ## Changelog
 
@@ -269,3 +319,5 @@ again for a repeated `messageId`). **400** malformed or bad file (permanent),
   inline PDF files (3b).
 - 19 Nov 2026: partner leads go to the partner's own loan counsellor, not
   round-robin (Suraj).
+- 19 Nov 2026: section 4, counsellor ↔ partner chat; partner messages move
+  from the timeline into the chat.

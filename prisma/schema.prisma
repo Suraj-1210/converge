@@ -800,6 +800,7 @@ model user {
   partner_manual_notice_target                                            partner_manual_notice_target[]
   loan_referral                                                           loan_referral[]
   loan_referral_message                                                   loan_referral_message[]
+  loan_chat_read                                                          loan_chat_read[]
 
   adjustment adjustment[] @relation("adjustment_payee")
   payout_hold payout_hold[] @relation("payout_hold_payee")
@@ -2408,6 +2409,7 @@ model loan_referral {
   application       loan_referral_application[]
   event             loan_referral_event[]
   message           loan_referral_message[]
+  chat_read         loan_chat_read[]
 
   @@index([org_id], map: "idx_loan_referral_org")
   @@index([partner_user_id], map: "idx_loan_referral_partner_user")
@@ -2459,6 +2461,10 @@ model loan_referral_message {
   id              Int                          @id @default(autoincrement())
   public_id       String                       @unique(map: "uq_loan_referral_message_public_id") @db.Char(36)
   referral_id     Int
+  // "partner" (from Converge) or "staff" (the loan counsellor, contract 4b).
+  side            String                       @default("partner") @db.VarChar(10)
+  // Staff messages: the Enrollment chat message id (stored once).
+  external_id     String?                      @unique(map: "uq_loan_referral_message_external") @db.VarChar(80)
   author_user_id  Int?
   author_name     String                       @db.VarChar(150)
   body            String                       @default("") @db.VarChar(2000)
@@ -2467,6 +2473,8 @@ model loan_referral_message {
   next_attempt_at DateTime?                    @db.Timestamp(0)
   last_error      String?                      @db.VarChar(500)
   activity_id     String?                      @db.VarChar(64)
+  // Staff messages: the "unread for 15 minutes" email went (or was settled).
+  emailed_at      DateTime?                    @db.Timestamp(0)
   created_at      DateTime                     @default(now()) @db.Timestamp(0)
   updated_at      DateTime                     @default(now()) @updatedAt @db.Timestamp(0)
   referral        loan_referral                @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_referral_message_referral")
@@ -2489,4 +2497,16 @@ model loan_referral_message_file {
   message     loan_referral_message @relation(fields: [message_id], references: [id], onDelete: Cascade, map: "fk_loan_referral_message_file_message")
 
   @@index([message_id], map: "idx_loan_referral_message_file_message")
+}
+
+// Loan chat: a partner user has read a referral's chat up to read_at.
+model loan_chat_read {
+  referral_id Int
+  user_id     Int
+  read_at     DateTime      @db.Timestamp(3)
+  referral    loan_referral @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_chat_read_referral")
+  user        user          @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_loan_chat_read_user")
+
+  @@id([referral_id, user_id])
+  @@index([user_id], map: "idx_loan_chat_read_user")
 }

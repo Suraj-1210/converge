@@ -167,7 +167,17 @@ export default function PartnerLoansPage() {
                         className="cursor-pointer border-b border-[#F2F4F7] transition-colors last:border-b-0 hover:bg-[#F9FAFB]"
                       >
                         <td className={`${TD} min-w-[190px]`}>
-                          <div className="font-semibold text-[#101828]">{r.studentName}</div>
+                          <div className="flex items-center gap-2 font-semibold text-[#101828]">
+                            {r.studentName}
+                            {r.unreadChat > 0 && (
+                              <span
+                                className="rounded-full bg-[#1570EF] px-1.5 py-0.5 text-[10px] leading-none font-bold text-white"
+                                title={`${r.unreadChat} unread message${r.unreadChat === 1 ? "" : "s"} from the loan team`}
+                              >
+                                {r.unreadChat} new
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[11px] text-[#98A2B3]">
                             {r.studentId ? `CP-${r.studentId}` : "Loan only"} · referred {formatDate(r.referredAt)}
                           </div>

@@ -36,6 +36,12 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
     refetchOnWindowFocus: true,
   });
   const branding = api.settings.branding.useQuery().data;
+  // Loans with unread messages from the loan team (sidebar badge).
+  const loansUnread = api.loans.partnerUnreadCount.useQuery(undefined, {
+    refetchInterval: 30_000,
+    retry: false,
+    enabled: !!tabs?.includes("loans"),
+  }).data;
   // Chat threads with unread Collegepond messages (sidebar badge).
   const chatUnread = api.partnerChat.partnerUnreadCount.useQuery(undefined, {
     refetchInterval: 30_000,
@@ -98,7 +104,7 @@ export function PartnerDashboardShell({ children }: { children: ReactNode }) {
       <Sidebar
         sections={sections}
         logoSubtitle="Partner Portal"
-        badges={{ chat: chatUnread ?? 0 }}
+        badges={{ chat: chatUnread ?? 0, loans: loansUnread ?? 0 }}
         onLogout={handleLogout}
         logoUrl={branding?.partnerLogoUrl}
       />

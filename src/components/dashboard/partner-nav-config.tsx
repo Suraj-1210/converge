@@ -28,7 +28,8 @@ export const PARTNER_NAV_SECTIONS: NavSection[] = [
       // Chat with Collegepond, one thread per student. Badge: unread threads.
       { label: "Chat", href: "/partner/chat", icon: <ChatIcon />, badgeKey: "chat" },
       // Education-loan referrals to Collegepond's loan team and their progress.
-      { label: "Loans", href: "/partner/loans", icon: <BankIcon /> },
+      // Badge: loans with chat messages from the loan team not yet read.
+      { label: "Loans", href: "/partner/loans", icon: <BankIcon />, badgeKey: "loans" },
       { label: "Uni Assist", href: "/partner/uni-assist", icon: <SearchIcon /> },
       { label: "Counsellors", href: "/partner/counsellors", icon: <UsersIcon /> },
     ],

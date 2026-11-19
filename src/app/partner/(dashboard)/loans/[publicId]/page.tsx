@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "~/trpc/react";
 import { formatDate } from "~/components/dashboard/format";
-import { LoanConversation, LoanStatusBadge, LoanTrack, rupees } from "~/components/loans/loan-ui";
+import { LoanChat, LoanStatusBadge, LoanTrack, LoanUpdates, rupees } from "~/components/loans/loan-ui";
 import { LoanReferralSendStatus, loanStageLabel } from "~/lib/loan-sharing";
 
 // One loan referral: where it stands, each lender application, and the
@@ -15,7 +15,8 @@ import { LoanReferralSendStatus, loanStageLabel } from "~/lib/loan-sharing";
 
 export default function PartnerLoanPage() {
   const { publicId } = useParams<{ publicId: string }>();
-  const q = api.loans.partnerGet.useQuery({ publicId }, { retry: false });
+  // Refreshes every 20 s so the loan team's chat replies and updates appear.
+  const q = api.loans.partnerGet.useQuery({ publicId }, { retry: false, refetchInterval: 20_000 });
 
   if (q.error) {
     return (
@@ -131,7 +132,8 @@ export default function PartnerLoanPage() {
             )}
           </section>
 
-          <LoanConversation loan={r} onChanged={() => void q.refetch()} />
+          <LoanChat loan={r} onChanged={() => void q.refetch()} />
+          <LoanUpdates loan={r} />
         </div>
 
         <aside className="h-fit rounded-2xl border border-[#E4E7EC] bg-white p-5">

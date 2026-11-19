@@ -11,6 +11,7 @@ import {
   referralScopeFor,
   sendLoanReferral,
   sendPartnerMessage,
+  unreadLoanChats,
 } from "~/server/loan-sharing";
 import { partnerScope, requireVisibleStudent } from "~/server/partner-access";
 
@@ -89,8 +90,40 @@ export const loansRouter = createTRPCRouter({
       orderBy: { created_at: "desc" },
       take: 500,
     });
-    return rows.map(toListItem);
+    const unread = await unreadLoanChats(user.id, rows.map((r) => r.id));
+    return rows.map((r) => ({ ...toListItem(r), unreadChat: unread.get(r.id) ?? 0 }));
   }),
+
+  // Sidebar badge: referrals with chat messages from the loan team this user
+  // hasn't read.
+  partnerUnreadCount: protectedPartnerProcedure.query(async ({ ctx }) => {
+    const { user } = await partnerScope(ctx.cpPartner.id);
+    const ids = await db.loan_referral.findMany({
+      where: { AND: [referralScopeFor(user), { message: { some: { side: "staff" } } }] },
+      select: { id: true },
+    });
+    const unread = await unreadLoanChats(user.id, ids.map((r) => r.id));
+    return unread.size;
+  }),
+
+  // The partner opened the chat: everything up to now is read.
+  partnerMarkChatRead: protectedPartnerProcedure
+    .input(z.object({ publicId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const { user } = await partnerScope(ctx.cpPartner.id);
+      const r = await db.loan_referral.findFirst({
+        where: { AND: [{ public_id: input.publicId }, referralScopeFor(user)] },
+        select: { id: true },
+      });
+      if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "Loan referral not found" });
+      const now = new Date();
+      await db.loan_chat_read.upsert({
+        where: { referral_id_user_id: { referral_id: r.id, user_id: user.id } },
+        create: { referral_id: r.id, user_id: user.id, read_at: now },
+        update: { read_at: now },
+      });
+      return { ok: true };
+    }),
 
   partnerGet: protectedPartnerProcedure
     .input(z.object({ publicId: z.string().uuid() }))
@@ -132,10 +165,12 @@ export const loansRouter = createTRPCRouter({
           disbursedAt: a.disbursed_at,
         })),
         // The partner's replies (Phase 2); the page merges them into the timeline.
+        // The chat with the loan team, both sides (contract 4).
         messages: r.message.map((m) => ({
           publicId: m.public_id,
+          side: m.side === "staff" ? ("staff" as const) : ("partner" as const),
           authorName: m.author_name,
-          mine: m.author_user_id === ctx.cpPartner.id,
+          mine: m.side !== "staff" && m.author_user_id === ctx.cpPartner.id,
           body: m.body,
           sendStatus: m.send_status,
           at: m.created_at,
