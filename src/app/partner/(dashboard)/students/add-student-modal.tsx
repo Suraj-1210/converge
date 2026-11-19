@@ -9,6 +9,7 @@ import {
   COURSE_LEVEL_OPTIONS,
   INTAKE_OPTIONS,
 } from "~/components/students/status";
+import { LOAN_CONSENT_TEXT } from "~/lib/loan-sharing";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { fileProblem, uploadOne } from "./upload-documents-modal";
 
@@ -34,7 +35,7 @@ export const COUNTRY_NAME: Record<string, string> = {
 };
 
 // Destination options for the form, in mock order.
-const DESTINATION_COUNTRIES = [
+export const DESTINATION_COUNTRIES = [
   "US",
   "GB",
   "CA",
@@ -48,10 +49,10 @@ const DESTINATION_COUNTRIES = [
   "AE",
 ];
 
-const PHONE_CODES = ["+91", "+1", "+44", "+61", "+49", "+33", "+971", "+65"];
+export const PHONE_CODES = ["+91", "+1", "+44", "+61", "+49", "+33", "+971", "+65"];
 
 // Expected national-number digit count per dialling code.
-const PHONE_LEN: Record<string, number> = {
+export const PHONE_LEN: Record<string, number> = {
   "+91": 10,
   "+1": 10,
   "+44": 10,
@@ -109,6 +110,8 @@ interface FormState {
   courseLevel: string;
   interestedProgram: string;
   educationLoan: boolean | null;
+  // Asked when Education loan = Yes: the lead goes to the loan team on save.
+  loanConsent: boolean;
 }
 
 type FormErrors = Partial<Record<keyof FormState, string>>;
@@ -125,6 +128,7 @@ const emptyForm = (): FormState => ({
   courseLevel: "",
   interestedProgram: "",
   educationLoan: null,
+  loanConsent: false,
 });
 
 function validate(form: FormState): FormErrors {
@@ -151,6 +155,8 @@ function validate(form: FormState): FormErrors {
     errors.interestedProgram = "Interested program is required";
   if (form.educationLoan === null)
     errors.educationLoan = "Please choose Yes or No";
+  if (form.educationLoan === true && !form.loanConsent)
+    errors.loanConsent = "Confirm the student agreed to be contacted by the loan team";
   return errors;
 }
 
@@ -269,6 +275,7 @@ export function AddStudentModal({
         courseLevel: Number(form.courseLevel),
         interestedProgram: form.interestedProgram,
         educationLoan: form.educationLoan === true,
+        loanConsent: form.educationLoan === true && form.loanConsent,
       });
       if (!res.ok) {
         setDuplicate(res.duplicate);
@@ -487,6 +494,26 @@ export function AddStudentModal({
               onChange={(v) => set("educationLoan", v)}
               errorMessage={errors.educationLoan}
             />
+            {form.educationLoan === true && (
+              <div className="rounded-lg border border-[#D1E9FF] bg-[#F5FAFF] p-3">
+                <label className="flex cursor-pointer items-start gap-2.5 text-[13px] leading-relaxed text-[#344054]">
+                  <input
+                    type="checkbox"
+                    checked={form.loanConsent}
+                    onChange={(e) => set("loanConsent", e.target.checked)}
+                    className="mt-0.5 h-[18px] w-[18px] shrink-0 cursor-pointer accent-[#1570EF]"
+                  />
+                  <span>
+                    {LOAN_CONSENT_TEXT} <span className="text-[#F04438]">*</span>
+                  </span>
+                </label>
+                <p className="mt-1.5 ml-7 text-xs text-[#667085]">
+                  We&apos;ll pass the student to Collegepond&apos;s loan team when you save. Follow their progress under
+                  Loans.
+                </p>
+                {errors.loanConsent && <div className="mt-1 ml-7 text-xs text-[#F04438]">{errors.loanConsent}</div>}
+              </div>
+            )}
           </Section>
 
           <Section title="Mandatory Documents">

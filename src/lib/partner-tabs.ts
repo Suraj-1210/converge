@@ -20,6 +20,7 @@ export type PartnerTab =
   | "students"
   | "applications"
   | "chat"
+  | "loans"
   | "uniAssist"
   | "counsellors"
   | "commission"
@@ -41,6 +42,8 @@ export const PARTNER_TAB_TYPES: Record<PartnerTab, number[]> = {
   students: ALL,
   applications: ALL,
   chat: ALL,
+  // Education-loan referrals to the loan team and their progress (19 Nov 2026).
+  loans: ALL,
   uniAssist: ALL,
   counsellors: [AGENCY_OWNER],
   // Commission is the agency's money: not for an agency's counsellors.
@@ -65,6 +68,7 @@ export const SWITCHABLE_PARTNER_TABS: { tab: PartnerTab; label: string }[] = [
   { tab: "students", label: "Students" },
   { tab: "applications", label: "Applications" },
   { tab: "chat", label: "Chat" },
+  { tab: "loans", label: "Loans" },
   { tab: "uniAssist", label: "Uni Assist" },
   { tab: "counsellors", label: "Counsellors" },
   { tab: "commission", label: "Commission" },
@@ -98,6 +102,7 @@ const PATH_TABS: [prefix: string, tab: PartnerTab][] = [
   ["/partner/students", "students"],
   ["/partner/applications", "applications"],
   ["/partner/chat", "chat"],
+  ["/partner/loans", "loans"],
   ["/partner/uni-assist", "uniAssist"],
   ["/partner/counsellors", "counsellors"],
   ["/partner/commission", "commission"],
@@ -120,6 +125,9 @@ const API_TABS: [path: string, tab: PartnerTab][] = [
   ["globalSearch.partnerStudents", "students"],
   ["applications.partnerList", "applications"],
   ["partnerChat.partner*", "chat"],
+  // Every partner loan procedure, including the loan card on a student and
+  // the referral made from Add Student (students.partnerCreate checks it).
+  ["loans.partner*", "loans"],
   ["universities.searchPrograms", "uniAssist"],
   ["universities.listSearchFilters", "uniAssist"],
   ["universities.partnerUniAssistMoney", "uniAssist"],

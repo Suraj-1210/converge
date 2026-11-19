@@ -29,6 +29,7 @@ import { ApplicationsTab } from "./applications-tab";
 import { PartnerChatPanel } from "~/components/partner-chat/chat-panel";
 import { LeadPipelineBar } from "~/components/students/lead-pipeline-bar";
 import { useUrlState } from "~/lib/url-state";
+import { StudentLoanRow } from "~/components/loans/loan-ui";
 
 function usePartnerRefresh() {
   const utils = api.useUtils();
@@ -210,6 +211,7 @@ export default function PartnerStudentProfilePage() {
                   )}
                 </div>
               )}
+              <StudentLoanRow studentId={Number(s.id)} studentName={studentName(s)} onToast={showToast} />
             </div>
           </div>
 

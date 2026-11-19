@@ -6,6 +6,8 @@ import {
   protectedAdminProcedure,
   protectedPartnerProcedure,
 } from "~/server/api/trpc";
+import { referStudent } from "~/server/api/routers/loans";
+import { partnerTabsFor } from "~/server/tab-access";
 import { notifyStudentsAssigned } from "~/server/student-assignment";
 import {
   notifyColleagueApplicationAction,
@@ -2504,7 +2506,9 @@ export const studentsRouter = createTRPCRouter({
   }),
 
   partnerCreate: protectedPartnerProcedure
-    .input(createFields)
+    // loanConsent: the partner confirmed the student agreed to be contacted by
+    // the loan team (asked when Education loan = Yes).
+    .input(createFields.extend({ loanConsent: z.boolean().optional() }))
     .mutation(async ({ ctx, input }) => {
       const { user, where } = await partnerScope(ctx.cpPartner.id);
       const duplicate = await findDuplicate(
@@ -2542,7 +2546,26 @@ export const studentsRouter = createTRPCRouter({
         // Route it to a Collegepond counsellor when the partner's lead has
         // Auto Assign on (src/server/staff-access.ts).
         await autoAssignStudents([created.id]);
-        return { ok: true as const, student: toPartnerApi(created) };
+        // Education loan = Yes, with consent: hand the lead to Collegepond's
+        // loan team now (~/server/loan-sharing), if this partner has the Loans
+        // tab. It never fails the save: a hand-over that doesn't land stays
+        // queued, and the profile's loan card offers the referral otherwise.
+        let loanReferral: { publicId: string; sendStatus: number } | null = null;
+        if (input.educationLoan && input.loanConsent) {
+          try {
+            if ((await partnerTabsFor(user.id, user.type)).includes("loans")) {
+              loanReferral = await referStudent(user.id, {
+                studentId: created.id,
+                university: null,
+                loanAmount: null,
+                note: null,
+              });
+            }
+          } catch (e) {
+            console.error("[loan-referral] from Add Student failed:", e);
+          }
+        }
+        return { ok: true as const, student: toPartnerApi(created), loanReferral };
       } catch (e) {
         // student.email is globally UNIQUE, but findDuplicate above is
         // org-scoped — a collision with a student in another org slips through

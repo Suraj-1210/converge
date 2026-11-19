@@ -268,6 +268,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/users", "system"],
   ["/admin/settings", "system"],
   ["/admin/audit-logs", "system"],
+  ["/admin/loan-referrals", "system"],
 ];
 
 export function sectionForPath(pathname: string): AdminSection | null {

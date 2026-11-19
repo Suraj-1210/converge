@@ -51,6 +51,7 @@ import { notesRouter } from "~/server/api/routers/notes";
 import { impersonationRouter } from "~/server/api/routers/impersonation";
 import { tabAccessRouter } from "~/server/api/routers/tab-access";
 import { reportsRouter } from "~/server/api/routers/reports";
+import { loansRouter } from "~/server/api/routers/loans";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
 export const appRouter = createTRPCRouter({
@@ -59,6 +60,7 @@ export const appRouter = createTRPCRouter({
   auth: authRouter,
   authSession: authSessionRouter,
   impersonation: impersonationRouter,
+  loans: loansRouter,
   signup: signupRouter,
   adminAuth: adminAuthRouter,
   users: usersRouter,

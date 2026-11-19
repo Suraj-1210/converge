@@ -58,6 +58,15 @@ export const env = createEnv({
     RAZORPAYX_ACCOUNT_NUMBER: z.string().optional(),
     // Secret configured on the RazorpayX webhook — verifies inbound payout events.
     RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+    // Loan lead sharing with the Collegepond Enrollment App (Firebase); wire
+    // format in docs/loan-sharing/CONTRACT.md. ENROLLMENT_LOAN_URL is the full
+    // URL of its partnerLoanIntake function; ENROLLMENT_LOAN_SECRET signs what
+    // we send it, ENROLLMENT_WEBHOOK_SECRET checks what it sends us. Unset →
+    // referrals queue as "Not yet received" and Settings shows the gap.
+    // Staging must point at an Enrollment test project, never production.
+    ENROLLMENT_LOAN_URL: z.string().url().optional(),
+    ENROLLMENT_LOAN_SECRET: z.string().min(32).optional(),
+    ENROLLMENT_WEBHOOK_SECRET: z.string().min(32).optional(),
   },
 
   /**
@@ -100,6 +109,9 @@ export const env = createEnv({
     RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
     RAZORPAYX_ACCOUNT_NUMBER: process.env.RAZORPAYX_ACCOUNT_NUMBER,
     RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET,
+    ENROLLMENT_LOAN_URL: process.env.ENROLLMENT_LOAN_URL,
+    ENROLLMENT_LOAN_SECRET: process.env.ENROLLMENT_LOAN_SECRET,
+    ENROLLMENT_WEBHOOK_SECRET: process.env.ENROLLMENT_WEBHOOK_SECRET,
   },
   /**
    * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially

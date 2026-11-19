@@ -253,6 +253,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Users", href: "/admin/users", icon: <UsersIcon />, section: "system" },
       { label: "Settings", href: "/admin/settings", icon: <SettingsIcon />, section: "system" },
       { label: "Audit Logs", href: "/admin/audit-logs", icon: <AuditLogIcon />, section: "system" },
+      { label: "Loan Referrals", href: "/admin/loan-referrals", icon: <BankIcon />, section: "system" },
     ],
   },
 ];

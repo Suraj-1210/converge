@@ -600,6 +600,7 @@ model organization {
   adjustment adjustment[]
   payout_hold payout_hold[]
   partner_manual_notice_target partner_manual_notice_target[]
+  loan_referral loan_referral[]
 }
 
 model session {
@@ -698,6 +699,7 @@ model student {
   cp_task                   cp_task[]
   shortlist_follow_up       shortlist_follow_up[]
   shortlisting              student_shortlisting?
+  loan_referral             loan_referral[]
   organization              organization?               @relation(fields: [org_id], references: [id], map: "fk_student_organization")
   user                      user?                       @relation("student_counsellor", fields: [counsellor_id], references: [id], onUpdate: NoAction, map: "fk_student_user")
   cp_counsellor             collegepond_user?           @relation(fields: [cp_counsellor_id], references: [id], onDelete: SetNull, map: "fk_student_cp_counsellor")
@@ -796,6 +798,7 @@ model user {
   organization                                                            organization?             @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_user_org")
   partner_tier_override                                                   partner_tier_override?
   partner_manual_notice_target                                            partner_manual_notice_target[]
+  loan_referral                                                           loan_referral[]
 
   adjustment adjustment[] @relation("adjustment_payee")
   payout_hold payout_hold[] @relation("payout_hold_payee")
@@ -2362,4 +2365,86 @@ model student_shortlisting {
   confirmed_at              DateTime? @db.Timestamp(0)
   updated_at                DateTime  @default(now()) @updatedAt @db.Timestamp(0)
   student                   student   @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_student_shortlisting_student")
+}
+
+// Loan lead sharing with the Enrollment App (migrations/20261119130000_loan_referrals.sql,
+// docs/loan-sharing/CONTRACT.md). send_status: LoanReferralSendStatus (enums.ts).
+// stage / status hold the Enrollment LOAN_STAGES values (~/lib/loan-stages).
+model loan_referral {
+  id                Int                         @id @default(autoincrement())
+  public_id         String                      @unique(map: "uq_loan_referral_public_id") @db.Char(36)
+  org_id            Int?
+  partner_user_id   Int
+  student_id        Int?
+  student_name      String                      @db.VarChar(150)
+  phone             String                      @db.VarChar(20)
+  email             String                      @db.VarChar(255)
+  intake            String                      @db.VarChar(20)
+  country           String?                     @db.VarChar(2)
+  university        String?                     @db.VarChar(255)
+  course_level      Int?                        @db.UnsignedTinyInt
+  loan_amount       Decimal?                    @db.Decimal(14, 2)
+  note              String?                     @db.VarChar(1000)
+  consent_at        DateTime                    @db.Timestamp(0)
+  send_status       Int                         @default(0) @db.UnsignedTinyInt
+  send_attempts     Int                         @default(0) @db.UnsignedSmallInt
+  next_attempt_at   DateTime?                   @db.Timestamp(0)
+  last_error        String?                     @db.VarChar(500)
+  received_at       DateTime?                   @db.Timestamp(0)
+  loan_lead_id      String?                     @db.VarChar(64)
+  stage             String?                     @db.VarChar(30)
+  counsellor_name   String?                     @db.VarChar(150)
+  next_follow_up_at DateTime?                   @db.Timestamp(0)
+  closure_reason    String?                     @db.VarChar(255)
+  last_update_at    DateTime?                   @db.Timestamp(0)
+  // occurredAt of the last lead state applied (out-of-order events are skipped).
+  lead_synced_at    DateTime?                   @db.Timestamp(3)
+  created_at        DateTime                    @default(now()) @db.Timestamp(0)
+  updated_at        DateTime                    @default(now()) @updatedAt @db.Timestamp(0)
+  organization      organization?               @relation(fields: [org_id], references: [id], onDelete: SetNull, map: "fk_loan_referral_org")
+  partner_user      user                        @relation(fields: [partner_user_id], references: [id], onDelete: Cascade, map: "fk_loan_referral_partner_user")
+  student           student?                    @relation(fields: [student_id], references: [id], onDelete: SetNull, map: "fk_loan_referral_student")
+  application       loan_referral_application[]
+  event             loan_referral_event[]
+
+  @@index([org_id], map: "idx_loan_referral_org")
+  @@index([partner_user_id], map: "idx_loan_referral_partner_user")
+  @@index([student_id], map: "idx_loan_referral_student")
+  @@index([send_status, next_attempt_at], map: "idx_loan_referral_send")
+}
+
+model loan_referral_application {
+  id                Int           @id @default(autoincrement())
+  referral_id       Int
+  external_id       String        @db.VarChar(64)
+  lender            String        @db.VarChar(150)
+  status            String        @db.VarChar(30)
+  loan_amount       Decimal?      @db.Decimal(14, 2)
+  sanctioned_amount Decimal?      @db.Decimal(14, 2)
+  roi               Decimal?      @db.Decimal(6, 3)
+  disbursed_amount  Decimal?      @db.Decimal(14, 2)
+  disbursed_at      DateTime?     @db.Timestamp(0)
+  synced_at         DateTime      @db.Timestamp(3)
+  created_at        DateTime      @default(now()) @db.Timestamp(0)
+  updated_at        DateTime      @default(now()) @updatedAt @db.Timestamp(0)
+  referral          loan_referral @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_referral_application_referral")
+
+  @@unique([referral_id, external_id], map: "uq_loan_referral_application_ext")
+}
+
+// visible = 1: shown on the partner's timeline. event_id is unique (idempotency).
+model loan_referral_event {
+  id          Int           @id @default(autoincrement())
+  referral_id Int
+  event_id    String        @unique(map: "uq_loan_referral_event_event_id") @db.VarChar(120)
+  kind        String        @db.VarChar(30)
+  visible     Int           @default(0) @db.TinyInt
+  title       String?       @db.VarChar(255)
+  body        String?       @db.VarChar(1000)
+  actor_name  String?       @db.VarChar(150)
+  occurred_at DateTime      @db.Timestamp(3)
+  created_at  DateTime      @default(now()) @db.Timestamp(0)
+  referral    loan_referral @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_referral_event_referral")
+
+  @@index([referral_id, occurred_at], map: "idx_loan_referral_event_referral")
 }
