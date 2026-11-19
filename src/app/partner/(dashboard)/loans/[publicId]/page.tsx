@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "~/trpc/react";
 import { formatDate } from "~/components/dashboard/format";
-import { LoanChat, LoanStatusBadge, LoanTrack, LoanUpdates, rupees } from "~/components/loans/loan-ui";
+import { LoanChat, LoanDocuments, LoanStatusBadge, LoanTrack, LoanUpdates, rupees } from "~/components/loans/loan-ui";
 import { LoanReferralSendStatus, loanStageLabel } from "~/lib/loan-sharing";
 
 // One loan referral: where it stands, each lender application, and the
@@ -132,6 +132,7 @@ export default function PartnerLoanPage() {
             )}
           </section>
 
+          <LoanDocuments loan={r} onChanged={() => void q.refetch()} />
           <LoanChat loan={r} onChanged={() => void q.refetch()} />
           <LoanUpdates loan={r} />
         </div>

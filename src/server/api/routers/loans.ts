@@ -10,6 +10,7 @@ import {
   loanSharingConfig,
   referralScopeFor,
   sendLoanReferral,
+  sendLoanDocument,
   sendPartnerMessage,
   unreadLoanChats,
 } from "~/server/loan-sharing";
@@ -140,10 +141,23 @@ export const loansRouter = createTRPCRouter({
             orderBy: { created_at: "desc" },
             take: 200,
           },
+          doc_item: { orderBy: { sort: "asc" } },
+          doc_upload: { include: { file: { orderBy: { id: "asc" } } }, orderBy: { created_at: "desc" } },
         },
       });
       // Another agency's referral looks exactly like a missing one.
       if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "Loan referral not found" });
+      // Documents already on the student's Converge profile, for the items
+      // that can be filled from one ("Use the one on file").
+      const profileTypes = [...new Set(r.doc_item.map((i) => i.converge_doc_type).filter((t): t is string => !!t))];
+      const profileDocs =
+        r.student_id !== null && profileTypes.length > 0
+          ? await db.document.findMany({
+              where: { student_id: r.student_id, doc_type: { in: profileTypes } },
+              select: { id: true, file_name: true, doc_type: true, created_at: true },
+              orderBy: { created_at: "desc" },
+            })
+          : [];
       return {
         ...toListItem({ ...r, application: r.application }),
         email: r.email,
@@ -177,6 +191,32 @@ export const loansRouter = createTRPCRouter({
           files: m.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size })),
         })),
         canMessage: r.send_status === LoanReferralSendStatus.RECEIVED,
+        // The loan team's document list for this lead (contract 5), each item
+        // with what the partner sent and the counsellor's review.
+        documents: r.doc_item.map((i) => ({
+          key: i.item_key,
+          label: i.label,
+          group: i.grp as "student" | "coapplicant" | "collateral",
+          required: i.required === 1,
+          onFile: i.converge_doc_type
+            ? profileDocs
+                .filter((d) => d.doc_type === i.converge_doc_type)
+                .map((d) => ({ id: d.id, name: d.file_name, at: d.created_at }))
+            : [],
+          uploads: r.doc_upload
+            .filter((u) => u.item_key === i.item_key)
+            .map((u) => ({
+              publicId: u.public_id,
+              authorName: u.author_name,
+              source: u.source,
+              sendStatus: u.send_status,
+              reviewStatus: u.review_status as "received" | "accepted" | "reupload",
+              reviewReason: u.review_reason,
+              reviewedBy: u.reviewed_by,
+              at: u.created_at,
+              files: u.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size, contentType: f.content_type })),
+            })),
+        })),
         timeline: r.event.map((e) => ({
           id: e.id,
           kind: e.kind,
@@ -277,6 +317,26 @@ export const loansRouter = createTRPCRouter({
       });
       await sendPartnerMessage(m.id);
       const after = await db.loan_referral_message.findUniqueOrThrow({ where: { id: m.id } });
+      return { sendStatus: after.send_status };
+    }),
+
+  // A document upload that couldn't be delivered: send it again.
+  partnerRetryDocument: protectedPartnerProcedure
+    .input(z.object({ publicId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const { user } = await partnerScope(ctx.cpPartner.id);
+      const d = await db.loan_doc_upload.findFirst({
+        where: { public_id: input.publicId, referral: referralScopeFor(user) },
+        select: { id: true, send_status: true },
+      });
+      if (!d) throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
+      if (d.send_status === LoanReferralSendStatus.RECEIVED) return { sendStatus: d.send_status };
+      await db.loan_doc_upload.update({
+        where: { id: d.id },
+        data: { send_status: LoanReferralSendStatus.SENDING, next_attempt_at: null },
+      });
+      await sendLoanDocument(d.id);
+      const after = await db.loan_doc_upload.findUniqueOrThrow({ where: { id: d.id } });
       return { sendStatus: after.send_status };
     }),
 

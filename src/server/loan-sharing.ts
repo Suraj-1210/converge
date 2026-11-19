@@ -384,7 +384,7 @@ function safeJson(text: string): unknown {
 // Cron: every referral still waiting whose next try is due.
 export async function retryDueLoanReferrals(
   limit = 50,
-): Promise<{ tried: number; messages: number; chatEmails: number }> {
+): Promise<{ tried: number; messages: number; documents: number; chatEmails: number }> {
   const due = await db.loan_referral.findMany({
     where: {
       send_status: LoanReferralSendStatus.SENDING,
@@ -405,8 +405,18 @@ export async function retryDueLoanReferrals(
     select: { id: true },
   });
   for (const { id } of dueMessages) await sendPartnerMessage(id);
+  const dueDocs = await db.loan_doc_upload.findMany({
+    where: {
+      send_status: LoanReferralSendStatus.SENDING,
+      OR: [{ next_attempt_at: null }, { next_attempt_at: { lte: new Date() } }],
+    },
+    orderBy: { id: "asc" },
+    take: limit,
+    select: { id: true },
+  });
+  for (const { id } of dueDocs) await sendLoanDocument(id);
   const chatEmails = await emailUnreadLoanChats();
-  return { tried: due.length, messages: dueMessages.length, chatEmails };
+  return { tried: due.length, messages: dueMessages.length, documents: dueDocs.length, chatEmails };
 }
 
 // ── Loan chat (contract 4) ──────────────────────────────────────────────────
@@ -507,6 +517,164 @@ export async function emailUnreadLoanChats(): Promise<number> {
     });
   }
   return sent;
+}
+
+// ── Loan documents (contract 5) ─────────────────────────────────────────────
+
+export const DOC_MAX_FILES = 5;
+export const DOC_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const DOC_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+// PDF, JPEG or PNG by their first bytes; null for anything else.
+export function sniffDocType(buf: Buffer): "application/pdf" | "image/jpeg" | "image/png" | null {
+  if (buf.subarray(0, 4).toString("latin1") === "%PDF") return "application/pdf";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) return "image/png";
+  return null;
+}
+
+// Replaces the referral's document list with the one the Enrollment App sent
+// (newest wins, claimed in the UPDATE so two deliveries can't interleave).
+async function applyChecklist(referralId: number, at: Date, list: z.infer<typeof checklist>): Promise<void> {
+  const claimed = await db.loan_referral.updateMany({
+    where: { id: referralId, OR: [{ checklist_synced_at: null }, { checklist_synced_at: { lt: at } }] },
+    data: { checklist_synced_at: at },
+  });
+  if (claimed.count === 0) return;
+  const seen = new Set<string>();
+  const rows = list
+    .filter((i) => !seen.has(i.key) && seen.add(i.key))
+    .map((i, sort) => ({
+      referral_id: referralId,
+      item_key: i.key,
+      label: i.label,
+      grp: i.group,
+      required: i.required ? 1 : 0,
+      converge_doc_type: i.convergeDocType ?? null,
+      sort,
+    }));
+  await db.$transaction([
+    db.loan_doc_item.deleteMany({ where: { referral_id: referralId } }),
+    db.loan_doc_item.createMany({ data: rows }),
+  ]);
+}
+
+// A counsellor accepted a document or asked for it again (newest wins). A
+// re-upload request tells the referrer and the agency owner.
+async function applyDocReview(
+  r: { id: number; public_id: string; student_name: string; partner_user_id: number; org_id: number | null },
+  review: z.infer<typeof docReview>,
+): Promise<void> {
+  const at = new Date(review.at);
+  const upload = await db.loan_doc_upload.findFirst({ where: { public_id: review.documentId, referral_id: r.id } });
+  if (!upload || (upload.reviewed_at && upload.reviewed_at >= at)) return;
+  await db.loan_doc_upload.update({
+    where: { id: upload.id },
+    data: { review_status: review.status, review_reason: review.reason, reviewed_by: review.by, reviewed_at: at },
+  });
+  if (review.status === "reupload") {
+    const item = await db.loan_doc_item.findUnique({
+      where: { referral_id_item_key: { referral_id: r.id, item_key: upload.item_key } },
+      select: { label: true },
+    });
+    await createNotifications(await referralAudience(r), {
+      type: "loan_doc",
+      title: `${r.student_name}: please upload ${item?.label ?? "a document"} again`,
+      body: review.reason ?? "The loan team asked for this document again.",
+      link: `${leadLink(r.public_id)}#documents`,
+      tone: "orange",
+    });
+  }
+}
+
+const docResponse = z.object({ result: z.literal("stored"), docId: z.string().min(1).max(80) });
+
+// Sends one document upload (files inline, base64) to the Enrollment App.
+// Never throws: the outcome is written on the row; failures retry from cron.
+export async function sendLoanDocument(id: number): Promise<void> {
+  const d = await db.loan_doc_upload.findUnique({
+    where: { id },
+    include: { referral: true, file: { orderBy: { id: "asc" } } },
+  });
+  if (d?.send_status !== LoanReferralSendStatus.SENDING) return;
+  const url = env.ENROLLMENT_LOAN_URL;
+  const secret = env.ENROLLMENT_LOAN_SECRET;
+  let outcome: { ok: true } | { ok: false; permanent: boolean; error: string };
+  if (!url || !secret) {
+    outcome = { ok: false, permanent: false, error: "Loan sharing is not configured (ENROLLMENT_LOAN_URL / ENROLLMENT_LOAN_SECRET)" };
+  } else if (!d.referral.loan_lead_id) {
+    outcome = { ok: false, permanent: false, error: "The loan team hasn't received this referral yet" };
+  } else {
+    try {
+      const files = await Promise.all(
+        d.file.map(async (f) => ({
+          name: f.file_name,
+          contentType: f.content_type,
+          size: f.size,
+          sha256: f.sha256,
+          data: (await readStoredFile(f.storage_ref)).toString("base64"),
+        })),
+      );
+      const raw = JSON.stringify({
+        type: "document",
+        documentId: d.public_id,
+        referralId: d.referral.public_id,
+        loanLeadId: d.referral.loan_lead_id,
+        typeKey: d.item_key,
+        author: { userId: d.author_user_id ?? d.referral.partner_user_id, name: d.author_name },
+        source: d.source,
+        files,
+      });
+      const ts = String(Math.floor(Date.now() / 1000));
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-cp-timestamp": ts, "x-cp-signature": signBody(secret, ts, raw) },
+        body: raw,
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await res.text();
+      if (res.ok) {
+        outcome = docResponse.safeParse(safeJson(text)).success
+          ? { ok: true }
+          : { ok: false, permanent: false, error: `Unexpected reply: ${text.slice(0, 200)}` };
+      } else {
+        outcome = {
+          ok: false,
+          permanent: res.status === 400 || res.status === 404,
+          error: `HTTP ${res.status}: ${text.slice(0, 300)}`,
+        };
+      }
+    } catch (e) {
+      outcome = { ok: false, permanent: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  const attempts = d.send_attempts + 1;
+  if (outcome.ok) {
+    await db.loan_doc_upload.update({
+      where: { id: d.id },
+      data: { send_status: LoanReferralSendStatus.RECEIVED, send_attempts: attempts, last_error: null, next_attempt_at: null },
+    });
+    return;
+  }
+  await db.loan_doc_upload.update({
+    where: { id: d.id },
+    data: outcome.permanent
+      ? { send_status: LoanReferralSendStatus.FAILED, send_attempts: attempts, last_error: outcome.error.slice(0, 500), next_attempt_at: null }
+      : {
+          send_attempts: attempts,
+          last_error: outcome.error.slice(0, 500),
+          next_attempt_at: new Date(Date.now() + backoffMinutes(attempts) * 60_000),
+        },
+  });
+  if (outcome.permanent && d.author_user_id) {
+    await createNotifications([d.author_user_id], {
+      type: "loan_doc",
+      title: `A document for ${d.referral.student_name} could not be delivered`,
+      body: "Open the loan to retry or upload it again.",
+      link: `${leadLink(d.referral.public_id)}#documents`,
+      tone: "red",
+    });
+  }
 }
 
 // ── Partner messages (Converge → Enrollment, contract 3b) ────────────────────
@@ -639,6 +807,24 @@ const applicationState = z.object({
   deleted: z.boolean().optional(),
 });
 
+// Loan documents (contract 5): the lead's list and a counsellor's review.
+const checklistItem = z.object({
+  key: z.string().min(1).max(80),
+  label: z.string().min(1).max(200),
+  group: z.enum(["student", "coapplicant", "collateral"]),
+  required: z.boolean(),
+  convergeDocType: z.string().max(50).nullable().optional(),
+});
+const checklist = z.array(checklistItem).max(150);
+const docReview = z.object({
+  documentId: z.string().min(1).max(36),
+  typeKey: z.string().min(1).max(80),
+  status: z.enum(["accepted", "reupload"]),
+  reason: z.string().max(500).nullable(),
+  by: z.string().max(150).nullable(),
+  at: isoDate,
+});
+
 // A counsellor note ticked "Share with partner" in the Enrollment App.
 const sharedNote = z.object({
   type: z.literal("note"),
@@ -694,7 +880,10 @@ const enrollmentEvent = z.discriminatedUnion("kind", [
     kind: z.literal("snapshot"),
     lead: leadState,
     applications: z.array(applicationState).max(50),
+    checklist: checklist.optional(),
   }),
+  z.object({ ...base, kind: z.literal("docs.checklist"), checklist }),
+  z.object({ ...base, kind: z.literal("docs.reviewed"), review: docReview }),
 ]);
 export const enrollmentEventsBody = z.object({ events: z.array(z.unknown()).min(1).max(100) });
 type EnrollmentEvent = z.infer<typeof enrollmentEvent>;
@@ -768,6 +957,7 @@ async function applyOne(ev: EnrollmentEvent): Promise<boolean> {
         });
       }
       for (const a of ev.applications) await applyApplication(r, at, a, null);
+      if (ev.checklist) await applyChecklist(r.id, at, ev.checklist);
       const keep = ev.applications.map((a) => a.id);
       await db.loan_referral_application.deleteMany({
         where: { referral_id: r.id, external_id: { notIn: keep }, synced_at: { lt: at } },
@@ -807,6 +997,12 @@ async function applyOne(ev: EnrollmentEvent): Promise<boolean> {
       break;
     case "chat.message":
       await applyStaffChat(r, ev.chat);
+      break;
+    case "docs.checklist":
+      await applyChecklist(r.id, at, ev.checklist);
+      break;
+    case "docs.reviewed":
+      await applyDocReview(r, ev.review);
       break;
   }
   return true;

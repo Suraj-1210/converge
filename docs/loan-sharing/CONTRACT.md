@@ -310,6 +310,95 @@ messages are never echoed back. Converge stores it once per `messageId`.
 
 Read state is not synced: each side tracks its own unread counts.
 
+## 5. Loan documents from the partner (19 Nov 2026)
+
+Partners upload the documents the loan team needs; the loan counsellor
+reviews each one. Decided by Suraj: the loan team's own list, Accept /
+Needs re-upload shown to the partner, one-click reuse of documents already on
+the student's Converge profile, PDF / JPG / PNG.
+
+### 5a. The list lives in the Enrollment App
+
+Master list `loanDocTypes/{key}` (admins edit it in Loan → Settings):
+
+| field | |
+| --- | --- |
+| `key` | stable slug, e.g. `student_pan`, `coapp_itr` (never reused) |
+| `label` | what the partner reads, e.g. "Co-applicant ITR (last 2 years)" |
+| `group` | `student` · `coapplicant` · `collateral` |
+| `required` | shown as required to the partner |
+| `active` | inactive items leave every lead's list |
+| `order` | sort within the group |
+| `convergeDocType` | optional Converge student document type this can be filled from: one of `passport`, `national_id`, `marksheet_10th`, `marksheet_12th`, `transcript_bachelors`, `transcript_masters`, `degree_certificate`, `english_test`, `aptitude_test`, `offer_letter` |
+
+Seed (order as listed): student — PAN card, Aadhaar (`national_id`),
+Passport (`passport`), 10th marksheet (`marksheet_10th`), 12th marksheet
+(`marksheet_12th`), Degree marksheets / transcripts (`transcript_bachelors`),
+Admission / offer letter (`offer_letter`), Test score reports
+(`english_test`), Student bank statement (6 months); co-applicant — PAN card,
+Aadhaar, ITR (last 2 years), Salary slips (last 3 months) / Form 16, Bank
+statement (6 months), Address proof; collateral — Property papers, Valuation
+report. Required: student PAN, Aadhaar, passport, admission letter;
+co-applicant PAN, Aadhaar, ITR, bank statement.
+
+Per lead, `loanLeads/{leadId}/docRequests/{key}` adjusts the list:
+`{ state: "not_needed" }` hides a master item for this lead;
+`{ state: "extra", label, group, required }` adds one (key `extra_<id>`).
+
+A lead's list = active master items, minus `not_needed`, plus `extra`.
+
+Uploads: `loanLeads/{leadId}/partnerDocs/{docId}`:
+`{ typeKey, files: [{ name, path, size, contentType }], source: "upload" | "converge_profile",
+status: "received" | "accepted" | "reupload", reason, uploadedAt, reviewedBy, reviewedByName, reviewedAt }`.
+Files at `loanLeads/{leadId}/partnerDocs/{docId}/{n}-{safe name}` (same
+Storage read rule as partner chat files). Only counsellors who may work the
+lead review (status/reason/reviewed* only); nobody else writes.
+
+### 5b. Enrollment → Converge
+
+Two event kinds through the outbox:
+
+```json
+{ "eventId": "docs:<leadId>:<updateTimeMillis>", "kind": "docs.checklist", ...,
+  "checklist": [ { "key": "coapp_itr", "label": "Co-applicant ITR (last 2 years)",
+                   "group": "coapplicant", "required": true, "convergeDocType": null } ] }
+```
+
+The lead's whole current list (ordered: group student, coapplicant,
+collateral, then `order`). Sent when the referral's lead is created, when its
+`docRequests` change, and in every nightly snapshot (the snapshot event
+carries `checklist` too), so master edits reach Converge by the next night.
+Converge replaces its copy (newest `occurredAt` wins).
+
+```json
+{ "eventId": "docrev:<leadId>:<docId>:<updateTimeMillis>", "kind": "docs.reviewed", ...,
+  "review": { "documentId": "<Converge documentId>", "typeKey": "coapp_itr",
+              "status": "accepted" | "reupload", "reason": null | "Page 2 missing", "by": "Anita Rao", "at": "<ISO>" } }
+```
+
+`documentId` is the id Converge sent (5c). Converge applies the newest per document.
+
+### 5c. Partner document — Converge → Enrollment
+
+Same URL, signing and secret as the referral; body `"type": "document"`:
+
+```json
+{ "type": "document", "documentId": "<uuid>", "referralId": "...", "loanLeadId": "...",
+  "typeKey": "coapp_itr", "author": { "userId": 45, "name": "Priya Shah" },
+  "source": "upload",
+  "files": [ { "name": "ITR-2025.pdf", "contentType": "application/pdf", "size": 482113, "sha256": "<hex>", "data": "<base64>" } ] }
+```
+
+- `files`: 1–5, each `application/pdf` (`%PDF`), `image/jpeg` (`FF D8 FF`) or
+  `image/png` (`89 50 4E 47`), ≤ 10 MB decoded, ≤ 20 MB total.
+- `typeKey` must be on the lead's current list (else **400**).
+- Enrollment stores it as `partnerDocs/pd_{documentId}`, status `received`
+  (a newer upload for the same `typeKey` does not delete older ones; each is
+  reviewed on its own), increments the lead's `partnerDocsPending`, and
+  sets `nextFollowUpAt` to now on an open lead.
+- Idempotent on `documentId`. Response **200** `{ "result": "stored", "docId": "pd_..." }`;
+  **400** bad file / unknown type, **404** unknown lead (both permanent), **401**, **503**, **5xx** (retry).
+
 ## Changelog
 
 - 19 Nov 2026: Phase 1. Synced after the Enrollment build (afcc9d5): duplicate
@@ -321,3 +410,5 @@ Read state is not synced: each side tracks its own unread counts.
   round-robin (Suraj).
 - 19 Nov 2026: section 4, counsellor ↔ partner chat; partner messages move
   from the timeline into the chat.
+- 19 Nov 2026: section 5, loan documents from the partner (list, uploads,
+  review).

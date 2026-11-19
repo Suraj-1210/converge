@@ -801,6 +801,7 @@ model user {
   loan_referral                                                           loan_referral[]
   loan_referral_message                                                   loan_referral_message[]
   loan_chat_read                                                          loan_chat_read[]
+  loan_doc_upload                                                         loan_doc_upload[]
 
   adjustment adjustment[] @relation("adjustment_payee")
   payout_hold payout_hold[] @relation("payout_hold_payee")
@@ -2401,6 +2402,8 @@ model loan_referral {
   last_update_at    DateTime?                   @db.Timestamp(0)
   // occurredAt of the last lead state applied (out-of-order events are skipped).
   lead_synced_at    DateTime?                   @db.Timestamp(3)
+  // occurredAt of the document list last applied (docs.checklist).
+  checklist_synced_at DateTime?                 @db.Timestamp(3)
   created_at        DateTime                    @default(now()) @db.Timestamp(0)
   updated_at        DateTime                    @default(now()) @updatedAt @db.Timestamp(0)
   organization      organization?               @relation(fields: [org_id], references: [id], onDelete: SetNull, map: "fk_loan_referral_org")
@@ -2410,6 +2413,8 @@ model loan_referral {
   event             loan_referral_event[]
   message           loan_referral_message[]
   chat_read         loan_chat_read[]
+  doc_item          loan_doc_item[]
+  doc_upload        loan_doc_upload[]
 
   @@index([org_id], map: "idx_loan_referral_org")
   @@index([partner_user_id], map: "idx_loan_referral_partner_user")
@@ -2509,4 +2514,62 @@ model loan_chat_read {
 
   @@id([referral_id, user_id])
   @@index([user_id], map: "idx_loan_chat_read_user")
+}
+
+// Loan documents (contract section 5): the lead's list as last sent by the
+// Enrollment App. grp: student | coapplicant | collateral.
+model loan_doc_item {
+  referral_id       Int
+  item_key          String        @db.VarChar(80)
+  label             String        @db.VarChar(200)
+  grp               String        @db.VarChar(20)
+  required          Int           @default(0) @db.TinyInt
+  converge_doc_type String?       @db.VarChar(50)
+  sort              Int           @default(0) @db.UnsignedSmallInt
+  referral          loan_referral @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_doc_item_referral")
+
+  @@id([referral_id, item_key])
+}
+
+// One partner upload for one item. send_status: LoanReferralSendStatus;
+// review_status: received | accepted | reupload (from docs.reviewed).
+model loan_doc_upload {
+  id              Int             @id @default(autoincrement())
+  public_id       String          @unique(map: "uq_loan_doc_upload_public_id") @db.Char(36)
+  referral_id     Int
+  item_key        String          @db.VarChar(80)
+  author_user_id  Int?
+  author_name     String          @db.VarChar(150)
+  source          String          @default("upload") @db.VarChar(20)
+  send_status     Int             @default(0) @db.UnsignedTinyInt
+  send_attempts   Int             @default(0) @db.UnsignedSmallInt
+  next_attempt_at DateTime?       @db.Timestamp(0)
+  last_error      String?         @db.VarChar(500)
+  review_status   String          @default("received") @db.VarChar(10)
+  review_reason   String?         @db.VarChar(500)
+  reviewed_by     String?         @db.VarChar(150)
+  reviewed_at     DateTime?       @db.Timestamp(3)
+  created_at      DateTime        @default(now()) @db.Timestamp(0)
+  updated_at      DateTime        @default(now()) @updatedAt @db.Timestamp(0)
+  referral        loan_referral   @relation(fields: [referral_id], references: [id], onDelete: Cascade, map: "fk_loan_doc_upload_referral")
+  author          user?           @relation(fields: [author_user_id], references: [id], onDelete: SetNull, map: "fk_loan_doc_upload_author")
+  file            loan_doc_file[]
+
+  @@index([referral_id, item_key], map: "idx_loan_doc_upload_referral")
+  @@index([send_status, next_attempt_at], map: "idx_loan_doc_upload_send")
+  @@index([author_user_id], map: "idx_loan_doc_upload_author")
+}
+
+model loan_doc_file {
+  id           Int             @id @default(autoincrement())
+  upload_id    Int
+  file_name    String          @db.VarChar(200)
+  storage_ref  String          @db.VarChar(255)
+  content_type String          @db.VarChar(40)
+  size         Int             @db.UnsignedInt
+  sha256       String          @db.Char(64)
+  created_at   DateTime        @default(now()) @db.Timestamp(0)
+  upload       loan_doc_upload @relation(fields: [upload_id], references: [id], onDelete: Cascade, map: "fk_loan_doc_file_upload")
+
+  @@index([upload_id], map: "idx_loan_doc_file_upload")
 }

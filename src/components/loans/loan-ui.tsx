@@ -670,3 +670,201 @@ function ReplyBox({ publicId, onSent }: { publicId: string; onSent: () => void }
     </div>
   );
 }
+
+const DOC_GROUPS: { key: "student" | "coapplicant" | "collateral"; label: string }[] = [
+  { key: "student", label: "Student" },
+  { key: "coapplicant", label: "Co-applicant" },
+  { key: "collateral", label: "Collateral (secured loans)" },
+];
+
+type DocItem = LoanDetail["documents"][number];
+
+// Where one item stands, from its newest upload.
+function docState(item: DocItem): { label: string; tone: keyof typeof TONES } {
+  const u = item.uploads[0];
+  if (!u) return item.required ? { label: "Needed", tone: "amber" } : { label: "Not sent", tone: "gray" };
+  if (u.sendStatus === LoanReferralSendStatus.FAILED) return { label: "Not delivered", tone: "red" };
+  if (u.sendStatus === LoanReferralSendStatus.SENDING) return { label: "Waiting to be delivered", tone: "amber" };
+  if (u.reviewStatus === "accepted") return { label: "Accepted", tone: "green" };
+  if (u.reviewStatus === "reupload") return { label: "Upload again", tone: "red" };
+  return { label: "With the loan team", tone: "blue" };
+}
+
+// The loan team's document list for this lead (contract 5): upload per item
+// (PDF / JPG / PNG), or send the one already on the student's profile; each
+// upload shows the counsellor's review.
+export function LoanDocuments({ loan, onChanged }: { loan: LoanDetail; onChanged: () => void }) {
+  const items = loan.documents;
+  if (!loan.canMessage) return null;
+  const sent = items.filter((i) => i.uploads.length > 0).length;
+  const accepted = items.filter((i) => i.uploads[0]?.reviewStatus === "accepted").length;
+  const again = items.filter((i) => i.uploads[0]?.reviewStatus === "reupload").length;
+  return (
+    <section id="documents" className="rounded-2xl border border-[#E4E7EC] bg-white">
+      <div className="border-b border-[#E4E7EC] px-5 py-3.5">
+        <h2 className="text-sm font-semibold text-[#101828]">Documents for the loan</h2>
+        <p className="mt-0.5 text-[12px] text-[#667085]">
+          {items.length === 0
+            ? "The loan team's document list will appear here shortly."
+            : `${sent} of ${items.length} sent · ${accepted} accepted${again ? ` · ${again} to upload again` : ""}. PDF, JPG or PNG, up to 10 MB each.`}
+        </p>
+      </div>
+      {DOC_GROUPS.map((g) => {
+        const rows = items.filter((i) => i.group === g.key);
+        if (rows.length === 0) return null;
+        return (
+          <div key={g.key} className="border-b border-[#F2F4F7] last:border-b-0">
+            <div className="bg-[#F9FAFB] px-5 py-2 text-[11px] font-semibold tracking-wide text-[#667085] uppercase">
+              {g.label}
+            </div>
+            <ul>
+              {rows.map((i) => (
+                <DocRow key={i.key} item={i} publicId={loan.publicId} onChanged={onChanged} />
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function DocRow({ item, publicId, onChanged }: { item: DocItem; publicId: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [inputKey, setInputKey] = useState(0);
+  const retry = api.loans.partnerRetryDocument.useMutation();
+  const state = docState(item);
+  const tone = TONES[state.tone];
+  const latest = item.uploads[0];
+  const unusedOnFile = item.onFile.filter((f) => !item.uploads.some((u) => u.source === "converge_profile" && u.files.some((x) => x.name === f.name)));
+
+  const send = async (fd: FormData) => {
+    setBusy(true);
+    setError(null);
+    try {
+      fd.set("publicId", publicId);
+      fd.set("typeKey", item.key);
+      const res = await fetch("/api/partner/loan-doc", { method: "POST", body: fd });
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(body.error ?? "Could not send the document.");
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the document.");
+    } finally {
+      setBusy(false);
+      setInputKey((k) => k + 1);
+    }
+  };
+  const upload = (list: FileList | null) => {
+    const files = Array.from(list ?? []);
+    if (files.length === 0) return;
+    if (files.length > 5) {
+      setError("Up to 5 files at a time.");
+      return;
+    }
+    const bad = files.find((f) => !/\.(pdf|jpe?g|png)$/i.test(f.name));
+    if (bad) {
+      setError(`${bad.name} isn't a PDF, JPG or PNG.`);
+      return;
+    }
+    const big = files.find((f) => f.size > 10 * 1024 * 1024);
+    if (big) {
+      setError(`${big.name} is over 10 MB.`);
+      return;
+    }
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    void send(fd);
+  };
+  const useOnFile = () => {
+    const fd = new FormData();
+    for (const f of unusedOnFile) fd.append("profileDocIds", String(f.id));
+    void send(fd);
+  };
+
+  return (
+    <li className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2 text-[13px] font-semibold text-[#101828]">
+          {item.label}
+          {item.required && <span className="text-[11px] font-medium text-[#B54708]">Required</span>}
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+            style={{ color: tone.color, background: tone.bg }}
+          >
+            {state.label}
+          </span>
+        </div>
+        {latest?.reviewStatus === "reupload" && latest.reviewReason && (
+          <div className="mt-1 text-[12px] text-[#B42318]">
+            {latest.reviewedBy ? `${latest.reviewedBy}: ` : ""}
+            {latest.reviewReason}
+          </div>
+        )}
+        {item.uploads.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {item.uploads.flatMap((u) =>
+              u.files.map((f) => (
+                <a
+                  key={f.id}
+                  href={`/api/partner/loan-doc-file/${f.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-[12px] ${
+                    u === latest ? "border-[#E4E7EC] text-[#175CD3]" : "border-[#F2F4F7] text-[#98A2B3] line-through"
+                  }`}
+                  title={`${u.authorName} · ${when(u.at)}${u.source === "converge_profile" ? " · from the student's profile" : ""}`}
+                >
+                  {f.name}
+                </a>
+              )),
+            )}
+          </div>
+        )}
+        {latest?.sendStatus === LoanReferralSendStatus.FAILED && (
+          <button
+            type="button"
+            disabled={retry.isPending}
+            onClick={() => void retry.mutateAsync({ publicId: latest.publicId }).then(onChanged, onChanged)}
+            className="mt-1 cursor-pointer text-[12px] font-semibold text-[#1570EF] hover:underline disabled:opacity-50"
+          >
+            Retry sending
+          </button>
+        )}
+        {error && <div className="mt-1 text-[12px] text-[#F04438]">{error}</div>}
+      </div>
+      {latest?.reviewStatus !== "accepted" && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {unusedOnFile.length > 0 && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={useOnFile}
+              className="h-8 cursor-pointer rounded-lg border border-[#B2CCFF] bg-[#F5F9FF] px-3 text-[12px] font-semibold whitespace-nowrap text-[#175CD3] hover:bg-[#EFF4FF] disabled:opacity-50"
+              title={unusedOnFile.map((f) => f.name).join(", ")}
+            >
+              Use the one on file
+            </button>
+          )}
+          <label
+            className={`inline-flex h-8 cursor-pointer items-center rounded-lg px-3 text-[12px] font-semibold whitespace-nowrap ${
+              busy ? "bg-[#F2F4F7] text-[#98A2B3]" : "bg-[#1570EF] text-white hover:bg-[#1260d4]"
+            }`}
+          >
+            {busy ? "Sending…" : latest ? "Upload again" : "Upload"}
+            <input
+              key={inputKey}
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
+              multiple
+              className="hidden"
+              disabled={busy}
+              onChange={(e) => upload(e.target.files)}
+            />
+          </label>
+        </div>
+      )}
+    </li>
+  );
+}
