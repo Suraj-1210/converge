@@ -2,13 +2,15 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { createTRPCRouter, protectedPartnerProcedure, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { COURSE_LEVEL_CODES, type CourseLevel, UserType } from "~/server/db/enums";
+import { COURSE_LEVEL_CODES, type CourseLevel } from "~/server/db/enums";
 import { LoanReferralSendStatus } from "~/lib/loan-sharing";
 import {
   activeReferralForStudent,
   createLoanReferral,
   loanSharingConfig,
+  referralScopeFor,
   sendLoanReferral,
+  sendPartnerMessage,
 } from "~/server/loan-sharing";
 import { partnerScope, requireVisibleStudent } from "~/server/partner-access";
 
@@ -16,25 +18,6 @@ import { partnerScope, requireVisibleStudent } from "~/server/partner-access";
 // the progress mirrored back. Partner side = the Loans tab and the loan card
 // on a student (gated by the "loans" tab, ~/lib/partner-tabs); admin side =
 // Super Admin "Loan Referrals" support page. Logic: ~/server/loan-sharing.
-
-// Who sees which referrals — the same as students (~/server/partner-access):
-//   agency owner      → the whole agency's
-//   agency counsellor → ones they made, and ones for their students
-//   independent       → their own
-function referralScopeFor(user: { id: number; type: number; org_id: number | null }) {
-  if (user.org_id === null) return { partner_user_id: user.id };
-  if (user.type === UserType.AGENCY_COUNSELLOR) {
-    return {
-      org_id: user.org_id,
-      OR: [
-        { partner_user_id: user.id },
-        { student: { counsellor_id: user.id } },
-        { student: { created_by_user_id: user.id } },
-      ],
-    };
-  }
-  return { org_id: user.org_id };
-}
 
 const consent = z.literal(true, {
   errorMap: () => ({ message: "Confirm the student agreed to be contacted by the loan team" }),
@@ -119,6 +102,11 @@ export const loansRouter = createTRPCRouter({
           ...listInclude,
           application: { orderBy: { id: "asc" } },
           event: { where: { visible: 1 }, orderBy: [{ occurred_at: "desc" }, { id: "desc" }], take: 200 },
+          message: {
+            include: { file: { orderBy: { id: "asc" } } },
+            orderBy: { created_at: "desc" },
+            take: 200,
+          },
         },
       });
       // Another agency's referral looks exactly like a missing one.
@@ -143,6 +131,17 @@ export const loansRouter = createTRPCRouter({
           disbursedAmount: num(a.disbursed_amount),
           disbursedAt: a.disbursed_at,
         })),
+        // The partner's replies (Phase 2); the page merges them into the timeline.
+        messages: r.message.map((m) => ({
+          publicId: m.public_id,
+          authorName: m.author_name,
+          mine: m.author_user_id === ctx.cpPartner.id,
+          body: m.body,
+          sendStatus: m.send_status,
+          at: m.created_at,
+          files: m.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size })),
+        })),
+        canMessage: r.send_status === LoanReferralSendStatus.RECEIVED,
         timeline: r.event.map((e) => ({
           id: e.id,
           kind: e.kind,
@@ -224,6 +223,26 @@ export const loansRouter = createTRPCRouter({
       });
       await auditPartner(user.id, user.org_id, "loan_referral.created", r.id, { loanOnly: true });
       return { publicId: r.public_id, sendStatus: r.send_status };
+    }),
+
+  // A reply that couldn't be delivered: send it again.
+  partnerRetryMessage: protectedPartnerProcedure
+    .input(z.object({ publicId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const { user } = await partnerScope(ctx.cpPartner.id);
+      const m = await db.loan_referral_message.findFirst({
+        where: { public_id: input.publicId, referral: referralScopeFor(user) },
+        select: { id: true, send_status: true },
+      });
+      if (!m) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
+      if (m.send_status === LoanReferralSendStatus.RECEIVED) return { sendStatus: m.send_status };
+      await db.loan_referral_message.update({
+        where: { id: m.id },
+        data: { send_status: LoanReferralSendStatus.SENDING, next_attempt_at: null },
+      });
+      await sendPartnerMessage(m.id);
+      const after = await db.loan_referral_message.findUniqueOrThrow({ where: { id: m.id } });
+      return { sendStatus: after.send_status };
     }),
 
   // ── Super Admin: Loan Referrals support page ────────────────────────────────

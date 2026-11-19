@@ -21,7 +21,7 @@ import {
   loanStageTone,
   loanTrackIndex,
 } from "~/lib/loan-sharing";
-import { api } from "~/trpc/react";
+import { api, type RouterOutputs } from "~/trpc/react";
 
 // Shared pieces of the partner loan screens (Loans tab, lead page, the loan
 // card on a student). Server: ~/server/api/routers/loans.
@@ -407,6 +407,222 @@ export function StudentLoanRow({
           )
         }
       />
+    </div>
+  );
+}
+
+type LoanDetail = RouterOutputs["loans"]["partnerGet"];
+
+const when = (d: Date | string) =>
+  new Date(d).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
+
+// The lead's timeline as a conversation (Phase 2): what the loan team did and
+// shared, and the partner's replies with their PDFs, newest first, with a
+// reply box on top once the loan team has the lead.
+export function LoanConversation({ loan, onChanged }: { loan: LoanDetail; onChanged: () => void }) {
+  const retry = api.loans.partnerRetryMessage.useMutation();
+  type Item =
+    | { key: string; at: number; kind: "event"; e: LoanDetail["timeline"][number] }
+    | { key: string; at: number; kind: "message"; m: LoanDetail["messages"][number] };
+  const items: Item[] = [
+    ...loan.timeline.map((e) => ({ key: `e${e.id}`, at: new Date(e.at).getTime(), kind: "event" as const, e })),
+    ...loan.messages.map((m) => ({ key: `m${m.publicId}`, at: new Date(m.at).getTime(), kind: "message" as const, m })),
+  ].sort((a, b) => b.at - a.at);
+
+  return (
+    <section className="rounded-2xl border border-[#E4E7EC] bg-white">
+      <h2 className="border-b border-[#E4E7EC] px-5 py-3.5 text-sm font-semibold text-[#101828]">Updates and messages</h2>
+      {loan.canMessage && <ReplyBox publicId={loan.publicId} onSent={onChanged} />}
+      {items.length === 0 ? (
+        <p className="px-5 py-6 text-sm text-[#98A2B3]">Nothing yet.</p>
+      ) : (
+        <ol className="px-5 py-4">
+          {items.map((it, i) => (
+            <li key={it.key} className="relative flex gap-3 pb-4 last:pb-0">
+              {i < items.length - 1 && <span className="absolute top-3 left-[5px] h-full w-px bg-[#E4E7EC]" aria-hidden />}
+              {it.kind === "event" ? (
+                <>
+                  <span
+                    className={`relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full border-2 bg-white ${
+                      it.e.kind === "note" ? "border-[#7A5AF8]" : "border-[#1570EF]"
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-[#101828]">{it.e.title}</div>
+                    {it.e.body && (
+                      <div
+                        className={`mt-1 text-[13px] whitespace-pre-wrap text-[#344054] ${
+                          it.e.kind === "note" ? "rounded-lg border border-[#EBE9FE] bg-[#F9F8FF] px-3 py-2" : ""
+                        }`}
+                      >
+                        {it.e.body}
+                      </div>
+                    )}
+                    <div className="mt-0.5 text-[11px] text-[#98A2B3]">
+                      {when(it.e.at)}
+                      {it.e.actorName && ` · ${it.e.actorName}`}
+                      {it.e.kind === "note" && " · Loan team"}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full border-2 border-[#12B76A] bg-white" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-[#101828]">
+                      {it.m.mine ? "You" : it.m.authorName} wrote to the loan team
+                    </div>
+                    {it.m.body && (
+                      <div className="mt-1 rounded-lg border border-[#D1FADF] bg-[#F6FEF9] px-3 py-2 text-[13px] whitespace-pre-wrap text-[#344054]">
+                        {it.m.body}
+                      </div>
+                    )}
+                    {it.m.files.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-2">
+                        {it.m.files.map((f) => (
+                          <a
+                            key={f.id}
+                            href={`/api/partner/loan-file/${f.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E7EC] px-2.5 py-1 text-[12px] font-medium text-[#175CD3] hover:bg-[#F5F9FF]"
+                          >
+                            PDF · {f.name}{" "}
+                            <span className="text-[#98A2B3]">({Math.max(1, Math.round(f.size / 1024))} KB)</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-0.5 text-[11px] text-[#98A2B3]">
+                      {when(it.m.at)}
+                      {it.m.sendStatus === LoanReferralSendStatus.RECEIVED && " · Delivered"}
+                      {it.m.sendStatus === LoanReferralSendStatus.SENDING && (
+                        <span className="text-[#B54708]"> · Waiting to be delivered</span>
+                      )}
+                      {it.m.sendStatus === LoanReferralSendStatus.FAILED && (
+                        <>
+                          <span className="text-[#B42318]"> · Not delivered</span>{" "}
+                          <button
+                            type="button"
+                            disabled={retry.isPending}
+                            onClick={() => void retry.mutateAsync({ publicId: it.m.publicId }).then(onChanged, onChanged)}
+                            className="cursor-pointer font-semibold text-[#1570EF] hover:underline disabled:opacity-50"
+                          >
+                            Retry
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function ReplyBox({ publicId, onSent }: { publicId: string; onSent: () => void }) {
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [inputKey, setInputKey] = useState(0);
+
+  const pick = (list: FileList | null) => {
+    setError(null);
+    const picked = Array.from(list ?? []);
+    const bad = picked.find((f) => !/\.pdf$/i.test(f.name) && f.type !== "application/pdf");
+    if (bad) {
+      setError(`${bad.name} isn't a PDF. Only PDF files can be sent.`);
+      return;
+    }
+    const big = picked.find((f) => f.size > 10 * 1024 * 1024);
+    if (big) {
+      setError(`${big.name} is over 10 MB.`);
+      return;
+    }
+    if (files.length + picked.length > 3) setError("Up to 3 PDFs per message.");
+    setFiles([...files, ...picked].slice(0, 3));
+    setInputKey((k) => k + 1);
+  };
+
+  const send = async () => {
+    if (!text.trim() && files.length === 0) {
+      setError("Write a message or attach a PDF.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.set("publicId", publicId);
+      fd.set("text", text);
+      for (const f of files) fd.append("files", f);
+      const res = await fetch("/api/partner/loan-message", { method: "POST", body: fd });
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(body.error ?? "Could not send the message.");
+      setText("");
+      setFiles([]);
+      onSent();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the message.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border-b border-[#E4E7EC] px-5 py-4">
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        maxLength={2000}
+        rows={3}
+        placeholder="Write to the loan team: a question, an update about the student, or documents they asked for"
+        className="w-full resize-y rounded-lg border border-[#D0D5DD] px-3.5 py-2.5 text-sm text-[#101828] outline-none placeholder:text-[#98A2B3] focus:border-[#1570EF] focus:shadow-[0_0_0_3px_rgba(21,112,239,0.12)]"
+      />
+      {files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {files.map((f, i) => (
+            <span
+              key={`${f.name}-${i}`}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#F2F4F7] px-2.5 py-1 text-[12px] text-[#344054]"
+            >
+              {f.name}
+              <button
+                type="button"
+                aria-label={`Remove ${f.name}`}
+                onClick={() => setFiles(files.filter((_, j) => j !== i))}
+                className="cursor-pointer text-[#98A2B3] hover:text-[#B42318]"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {error && <div className="mt-2 text-xs text-[#F04438]">{error}</div>}
+      <div className="mt-2.5 flex items-center justify-between gap-3">
+        <label className="cursor-pointer text-[13px] font-medium text-[#1570EF] hover:underline">
+          Attach PDF
+          <input
+            key={inputKey}
+            type="file"
+            accept="application/pdf,.pdf"
+            multiple
+            className="hidden"
+            disabled={files.length >= 3}
+            onChange={(e) => pick(e.target.files)}
+          />
+          <span className="ml-1.5 font-normal text-[#98A2B3]">up to 3, 10 MB each</span>
+        </label>
+        <Button onClick={() => void send()} loading={busy}>
+          Send to loan team
+        </Button>
+      </div>
     </div>
   );
 }

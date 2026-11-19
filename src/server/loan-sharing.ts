@@ -3,9 +3,13 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { env } from "~/env";
 import { db } from "~/server/db";
-import { AdminRole, CourseLevelLabel, type CourseLevel, UserType } from "~/server/db/enums";
+import { AdminRole, CourseLevelLabel, type CourseLevel, UserStatus, UserType } from "~/server/db/enums";
 import { createNotifications } from "~/server/notify";
 import { createStaffNotifications } from "~/server/staff-notify";
+import { appUrl } from "~/server/email";
+import { emailPartners, type Recipient } from "~/server/email/partners";
+import { loanMilestoneEmail } from "~/server/email/templates";
+import { readStoredFile } from "~/server/storage";
 import {
   LOAN_STAGES,
   LoanReferralSendStatus,
@@ -57,6 +61,26 @@ export function loanSharingConfig() {
     sendConfigured: !!env.ENROLLMENT_LOAN_URL && !!env.ENROLLMENT_LOAN_SECRET,
     receiveConfigured: !!env.ENROLLMENT_WEBHOOK_SECRET,
   };
+}
+
+// ── Who sees what ──────────────────────────────────────────────────────────
+
+// Which referrals a partner user may see — the same as students
+// (~/server/partner-access): agency owner → the whole agency's; agency
+// counsellor → ones they made and ones for their students; independent → own.
+export function referralScopeFor(user: { id: number; type: number; org_id: number | null }) {
+  if (user.org_id === null) return { partner_user_id: user.id };
+  if (user.type === UserType.AGENCY_COUNSELLOR) {
+    return {
+      org_id: user.org_id,
+      OR: [
+        { partner_user_id: user.id },
+        { student: { counsellor_id: user.id } },
+        { student: { created_by_user_id: user.id } },
+      ],
+    };
+  }
+  return { org_id: user.org_id };
 }
 
 // ── Who is told ──────────────────────────────────────────────────────────────
@@ -358,7 +382,7 @@ function safeJson(text: string): unknown {
 }
 
 // Cron: every referral still waiting whose next try is due.
-export async function retryDueLoanReferrals(limit = 50): Promise<{ tried: number }> {
+export async function retryDueLoanReferrals(limit = 50): Promise<{ tried: number; messages: number }> {
   const due = await db.loan_referral.findMany({
     where: {
       send_status: LoanReferralSendStatus.SENDING,
@@ -369,7 +393,121 @@ export async function retryDueLoanReferrals(limit = 50): Promise<{ tried: number
     select: { id: true },
   });
   for (const { id } of due) await sendLoanReferral(id);
-  return { tried: due.length };
+  const dueMessages = await db.loan_referral_message.findMany({
+    where: {
+      send_status: LoanReferralSendStatus.SENDING,
+      OR: [{ next_attempt_at: null }, { next_attempt_at: { lte: new Date() } }],
+    },
+    orderBy: { id: "asc" },
+    take: limit,
+    select: { id: true },
+  });
+  for (const { id } of dueMessages) await sendPartnerMessage(id);
+  return { tried: due.length, messages: dueMessages.length };
+}
+
+// ── Partner messages (Converge → Enrollment, contract 3b) ────────────────────
+
+export const MESSAGE_MAX_TEXT = 2000;
+export const MESSAGE_MAX_FILES = 3;
+export const MESSAGE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const MESSAGE_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+const messageResponse = z.object({ result: z.literal("stored"), activityId: z.string().min(1).max(64) });
+
+// Sends one reply (files inline, base64) to the Enrollment App. Never throws:
+// the outcome is written on the row; failures retry from the cron.
+export async function sendPartnerMessage(id: number): Promise<void> {
+  const m = await db.loan_referral_message.findUnique({
+    where: { id },
+    include: { referral: true, file: { orderBy: { id: "asc" } } },
+  });
+  if (m?.send_status !== LoanReferralSendStatus.SENDING) return;
+  const url = env.ENROLLMENT_LOAN_URL;
+  const secret = env.ENROLLMENT_LOAN_SECRET;
+  let outcome: { ok: true; activityId: string } | { ok: false; permanent: boolean; error: string };
+  if (!url || !secret) {
+    outcome = { ok: false, permanent: false, error: "Loan sharing is not configured (ENROLLMENT_LOAN_URL / ENROLLMENT_LOAN_SECRET)" };
+  } else if (!m.referral.loan_lead_id) {
+    outcome = { ok: false, permanent: false, error: "The loan team hasn't received this referral yet" };
+  } else {
+    try {
+      const files = await Promise.all(
+        m.file.map(async (f) => ({
+          name: f.file_name,
+          contentType: "application/pdf",
+          size: f.size,
+          sha256: f.sha256,
+          data: (await readStoredFile(f.storage_ref)).toString("base64"),
+        })),
+      );
+      const raw = JSON.stringify({
+        type: "message",
+        messageId: m.public_id,
+        referralId: m.referral.public_id,
+        loanLeadId: m.referral.loan_lead_id,
+        author: { userId: m.author_user_id ?? m.referral.partner_user_id, name: m.author_name },
+        text: m.body,
+        files,
+      });
+      const ts = String(Math.floor(Date.now() / 1000));
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-cp-timestamp": ts, "x-cp-signature": signBody(secret, ts, raw) },
+        body: raw,
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await res.text();
+      if (res.ok) {
+        const parsed = messageResponse.safeParse(safeJson(text));
+        outcome = parsed.success
+          ? { ok: true, activityId: parsed.data.activityId }
+          : { ok: false, permanent: false, error: `Unexpected reply: ${text.slice(0, 200)}` };
+      } else {
+        // 400 (bad content) and 404 (lead not found) can't succeed on retry.
+        outcome = {
+          ok: false,
+          permanent: res.status === 400 || res.status === 404,
+          error: `HTTP ${res.status}: ${text.slice(0, 300)}`,
+        };
+      }
+    } catch (e) {
+      outcome = { ok: false, permanent: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  const attempts = m.send_attempts + 1;
+  if (outcome.ok) {
+    await db.loan_referral_message.update({
+      where: { id: m.id },
+      data: {
+        send_status: LoanReferralSendStatus.RECEIVED,
+        activity_id: outcome.activityId,
+        send_attempts: attempts,
+        last_error: null,
+        next_attempt_at: null,
+      },
+    });
+    return;
+  }
+  await db.loan_referral_message.update({
+    where: { id: m.id },
+    data: outcome.permanent
+      ? { send_status: LoanReferralSendStatus.FAILED, send_attempts: attempts, last_error: outcome.error.slice(0, 500), next_attempt_at: null }
+      : {
+          send_attempts: attempts,
+          last_error: outcome.error.slice(0, 500),
+          next_attempt_at: new Date(Date.now() + backoffMinutes(attempts) * 60_000),
+        },
+  });
+  if (outcome.permanent && m.author_user_id) {
+    await createNotifications([m.author_user_id], {
+      type: "loan_referral",
+      title: `Your message about ${m.referral.student_name} could not be delivered`,
+      body: "Open the loan to retry or send it again.",
+      link: leadLink(m.referral.public_id),
+      tone: "red",
+    });
+  }
 }
 
 // ── Receiving (Enrollment → Converge) ────────────────────────────────────────
@@ -398,6 +536,15 @@ const applicationState = z.object({
   deleted: z.boolean().optional(),
 });
 
+// A counsellor note ticked "Share with partner" in the Enrollment App.
+const sharedNote = z.object({
+  type: z.literal("note"),
+  noteId: z.string().min(1).max(64),
+  text: z.string().max(2000),
+  by: z.string().max(150).nullable(),
+  at: isoDate,
+});
+
 const base = {
   eventId: z.string().min(1).max(120),
   referralId: z.string().min(1).max(36),
@@ -410,12 +557,22 @@ const enrollmentEvent = z.discriminatedUnion("kind", [
   z.object({
     ...base,
     kind: z.literal("timeline.added"),
-    timeline: z.object({
-      type: z.literal("stage_change"),
-      toStage: stage,
-      by: z.string().max(150).nullable(),
-      at: isoDate,
-    }),
+    timeline: z.discriminatedUnion("type", [
+      z.object({
+        type: z.literal("stage_change"),
+        toStage: stage,
+        by: z.string().max(150).nullable(),
+        at: isoDate,
+      }),
+      sharedNote,
+    ]),
+  }),
+  // A shared note edited, or un-shared / deleted (Phase 2, contract 3a).
+  z.object({ ...base, kind: z.literal("timeline.updated"), timeline: sharedNote }),
+  z.object({
+    ...base,
+    kind: z.literal("timeline.removed"),
+    timeline: z.object({ type: z.literal("note"), noteId: z.string().min(1).max(64), at: isoDate }),
   }),
   z.object({ ...base, kind: z.literal("application.updated"), application: applicationState }),
   z.object({
@@ -503,7 +660,15 @@ async function applyOne(ev: EnrollmentEvent): Promise<boolean> {
       });
       break;
     }
+    case "timeline.updated":
+    case "timeline.removed":
+      await applySharedNote(r, at, ev.kind === "timeline.removed" ? null : ev.timeline, ev.timeline.noteId);
+      break;
     case "timeline.added": {
+      if (ev.timeline.type === "note") {
+        await applySharedNote(r, at, ev.timeline, ev.timeline.noteId);
+        break;
+      }
       const label = loanStageLabel(ev.timeline.toStage);
       await db.loan_referral_event.update({
         where: { id: eventRowId },
@@ -600,11 +765,87 @@ async function applyApplication(
     });
   }
   if (a.status === "sanctioned" || a.status === "disbursed") {
-    await createNotifications(await referralAudience(r), {
+    const audience = await referralAudience(r);
+    await createNotifications(audience, {
       type: "loan_stage",
       title: `${r.student_name}: ${a.lender} ${a.status === "sanctioned" ? "sanctioned" : "disbursed"} the loan`,
       link: leadLink(r.public_id),
       tone: "green",
+    });
+    // Sanction and disbursement are the two loan updates that also go by
+    // email (spec, open question 7: recommendation taken 19 Nov 2026).
+    const kind = a.status;
+    const amount = kind === "sanctioned" ? a.sanctionedAmount : a.disbursedAmount;
+    await emailPartners(
+      await recipientsFor(audience),
+      (to) =>
+        loanMilestoneEmail(to, {
+          kind,
+          student: r.student_name,
+          lender: a.lender,
+          amount,
+          url: `${appUrl()}${leadLink(r.public_id)}`,
+        }),
+      `loan ${kind}`,
+      "loan.milestone",
+    );
+  }
+}
+
+// Active partner users among `ids`, as email recipients.
+async function recipientsFor(ids: number[]): Promise<Recipient[]> {
+  const users = await db.user.findMany({
+    where: { id: { in: ids }, status: UserStatus.APPROVED, deleted_at: null },
+    select: { id: true, email: true, first_name: true, last_name: true, organization: { select: { name: true } } },
+  });
+  return users.map((u) => ({
+    id: u.id,
+    email: u.email,
+    name: `${u.first_name} ${u.last_name}`.trim(),
+    company: u.organization?.name ?? null,
+  }));
+}
+
+// One timeline row per shared note (event_id "note:<referral>:<noteId>"),
+// newest state wins. `note` null = un-shared or deleted: the row is hidden.
+// The first time a note is shown, the referrer gets a bell.
+async function applySharedNote(
+  r: { id: number; public_id: string; student_name: string; partner_user_id: number },
+  at: Date,
+  note: { text: string; by: string | null; at: string } | null,
+  noteId: string,
+): Promise<void> {
+  const eventId = `note:${r.public_id}:${noteId}`.slice(0, 120);
+  const existing = await db.loan_referral_event.findUnique({ where: { event_id: eventId } });
+  if (existing?.synced_at && existing.synced_at >= at) return;
+  const text = note?.text.trim() ?? "";
+  const visible = note && text ? 1 : 0;
+  if (existing) {
+    await db.loan_referral_event.update({
+      where: { id: existing.id },
+      data: { visible, body: visible ? text : existing.body, actor_name: note?.by ?? existing.actor_name, synced_at: at },
+    });
+  } else {
+    await db.loan_referral_event.create({
+      data: {
+        referral_id: r.id,
+        event_id: eventId,
+        kind: "note",
+        visible,
+        title: "Update from the loan team",
+        body: text || null,
+        actor_name: note?.by ?? null,
+        occurred_at: note ? new Date(note.at) : at,
+        synced_at: at,
+      },
+    });
+  }
+  if (visible && !existing?.visible) {
+    await createNotifications([r.partner_user_id], {
+      type: "loan_note",
+      title: `${r.student_name}: update from the loan team`,
+      body: text.slice(0, 200),
+      link: leadLink(r.public_id),
     });
   }
 }

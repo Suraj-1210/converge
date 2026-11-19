@@ -1101,3 +1101,27 @@ export function partnerEventCancelledEmail(
     `${e.title} has been cancelled`,
   );
 }
+
+// Education loan sanctioned or disbursed for a student the partner referred to
+// Collegepond's loan team (~/server/loan-sharing). Preference: loan.milestone.
+export function loanMilestoneEmail(
+  r: { name: string },
+  l: { kind: "sanctioned" | "disbursed"; student: string; lender: string; amount: number | null; url: string },
+): EmailMessage {
+  const amount = l.amount === null ? "" : ` of ₹${l.amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+  const sanctioned = l.kind === "sanctioned";
+  return build(
+    sanctioned ? `Education loan sanctioned: ${l.student}` : `Education loan disbursed: ${l.student}`,
+    sanctioned ? "Education loan sanctioned" : "Education loan disbursed",
+    hello(r.name),
+    [
+      {
+        p: sanctioned
+          ? `Good news: ${l.lender} has sanctioned an education loan${amount} for ${l.student}, the student you referred to Collegepond's loan team.`
+          : `${l.lender} has disbursed${amount} of the education loan for ${l.student}, the student you referred to Collegepond's loan team.`,
+      },
+      { p: "Every step the loan team takes is on the student's loan page in your partner portal." },
+      { button: { label: "View the loan", url: l.url } },
+    ],
+  );
+}

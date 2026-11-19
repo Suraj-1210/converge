@@ -4,16 +4,14 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "~/trpc/react";
 import { formatDate } from "~/components/dashboard/format";
-import { LoanStatusBadge, LoanTrack, rupees } from "~/components/loans/loan-ui";
+import { LoanConversation, LoanStatusBadge, LoanTrack, rupees } from "~/components/loans/loan-ui";
 import { LoanReferralSendStatus, loanStageLabel } from "~/lib/loan-sharing";
 
 // One loan referral: where it stands, each lender application, and the
-// timeline of everything the loan team has done (stage changes, lender
-// results). Read-only: the loan counsellors work the lead in the Enrollment
-// App and it updates here by itself.
+// conversation — everything the loan team has done (stage changes, lender
+// results, notes they share) and the partner's own replies and PDFs. The loan
+// counsellors work the lead in the Enrollment App; it updates here by itself.
 
-const dateTime = (d: Date | string) =>
-  new Date(d).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
 
 export default function PartnerLoanPage() {
   const { publicId } = useParams<{ publicId: string }>();
@@ -133,31 +131,7 @@ export default function PartnerLoanPage() {
             )}
           </section>
 
-          <section className="rounded-2xl border border-[#E4E7EC] bg-white">
-            <h2 className="border-b border-[#E4E7EC] px-5 py-3.5 text-sm font-semibold text-[#101828]">Timeline</h2>
-            {r.timeline.length === 0 ? (
-              <p className="px-5 py-6 text-sm text-[#98A2B3]">Nothing yet.</p>
-            ) : (
-              <ol className="px-5 py-4">
-                {r.timeline.map((t, i) => (
-                  <li key={t.id} className="relative flex gap-3 pb-4 last:pb-0">
-                    {i < r.timeline.length - 1 && (
-                      <span className="absolute top-3 left-[5px] h-full w-px bg-[#E4E7EC]" aria-hidden />
-                    )}
-                    <span className="relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full border-2 border-[#1570EF] bg-white" />
-                    <div>
-                      <div className="text-[13px] font-semibold text-[#101828]">{t.title}</div>
-                      {t.body && <div className="mt-0.5 text-[13px] text-[#475467]">{t.body}</div>}
-                      <div className="mt-0.5 text-[11px] text-[#98A2B3]">
-                        {dateTime(t.at)}
-                        {t.actorName && ` · ${t.actorName}`}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
+          <LoanConversation loan={r} onChanged={() => void q.refetch()} />
         </div>
 
         <aside className="h-fit rounded-2xl border border-[#E4E7EC] bg-white p-5">

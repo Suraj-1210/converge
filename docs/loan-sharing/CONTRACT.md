@@ -189,8 +189,77 @@ Enrollment retries non-2xx with backoff.
 Outbox entries (`convergeOutbox`) carry `expireAt` (60 days) for a Firestore
 TTL policy, which must be switched on in the console.
 
+## 3. Phase 2 additions (19 Nov 2026)
+
+### 3a. Shared notes — Enrollment → Converge
+
+A counsellor note (activity `type: "note"`) reaches the partner only while it
+carries `sharedWithPartner: true` (the *Share with partner* tick, off by
+default, shown only on leads with `convergeRef`). Three more `timeline` events:
+
+| kind | when | `timeline` |
+| --- | --- | --- |
+| `timeline.added` | a note is saved ticked, or an existing note gets ticked | `{ "type": "note", "noteId": "<activityId>", "text": "...", "by": "Anita Rao", "at": "<ISO>" }` |
+| `timeline.updated` | a ticked note's text is edited | same shape as added |
+| `timeline.removed` | a ticked note is un-ticked or deleted | `{ "type": "note", "noteId": "<activityId>", "at": "<ISO>" }` |
+
+- `text` ≤ 2000 characters (trimmed); `by` = the note's author name (or `null`).
+- `eventId` = `note:<leadId>:<activityId>:<updateTimeMillis>`.
+- Converge keys a note by `noteId`; the newest `occurredAt` wins, so an older
+  `added` arriving after a `removed` does not bring the note back.
+- Only `type: "note"` activities are ever sent. `status_change` keeps its
+  Phase 1 path; `partner_message` (below) is never echoed back.
+
+### 3b. Partner message — Converge → Enrollment
+
+Same URL, signing and secret as the referral (`ENROLLMENT_LOAN_URL`,
+`partnerLoanIntake`, `convergeInboundSecret`). The body carries
+`"type": "message"`; a body without `type` (or `"type": "referral"`) is a
+referral as in section 1.
+
+```json
+{
+  "type": "message",
+  "messageId": "7d3c2b0e-1f0a-4c6e-9e55-2a1b3c4d5e6f",
+  "referralId": "0f9c6c1e-6a52-4f0e-9a43-7d3d2b1c9e10",
+  "loanLeadId": "AbC123...",
+  "author": { "userId": 45, "name": "Priya Shah" },
+  "text": "Father's ITR for 2 years attached.",
+  "files": [
+    { "name": "ITR-2025.pdf", "contentType": "application/pdf", "size": 482113,
+      "sha256": "<lowercase hex>", "data": "<base64>" }
+  ]
+}
+```
+
+- `text` 0–2000 characters; at least one of `text` / `files` is non-empty.
+- `files`: 0–3 entries, PDF only (`contentType` `application/pdf` and the bytes
+  start with `%PDF`), each ≤ 10 MB decoded, ≤ 20 MB in total. The file travels
+  inside the signed body, so the signature covers it; no download links.
+- `messageId` is the idempotency key (`partnerMessages/{messageId}`).
+
+Enrollment:
+
+1. Rejects (**404** `{ "error": ... }`, permanent) when `loanLeads/{loanLeadId}`
+   doesn't exist or its `convergeRef.referralId` ≠ `referralId`.
+2. Checks each file's size, `%PDF` header and SHA-256 (**400** on mismatch), and
+   stores it at `loanLeads/{loanLeadId}/partner/{messageId}/{n}-{safe name}`
+   in Firebase Storage (loan staff may read; nobody writes from a client).
+3. Adds an activity `type: "partner_message"`: `message` = text, `files` =
+   `[{ name, path, size }]`, `createdBy: "converge"`, shown as
+   "Message from the referring partner" (author kept as hidden metadata, no
+   partner names on the timeline — business partners are private).
+4. If the lead is in an open stage, sets `nextFollowUpAt` to now so it
+   surfaces in the counsellor's Follow Ups.
+
+Response **200** `{ "result": "stored", "activityId": "..." }` (the same answer
+again for a repeated `messageId`). **400** malformed or bad file (permanent),
+**404** unknown lead (permanent), **401**, **503**, **5xx** (Converge retries).
+
 ## Changelog
 
 - 19 Nov 2026: Phase 1. Synced after the Enrollment build (afcc9d5): duplicate
   note wording and privacy, nullable `timeline.by`, busy = 500, idempotent
   `created`, outbox TTL.
+- 19 Nov 2026: Phase 2 contract — shared notes (3a), partner messages with
+  inline PDF files (3b).

@@ -63,6 +63,18 @@ export const NOTIFICATION_PREF_GROUPS: { title: string; rows: NotificationPrefRo
     ],
   },
   {
+    title: "Education Loans",
+    rows: [
+      {
+        key: "loan.milestone",
+        code: 14,
+        label: "Education loan sanctioned or disbursed",
+        email: true,
+        hint: "For students you referred to Collegepond's loan team. Every other loan update is a bell notification.",
+      },
+    ],
+  },
+  {
     title: "Events",
     rows: [{ key: "evt.reminder", code: 7, label: "Upcoming Event Reminder", email: false }],
   },
@@ -99,6 +111,7 @@ export type NotificationPrefKey =
   | "evt.reminder"
   | "team.assign"
   | "chat.message"
+  | "loan.milestone"
   | "sys.feature" | "sys.maintenance" | "sys.report";
 
 export function notificationPrefCode(key: NotificationPrefKey): number {
