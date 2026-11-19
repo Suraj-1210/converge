@@ -210,15 +210,17 @@ export function ApplicationsTab({
         mode={dialog?.mode ?? "reject"}
         subject={dialog?.subject ?? ""}
         busy={decide.isPending || repropose.isPending}
+        reasonList
         onClose={() => setDialog(null)}
-        onSubmit={(text) => {
+        onSubmit={(text, reasonCode) => {
           if (!dialog) return;
           if (dialog.mode === "reject") {
             decide.mutate({
               studentId: student.id,
               courseId: dialog.courseId,
               approve: false,
-              reason: text,
+              reason: text || undefined,
+              reasonCode,
             });
           } else {
             repropose.mutate({

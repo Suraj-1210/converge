@@ -125,7 +125,7 @@ export function ShortlistApprovalNotes({
 }
 
 // Reject (reason required) or re-propose (note optional). With reasonList
-// (Collegepond rejecting a partner's pick, 19 Nov) the reason is picked from
+// (either side rejecting the other's pick, 19 Nov) the reason is picked from
 // the same list as an application moved to Rejected; "Other" needs the note.
 export function ShortlistTextDialog({
   open,
@@ -216,7 +216,7 @@ export function ShortlistTextDialog({
                 Describe the reason <span className="text-[#D92D20]">*</span>
               </>
             ) : (
-              "Note (optional, shown to the partner)"
+              "Note (optional, shown to the other side)"
             )
           ) : reject ? (
             "Reason (shown to the other side)"
@@ -231,7 +231,7 @@ export function ShortlistTextDialog({
           autoFocus={!picking}
           placeholder={
             picking
-              ? "Anything the partner should know"
+              ? "Anything the other side should know"
               : reject
               ? "e.g. Budget is too high for the family"
               : "e.g. Scholarship now confirmed for this intake"

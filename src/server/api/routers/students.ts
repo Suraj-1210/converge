@@ -592,8 +592,8 @@ const decisionInput = z
     courseId: z.number().int().positive(),
     approve: z.boolean(),
     reason: z.string().trim().max(500).optional(),
-    // Collegepond rejecting: a RejectionReason code (19 Nov); "Other" needs
-    // the note. Partners still write a reason.
+    // Rejecting (either side): a RejectionReason code (19 Nov); "Other"
+    // needs the note. The procedures require it; the schema only checks it.
     reasonCode: z.number().int().refine((c) => (REJECTION_REASON_CODES as number[]).includes(c)).optional(),
   })
   .refine(
@@ -2694,7 +2694,14 @@ export const studentsRouter = createTRPCRouter({
           message: "You proposed this university, so Collegepond approves or rejects it.",
         });
       }
-      const reason = input.approve ? null : (input.reason ?? null);
+      // Same reason list as Collegepond's side (19 Nov 2026).
+      if (!input.approve && input.reasonCode == null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a rejection reason" });
+      }
+      const noteText = input.reason?.trim() ?? "";
+      const note = input.approve || noteText === "" ? null : noteText;
+      const reasonCode = input.approve ? null : (input.reasonCode ?? null);
+      const reason = input.approve ? null : rejectionReasonText(reasonCode, note);
       const result = await db.shortlist.updateMany({
         where: { id: row.id, approval_status: ShortlistApproval.PENDING },
         data: {
@@ -2702,7 +2709,8 @@ export const studentsRouter = createTRPCRouter({
           decided_at: new Date(),
           decided_by_user_id: ctx.cpPartner.id,
           decided_by_cp_user_id: null,
-          reject_reason: reason,
+          reject_reason: note,
+          reject_reason_code: reasonCode,
         },
       });
       if (result.count === 0) {
