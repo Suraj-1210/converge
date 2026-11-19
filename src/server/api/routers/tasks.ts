@@ -292,7 +292,7 @@ export const tasksRouter = createTRPCRouter({
 // The student page: partner-confirmation panel, follow-up history and
 // shortlisting milestones. Open to any staff user who can see the student
 // (like the shortlist actions beside it); recording is for counselling roles
-// and Super Admin, reopening for a Counsellor Lead or Super Admin.
+// and Super Admin, and so is reopening a closed case.
 const counsellingOnly = protectedAdminProcedure.use(({ ctx, next }) => {
   if (![0, 3, 4].includes(ctx.cpUser.role)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Only the counselling team records shortlist follow-ups." });

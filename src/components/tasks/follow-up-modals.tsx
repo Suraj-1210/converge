@@ -300,8 +300,8 @@ export function RecordFollowUpModal({
           </div>
           {decision === "close" && (
             <div className="rounded-lg border border-[#FECDCA] bg-[#FEF3F2] px-3 py-2 text-[12px] text-[#912018]">
-              Closing cancels open follow-up tasks and sets the student to <b>Closed – Shortlisting</b>. It can be
-              reopened by a Head Counsellor.
+              Closing cancels open follow-up tasks and sets the student to <b>Closed – Shortlisting</b>. Reopen it
+              (or reactivate the student) if the partner comes back.
             </div>
           )}
           {decision === "proceed" && (

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { syncShortlistCases } from "~/server/shortlist-follow-up";
+import { reactivateShortlistClosed, syncShortlistCases } from "~/server/shortlist-follow-up";
+import { InactiveReason as InactiveReasonCode } from "~/server/db/enums";
 import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
@@ -421,7 +422,18 @@ export const applicationPipelineRouter = createTRPCRouter({
         where: { id: input.studentId },
         select: { inactive_at: true, inactive_reason: true },
       });
-      if (!s?.inactive_at) return { ok: true };
+      if (!s?.inactive_at) return { ok: true, reopened: false };
+      // Closed at shortlisting: Counsellor Lead / Super Admin only, and the
+      // shortlist follow-up reopens with it (src/server/shortlist-follow-up.ts).
+      if (s.inactive_reason === InactiveReasonCode.SHORTLIST_CLOSED) {
+        const r = await reactivateShortlistClosed(ctx.cpUser, input.studentId);
+        void notifyColleagueAction(
+          input.studentId,
+          ctx.cpUser.id,
+          r.reopened ? "Reactivated the student and reopened the shortlist follow-up" : "Reactivated the student",
+        );
+        return { ok: true, reopened: r.reopened };
+      }
       await db.student.update({
         where: { id: input.studentId },
         data: { inactive_at: null, inactive_reason: null, inactive_note: null, inactive_by_cp_user_id: null },
@@ -435,6 +447,6 @@ export const applicationPipelineRouter = createTRPCRouter({
         },
       });
       void notifyColleagueAction(input.studentId, ctx.cpUser.id, "Reactivated the student");
-      return { ok: true };
+      return { ok: true, reopened: false };
     }),
 });
