@@ -8,13 +8,13 @@ import { tatStatus } from "~/lib/tat";
 import { requireStaffStudent, staffStudentScope, type StaffUser } from "~/server/staff-access";
 import { getTatConfig, getTatTarget } from "~/server/tat";
 import { responderFor } from "~/server/out-of-office";
-import { weekdayMinutesBetween, weekdayMinutesIn } from "~/server/working-days";
+import { slaMinutesBetween, slaMinutesIn } from "~/server/working-days";
 
 // Shortlisting TAT (item 10, decided with Suraj 19 Nov 2026), shown on TAT
 // Management. The SLA is the 'shortlisting' TAT action target (24h by
 // default, Super Admin edits it in Settings -> TAT Settings), measured from
 // the student being added by the partner to the shortlist being shared with
-// the partner, with Saturday and Sunday hours not counted (weekday hours
+// the partner, with Saturday, Sunday and TAT-holiday hours not counted (other hours
 // count around the clock: 10 Nov 11:00 → 11 Nov 14:00 = 27h).
 //
 // Milestones per student (student_shortlisting, first write wins):
@@ -150,7 +150,7 @@ export async function studentMilestones(user: StaffUser, studentId: number) {
     confirmed: iso(m?.confirmed_at),
   };
   const end = m?.shared_at ?? new Date();
-  const elapsed = await weekdayMinutesBetween(s.created_at, end);
+  const elapsed = await slaMinutesBetween(s.created_at, end);
   return {
     milestones: ms,
     elapsedMinutes: elapsed,
@@ -220,7 +220,7 @@ export async function shortlistingTatReport(user: StaffUser, f: ShortlistingTatF
   ]);
   const firstProposal = new Map(firstProposals.map((r) => [r.student_id, r._min.proposed_at]));
   const now = new Date();
-  const tz = (await getTatConfig()).timezone;
+  const { timezone: tz, holidays } = await getTatConfig();
   const rows = students.map((s) => {
     const m = s.shortlisting;
     const sharedAt = m?.shared_at ?? null;
@@ -237,12 +237,12 @@ export async function shortlistingTatReport(user: StaffUser, f: ShortlistingTatF
       confirmed: m?.confirmed_at ?? null,
     };
     const end = sharedAt ?? now;
-    const elapsed = weekdayMinutesIn(s.created_at, end, tz);
+    const elapsed = slaMinutesIn(s.created_at, end, tz, holidays);
     const segs: Record<string, number | null> = {};
     for (const seg of SEGMENTS) {
       const a = ms[seg.from];
       const b = ms[seg.to];
-      segs[seg.key] = a && b && b >= a ? weekdayMinutesIn(a, b, tz) : null;
+      segs[seg.key] = a && b && b >= a ? slaMinutesIn(a, b, tz, holidays) : null;
     }
     // Pending: no shortlist shared yet, still a live lead.
     const pending =

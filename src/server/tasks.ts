@@ -62,7 +62,10 @@ import { taskClock, workingDayOnOrBefore, type TaskClock } from "~/server/workin
 //                   Admin: everyone's (taskScopeIds).
 // Head Counsellor (carry-forward approvals) = the Counsellor Lead of the
 // counsellor's counselling team; a lead's own requests, or a counsellor in
-// no team, go to Super Admin. A Super Admin can always decide.
+// no team, go to Super Admin. While the lead is out of office their
+// alternate decides and gets the emails instead (Suraj, 19 Nov 2026); worked
+// out on every read, so it ends with the out-of-office dates. Nobody decides
+// their own request. A Super Admin can always decide.
 
 const fullName = (u: { first_name: string; last_name: string }) => `${u.first_name} ${u.last_name}`.trim();
 const toDate = (key: string) => new Date(`${key}T00:00:00Z`);
@@ -107,6 +110,33 @@ export async function headCounsellorOf(cpUserId: number): Promise<number | null>
   });
   const lead = m?.team.lead;
   return lead?.status === 1 && lead.id !== cpUserId ? lead.id : null;
+}
+
+// Who acts for that Head Counsellor today: their out-of-office alternate
+// while they're out, else themselves. null = Super Admin, which is also
+// where it goes when the acting person is the one who asked.
+export async function actingApprover(approverId: number | null, requesterId: number): Promise<number | null> {
+  if (approverId === null) return null;
+  const acting = await responderFor(approverId);
+  return acting === requesterId ? null : acting;
+}
+
+const personSelect = { id: true, email: true, first_name: true, last_name: true } as const;
+
+// The people to email about a counsellor's requests, and whom they cover.
+async function approverRecipients(approverId: number | null, requesterId: number) {
+  const superAdmins = () =>
+    db.collegepond_user.findMany({ where: { role: AdminRole.SUPER_ADMIN, status: 1 }, select: personSelect });
+  const acting = await actingApprover(approverId, requesterId);
+  if (acting === null) return { people: await superAdmins(), coveringFor: null as string | null };
+  const people = await db.collegepond_user.findMany({ where: { id: acting, status: 1 }, select: personSelect });
+  if (people.length === 0) return { people: await superAdmins(), coveringFor: null as string | null };
+  let coveringFor: string | null = null;
+  if (acting !== approverId && approverId !== null) {
+    const lead = await db.collegepond_user.findUnique({ where: { id: approverId }, select: { first_name: true, last_name: true } });
+    coveringFor = lead ? fullName(lead) : null;
+  }
+  return { people, coveringFor };
 }
 
 // May this user act on a task (complete, edit, give a reason)?
@@ -985,19 +1015,17 @@ export async function closeDayView(user: StaffUser) {
     where: { task_id: { in: open.map((t) => t.id) }, day: toDate(day) },
   });
   const byTask = new Map(requests.map((r) => [r.task_id, r]));
-  const approvers = new Map<number, number | null>();
+  const approverNames: string[] = [];
+  const seenAssignees = new Set<number>();
   for (const t of open) {
     const a = t.assignee_cp_user_id ?? user.id;
-    if (!approvers.has(a)) approvers.set(a, await headCounsellorOf(a));
+    if (seenAssignees.has(a)) continue;
+    seenAssignees.add(a);
+    const { people, coveringFor } = await approverRecipients(await headCounsellorOf(a), user.id);
+    const label =
+      people.length === 1 ? `${fullName(people[0]!)}${coveringFor ? ` (covering for ${coveringFor})` : ""}` : "Super Admin";
+    if (!approverNames.includes(label)) approverNames.push(label);
   }
-  const approverIds = [...new Set([...approvers.values()].filter((x): x is number => x !== null))];
-  const approverPeople = approverIds.length
-    ? await db.collegepond_user.findMany({ where: { id: { in: approverIds } }, select: { id: true, first_name: true, last_name: true } })
-    : [];
-  const approverNames = [
-    ...approverPeople.map(fullName),
-    ...([...approvers.values()].some((x) => x === null) ? ["Super Admin"] : []),
-  ];
   const tasks = sortTasks(open.map((t) => toTaskRow(t, clock))).map((t) => {
     const r = byTask.get(t.id);
     return {
@@ -1119,9 +1147,7 @@ async function emailHeadCounsellors(
   for (const r of rows) groups.set(r.approver, [...(groups.get(r.approver) ?? []), r]);
   let sent = 0;
   for (const [approver, list] of groups) {
-    const recipients = approver
-      ? await db.collegepond_user.findMany({ where: { id: approver, status: 1 }, select: { id: true, email: true, first_name: true, last_name: true } })
-      : await db.collegepond_user.findMany({ where: { role: AdminRole.SUPER_ADMIN, status: 1 }, select: { id: true, email: true, first_name: true, last_name: true } });
+    const { people: recipients, coveringFor } = await approverRecipients(approver, user.id);
     const requests = list.filter((r) => r.item.shift).length;
     const subject = `${counsellor}: ${list.length} incomplete task${list.length === 1 ? "" : "s"}, ${requests} extension request${requests === 1 ? "" : "s"} – ${fmtWeekday(day)}${totals.resubmit ? " (updated)" : ""}`;
     const lines = list.map((r) => {
@@ -1140,7 +1166,7 @@ async function emailHeadCounsellors(
             {
               subject,
               heading: `${counsellor} closed their day`,
-              intro: `${counsellor} closed ${fmtWeekday(day)} with ${totals.done} of ${totals.total} tasks done. These were not completed:`,
+              intro: `${coveringFor ? `You're covering for ${coveringFor} while they're out of office. ` : ""}${counsellor} closed ${fmtWeekday(day)} with ${totals.done} of ${totals.total} tasks done. These were not completed:`,
               lines,
               outro: "Reasons are in Converge. Until you decide, requested tasks stay on the counsellor's list as overdue.",
               link: "/admin/tasks?tab=carry-forward",
@@ -1171,9 +1197,25 @@ const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 =
 
 // ---- Carry-forward decisions ----------------------------------------------------
 
-function canDecide(user: StaffUser, r: { approver_cp_user_id: number | null }): boolean {
+// `covered`: the people this user covers today (out-of-office alternates).
+function canDecide(
+  user: StaffUser,
+  r: { approver_cp_user_id: number | null; cp_user_id: number | null },
+  covered: number[],
+): boolean {
   if (user.role === AdminRole.SUPER_ADMIN) return true;
-  return r.approver_cp_user_id === user.id;
+  if (r.cp_user_id === user.id || r.approver_cp_user_id === null) return false;
+  return r.approver_cp_user_id === user.id || covered.includes(r.approver_cp_user_id);
+}
+
+// Whose approvals this user holds today: their own, and those of any
+// Counsellor Lead they cover. null = all (Super Admin).
+async function approvalScope(user: StaffUser): Promise<{ ids: number[] | null; covered: number[]; actsAsHead: boolean }> {
+  const covered = await coveredCounsellorIds(user.id);
+  if (user.role === AdminRole.SUPER_ADMIN) return { ids: null, covered, actsAsHead: true };
+  const coversLead =
+    covered.length > 0 && (await db.counsellor_team.count({ where: { lead_cp_user_id: { in: covered } } })) > 0;
+  return { ids: [user.id, ...covered], covered, actsAsHead: isHeadCounsellorRole(user.role) || coversLead };
 }
 
 // Requests awaiting this Head Counsellor (all of them for a Super Admin), by
@@ -1182,12 +1224,17 @@ function canDecide(user: StaffUser, r: { approver_cp_user_id: number | null }): 
 export async function carryForwardView(user: StaffUser) {
   await syncLinkedTasks();
   const clock = await taskClock();
-  const isHc = isHeadCounsellorRole(user.role);
-  const where: Prisma.cp_task_shift_requestWhereInput = isHc
-    ? user.role === AdminRole.SUPER_ADMIN
+  const scope = await approvalScope(user);
+  const isHc = scope.actsAsHead;
+  const where: Prisma.cp_task_shift_requestWhereInput = !isHc
+    ? { status: -1 }
+    : scope.ids === null
       ? { status: { in: [ShiftStatus.PENDING, ShiftStatus.REASON_ONLY] } }
-      : { status: { in: [ShiftStatus.PENDING, ShiftStatus.REASON_ONLY] }, approver_cp_user_id: user.id }
-    : { status: -1 };
+      : {
+          status: { in: [ShiftStatus.PENDING, ShiftStatus.REASON_ONLY] },
+          approver_cp_user_id: { in: scope.ids },
+          NOT: { cp_user_id: user.id },
+        };
   // Reason-only rows matter for the latest submitted day only.
   const since = toDate(addDays(clock.today, -14));
   const rows = await db.cp_task_shift_request.findMany({
@@ -1237,7 +1284,7 @@ export async function carryForwardView(user: StaffUser) {
       fromDue: keyOf(r.from_due_date),
       newDue: keyOf(r.new_due_date),
       postponementNo: r.task.postponements + 1,
-      canDecide: canDecide(user, r),
+      canDecide: canDecide(user, r, scope.covered),
       task,
     };
   }
@@ -1341,7 +1388,9 @@ export async function decideShift(user: StaffUser, requestId: number, approve: b
     where: { id: requestId },
     select: { id: true, status: true, approver_cp_user_id: true, new_due_date: true, cp_user_id: true, task_id: true, task: { select: { id: true, title: true, status: true, due_date: true, source: true, source_id: true } } },
   });
-  if (!r || (!canDecide(user, r) && user.role !== AdminRole.SUPER_ADMIN)) throw new TRPCError({ code: "NOT_FOUND", message: "Request not found" });
+  if (!r || !canDecide(user, r, await coveredCounsellorIds(user.id))) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Request not found" });
+  }
   if (r.status !== ShiftStatus.PENDING) throw new TRPCError({ code: "CONFLICT", message: "This request has already been decided." });
   if (!approve && !reason?.trim()) throw fail("Give a reason for the rejection; it's shared with the counsellor.");
   const clock = await taskClock();
@@ -1391,10 +1440,11 @@ export async function decideShift(user: StaffUser, requestId: number, approve: b
 // "Approve all first requests": every pending request this user may decide
 // whose task has never been postponed.
 export async function approveAllFirst(user: StaffUser) {
+  const scope = await approvalScope(user);
   const rows = await db.cp_task_shift_request.findMany({
     where: {
       status: ShiftStatus.PENDING,
-      ...(user.role === AdminRole.SUPER_ADMIN ? {} : { approver_cp_user_id: user.id }),
+      ...(scope.ids === null ? {} : { approver_cp_user_id: { in: scope.ids }, NOT: { cp_user_id: user.id } }),
       task: { postponements: 0, status: { in: OPEN_STATUSES } },
     },
     select: { id: true },
@@ -1680,9 +1730,7 @@ export async function runDayCloseDigest(now = new Date()) {
     }
     if (claimed.length === 0) continue;
     counsellors += claimed.length;
-    const recipients = hc
-      ? await db.collegepond_user.findMany({ where: { id: hc, status: 1 }, select: { id: true, email: true, first_name: true, last_name: true } })
-      : await db.collegepond_user.findMany({ where: { role: AdminRole.SUPER_ADMIN, status: 1 }, select: { id: true, email: true, first_name: true, last_name: true } });
+    const { people: recipients, coveringFor } = await approverRecipients(hc, -1);
     const lines = claimed.map((o) => `${names.get(o.id)}: ${o.count} incomplete task${o.count === 1 ? "" : "s"}, no reasons given`);
     for (const p of recipients) {
       try {
@@ -1693,7 +1741,7 @@ export async function runDayCloseDigest(now = new Date()) {
             {
               subject: `Day not closed: ${claimed.length} counsellor${claimed.length === 1 ? "" : "s"} with incomplete tasks – ${fmtWeekday(clock.today)}`,
               heading: "Counsellors who haven't closed their day",
-              intro: `The working day closed at 7:00 PM. These counsellors still have tasks due today or earlier and haven't given reasons:`,
+              intro: `${coveringFor ? `You're covering for ${coveringFor} while they're out of office. ` : ""}The working day closed at 7:00 PM. These counsellors still have tasks due today or earlier and haven't given reasons:`,
               lines,
               outro: "Their tasks stay overdue on their lists until they're done or a shift is approved.",
               link: "/admin/tasks?tab=team",

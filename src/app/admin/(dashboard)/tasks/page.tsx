@@ -40,7 +40,8 @@ export default function MyTasksPage() {
   const tab: TabId = tabs.some((t) => t.id === view.tab) ? (view.tab as TabId) : "day";
   const day = api.tasks.myDay.useQuery(undefined, { refetchInterval: 60_000 });
   const board = api.tasks.followUps.useQuery({ scope: "mine" }, { refetchInterval: 120_000 });
-  const cf = api.tasks.carryForward.useQuery(undefined, { enabled: isHead });
+  // Also for a counsellor covering their lead while the lead is out.
+  const cf = api.tasks.carryForward.useQuery();
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState("");
   const onToast = (m: string) => setToast(m);
@@ -73,7 +74,7 @@ export default function MyTasksPage() {
         {tabs.map((t) => {
           const active = tab === t.id;
           const badge =
-            t.id === "follow-ups" ? board.data?.dueCount : t.id === "carry-forward" && isHead ? cf.data?.stats.awaiting : undefined;
+            t.id === "follow-ups" ? board.data?.dueCount : t.id === "carry-forward" ? cf.data?.stats.awaiting : undefined;
           return (
             <button
               key={t.id}

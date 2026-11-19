@@ -136,7 +136,7 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
         <div className="border-b border-[#E4E7EC] px-5 py-4">
           <h3 className="text-[15px] font-semibold text-[#101828]">Action targets</h3>
           <p className="mt-0.5 text-xs text-[#667085]">
-            Warning from the given percentage of the target; Breached once past it. Chat Response: Collegepond replying to a partner in partner chat (system messages don&apos;t count), in business hours. Shortlisting: student added by the partner → shortlist shared, in elapsed hours with Saturday and Sunday not counted (19 Nov 2026).
+            Warning from the given percentage of the target; Breached once past it. Chat Response: Collegepond replying to a partner in partner chat (system messages don&apos;t count), in business hours. Shortlisting: student added by the partner → shortlist shared, in elapsed hours with Saturdays, Sundays and the holidays below not counted (19 Nov 2026).
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -158,7 +158,7 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
                     <td className={`${TD} font-semibold text-[#101828]`}>
                       {t.label}
                       <div className="text-[11px] font-normal text-[#98A2B3]">
-                        {t.key === "shortlisting" ? "Elapsed hours, weekends excluded" : "Business hours"}
+                        {t.key === "shortlisting" ? "Elapsed hours, weekends & holidays excluded" : "Business hours"}
                       </div>
                     </td>
                     <td className={TD}>

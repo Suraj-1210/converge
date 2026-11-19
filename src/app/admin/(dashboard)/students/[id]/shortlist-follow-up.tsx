@@ -284,7 +284,7 @@ export function FollowUpHistoryTab({
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 className="text-[15px] font-bold text-[#101828]">Shortlisting TAT</h3>
-            <p className="text-[12px] text-[#667085]">Student added → shortlist shared, weekend hours not counted.</p>
+            <p className="text-[12px] text-[#667085]">Student added → shortlist shared; weekends and holidays don&apos;t count.</p>
           </div>
           {m && (
             <div className="text-right">
