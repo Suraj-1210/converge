@@ -85,8 +85,8 @@ export default function PartnerLoanPage() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
-        <div className="flex flex-col gap-4">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="flex min-w-0 flex-col gap-4">
           <section className="rounded-2xl border border-[#E4E7EC] bg-white">
             <h2 className="border-b border-[#E4E7EC] px-5 py-3.5 text-sm font-semibold text-[#101828]">
               Lender applications
@@ -97,7 +97,7 @@ export default function PartnerLoanPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] border-collapse text-left text-[13px]">
+                <table className="w-full min-w-[680px] border-collapse text-left text-[13px]">
                   <thead>
                     <tr className="border-b border-[#E4E7EC] bg-[#F9FAFB] text-xs text-[#667085]">
                       <th className="px-5 py-2.5 font-semibold">Lender</th>
@@ -111,7 +111,7 @@ export default function PartnerLoanPage() {
                   <tbody>
                     {r.applications.map((a) => (
                       <tr key={a.id} className="border-b border-[#F2F4F7] last:border-b-0">
-                        <td className="px-5 py-3 font-semibold text-[#101828]">{a.lender}</td>
+                        <td className="min-w-[180px] px-5 py-3 font-semibold text-[#101828]">{a.lender}</td>
                         <td className="px-3 py-3">
                           <LoanStatusBadge sendStatus={LoanReferralSendStatus.RECEIVED} stage={a.status} />
                         </td>

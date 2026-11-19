@@ -469,7 +469,8 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
   const utils = api.useUtils();
   const msgs = [...loan.messages].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
   const lastStaff = msgs.filter((m) => m.side === "staff").at(-1)?.publicId ?? null;
-  const endRef = useRef<HTMLDivElement>(null);
+  // Scrolls the message list (not the page) to the newest message.
+  const listRef = useRef<HTMLDivElement>(null);
   const { mutate } = markRead;
 
   useEffect(() => {
@@ -479,7 +480,8 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
     );
   }, [loan.publicId, lastStaff, mutate, utils]);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "nearest" });
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [msgs.length]);
 
   return (
@@ -491,7 +493,7 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
           about the student, and documents they ask for.
         </p>
       </div>
-      <div className="max-h-[480px] overflow-y-auto px-5 py-4">
+      <div ref={listRef} className="max-h-[480px] overflow-y-auto px-5 py-4">
         {msgs.length === 0 ? (
           <p className="py-4 text-center text-sm text-[#98A2B3]">No messages yet.</p>
         ) : (
@@ -552,7 +554,6 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
                 </div>
               );
             })}
-            <div ref={endRef} />
           </div>
         )}
       </div>
