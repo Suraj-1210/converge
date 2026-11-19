@@ -24,7 +24,12 @@ import {
 } from "~/lib/tasks";
 import { dateInTimezone, dateKey } from "~/server/out-of-office";
 import { requireStaffStudent, staffStudentScope, type StaffUser } from "~/server/staff-access";
-import { isHeadCounsellorRole, myTaskOwnerIds, tasksLiveSince } from "~/server/tasks";
+import { myTaskOwnerIds, tasksLiveSince } from "~/server/tasks";
+
+// Who may reopen a closed case / reactivate a student closed at shortlisting:
+// the counselling team and Super Admin (Suraj, 19 Nov 2026).
+const canReopenRole = (role: number) =>
+  role === AdminRole.SUPER_ADMIN || role === AdminRole.COUNSELLOR_LEAD || role === AdminRole.COUNSELLOR;
 import { addWorkingDays, taskClock, workingDaysBetween, type TaskClock } from "~/server/working-days";
 import { stampMilestone } from "~/server/shortlisting-tat";
 
@@ -60,8 +65,10 @@ import { stampMilestone } from "~/server/shortlisting-tat";
 // It also stops (ended) when the partner asks for changes, rejects every
 // proposal, the proposals are withdrawn, or the student is marked inactive;
 // sharing again opens a new case. "Close case" sets the student Inactive
-// (reason Closed – Shortlisting); a Counsellor Lead or Super Admin can
-// reopen it later, which reactivates the student and restarts the schedule.
+// (reason Closed – Shortlisting); the counselling team (Counsellor,
+// Counsellor Lead, Super Admin) can reopen it later, or reactivate the
+// student, which reopens it too (Suraj, 19 Nov 2026: so they can act fast),
+// and that restarts the schedule.
 
 const fullName = (u: { first_name: string; last_name: string }) => `${u.first_name} ${u.last_name}`.trim();
 const toDate = (key: string) => new Date(`${key}T00:00:00Z`);
@@ -628,11 +635,11 @@ async function closeCase(
   });
 }
 
-// Reopen a closed (or stopped) case: Counsellor Lead or Super Admin. The
+// Reopen a closed (or stopped) case: anyone in the counselling team. The
 // student is reactivated if the closure made them inactive.
 export async function reopenCase(user: StaffUser, caseId: number, comments?: string | null) {
-  if (!isHeadCounsellorRole(user.role)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "A Head Counsellor (Counsellor Lead) or Super Admin reopens a case." });
+  if (!canReopenRole(user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Only the counselling team can reopen a case." });
   }
   const c = await db.shortlist_follow_up.findUnique({ where: { id: caseId } });
   if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Follow-up not found" });
@@ -691,6 +698,47 @@ export async function reopenCase(user: StaffUser, caseId: number, comments?: str
     data: { action: "student.shortlist_case_reopened", entity_type: "student", entity_id: c.student_id, metadata: { caseId: c.id, byCpUserId: user.id } },
   });
   return { ok: true as const, nextDue };
+}
+
+// Reactivate a student who is Inactive because their case was closed at
+// shortlisting (decided with Suraj, 19 Nov 2026): anyone in the counselling
+// team, so they can act quickly, and it reopens the follow-up too. With
+// no university still awaiting the partner there is nothing to follow up,
+// so the student is reactivated and the case stays closed.
+export async function reactivateShortlistClosed(user: StaffUser, studentId: number) {
+  if (!canReopenRole(user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Only the counselling team can reactivate this student." });
+  }
+  await requireStaffStudent(user, studentId);
+  const latest = await db.shortlist_follow_up.findFirst({
+    where: { student_id: studentId },
+    orderBy: { id: "desc" },
+    select: { id: true, status: true },
+  });
+  if (latest?.status === ShortlistCaseStatus.CLOSED) {
+    const pending = await db.shortlist.count({
+      where: { student_id: studentId, added_by: ShortlistSource.COLLEGEPOND, approval_status: ShortlistApproval.PENDING },
+    });
+    if (pending > 0) {
+      // Reopening reactivates the student as well.
+      const r = await reopenCase(user, latest.id, "Reactivated from the student page");
+      return { reopened: true as const, nextDue: r.nextDue };
+    }
+  }
+  const s = await db.student.findUnique({ where: { id: studentId }, select: { inactive_reason: true } });
+  await db.student.update({
+    where: { id: studentId },
+    data: { inactive_at: null, inactive_reason: null, inactive_note: null, inactive_by_cp_user_id: null },
+  });
+  await db.audit_log.create({
+    data: {
+      action: "student.reactivated",
+      entity_type: "student",
+      entity_id: studentId,
+      metadata: { previousReason: s?.inactive_reason ?? null, byCpUserId: user.id, caseReopened: false },
+    },
+  });
+  return { reopened: false as const, nextDue: null };
 }
 
 // ---- Reads -----------------------------------------------------------------------
@@ -807,7 +855,7 @@ export async function studentPanel(user: StaffUser, studentId: number) {
           }),
           schedule: current.status === ShortlistCaseStatus.OPEN ? projectedSchedule(current, clock) : [],
           canReopen:
-            isHeadCounsellorRole(user.role) &&
+            canReopenRole(user.role) &&
             (current.status === ShortlistCaseStatus.CLOSED || current.status === ShortlistCaseStatus.ENDED) &&
             pending.length > 0,
         }

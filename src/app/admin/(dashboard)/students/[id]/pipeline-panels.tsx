@@ -375,15 +375,25 @@ export function InactiveControl({
     onError: (err) => onToast(err.message),
   });
   const reactivateMut = api.applicationPipeline.reactivateStudent.useMutation({
-    onSuccess: () => done("Student reactivated"),
+    onSuccess: (r) => {
+      void utils.shortlistFollowUp.panel.invalidate({ studentId: student.id });
+      done(r.reopened ? "Student reactivated and the shortlist follow-up reopened" : "Student reactivated");
+    },
     onError: (err) => onToast(err.message),
   });
 
   if (student.inactive) {
+    // Closed at shortlisting (shortlist follow-up "Close case"): reactivating
+    // also reopens the follow-up (19 Nov 2026).
     return (
       <button
         type="button"
         disabled={reactivateMut.isPending}
+        title={
+          student.inactive.reason === InactiveReason.SHORTLIST_CLOSED
+            ? "Reactivates the student and reopens the shortlist follow-up"
+            : undefined
+        }
         onClick={() => reactivateMut.mutate({ studentId: student.id })}
         className="cursor-pointer rounded-lg border border-[#ABEFC6] bg-white px-3 py-1.5 text-[12px] font-semibold text-[#067647] hover:bg-[#ECFDF3] disabled:opacity-50"
       >
