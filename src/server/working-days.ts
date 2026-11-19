@@ -100,9 +100,10 @@ export async function taskClock(now = new Date()): Promise<TaskClock> {
 }
 
 // Shortlisting SLA clock (Suraj, 19 Nov 2026): elapsed minutes between two
-// instants, with Saturday and Sunday not counted. Weekday hours count around
-// the clock (10 Nov 11:00 → 11 Nov 14:00 = 27h). Pure arithmetic (no day
-// loop), so a report over thousands of students stays fast.
+// instants, with Saturdays, Sundays and TAT holidays (Settings -> TAT
+// Settings) not counted. Other days count around the clock (10 Nov 11:00 →
+// 11 Nov 14:00 = 27h). Pure arithmetic plus one pass over the holiday list
+// (no day loop), so a report over thousands of students stays fast.
 function offsetMinutesAt(at: Date, timezone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
@@ -129,13 +130,25 @@ function weekdayMinutesTo(localMs: number): number {
   return weeks * 5 * 1440 + Math.min(dow, 5) * 1440 + (dow < 5 ? rem : 0);
 }
 
-export function weekdayMinutesIn(start: Date, end: Date, timezone: string): number {
+const DAY_MS = 86_400_000;
+
+export function slaMinutesIn(start: Date, end: Date, timezone: string, holidays: ReadonlySet<string>): number {
   if (end <= start) return 0;
+  // Local wall-clock instants, as if the timezone were UTC.
   const a = start.getTime() + offsetMinutesAt(start, timezone) * 60_000;
   const b = end.getTime() + offsetMinutesAt(end, timezone) * 60_000;
-  return Math.max(0, weekdayMinutesTo(b) - weekdayMinutesTo(a));
+  let minutes = weekdayMinutesTo(b) - weekdayMinutesTo(a);
+  for (const key of holidays) {
+    const h = Date.parse(`${key}T00:00:00Z`);
+    if (Number.isNaN(h) || h >= b || h + DAY_MS <= a) continue;
+    const dow = new Date(h).getUTCDay();
+    if (dow === 0 || dow === 6) continue; // a weekend holiday is already out
+    minutes -= Math.floor((Math.min(b, h + DAY_MS) - Math.max(a, h)) / 60_000);
+  }
+  return Math.max(0, minutes);
 }
 
-export async function weekdayMinutesBetween(start: Date, end: Date): Promise<number> {
-  return weekdayMinutesIn(start, end, (await getTatConfig()).timezone);
+export async function slaMinutesBetween(start: Date, end: Date): Promise<number> {
+  const c = await getTatConfig();
+  return slaMinutesIn(start, end, c.timezone, c.holidays);
 }

@@ -106,7 +106,7 @@ export function TeamDashboard() {
             <Tile
               label="Shortlisting turnaround"
               value={d.shortlisting.avgMinutes === null ? "—" : fmtMinutes(d.shortlisting.avgMinutes)}
-              sub={d.shortlisting.sla ? `added → shared, SLA ${fmtMinutes(d.shortlisting.sla.minutes)} (weekends excluded)` : "added → shared"}
+              sub={d.shortlisting.sla ? `added → shared, SLA ${fmtMinutes(d.shortlisting.sla.minutes)} (weekends & holidays excluded)` : "added → shared"}
             />
           </div>
           <div className={CARD}>

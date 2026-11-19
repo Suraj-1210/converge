@@ -11,7 +11,7 @@ import { fmtIstDateTime } from "~/lib/tasks";
 // TAT Management → Shortlisting (item 10, 19 Nov 2026;
 // src/server/shortlisting-tat.ts). Students added by partners in the period:
 // student added → shortlist shared against the SLA (Settings → TAT Settings,
-// 24h by default), weekend hours not counted. Rows follow the viewer's
+// 24h by default), weekend and TAT-holiday hours not counted. Rows follow the viewer's
 // Students visibility.
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[#667085]";
@@ -55,7 +55,7 @@ export function ShortlistingTat() {
           <h2 className="text-xl font-bold text-[#101828]">Shortlisting TAT</h2>
           <p className="mt-1 text-sm text-[#667085]">
             Student added by the partner → shortlist shared with the partner
-            {d?.sla ? `, target ${dur(d.sla.minutes)}` : ""}. Saturday and Sunday hours don&apos;t count.
+            {d?.sla ? `, target ${dur(d.sla.minutes)}` : ""}. Saturdays, Sundays and holidays (TAT Settings) don&apos;t count.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

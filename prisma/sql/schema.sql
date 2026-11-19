@@ -2860,7 +2860,7 @@ CREATE TABLE IF NOT EXISTS `student_shortlisting` (
 ) ENGINE = InnoDB;
 
 -- Shortlisting SLA (Suraj, 19 Nov): 24 hours from student added to shortlist
--- shared, weekend hours excluded. INSERT IGNORE keeps a Super Admin's edit.
+-- shared, weekend and TAT-holiday hours excluded. INSERT IGNORE keeps a Super Admin's edit.
 INSERT IGNORE INTO `tat_action_target` (`action_key`, `label`, `threshold_minutes`, `warning_pct`, `active`)
 VALUES ('shortlisting', 'Shortlisting', 1440, 80, 1);
 

@@ -206,11 +206,13 @@ export const tasksRouter = createTRPCRouter({
 
   carryForward: protectedAdminProcedure.query(({ ctx }) => carryForwardView(ctx.cpUser)),
 
-  decideShift: headOnly
+  // Head Counsellor, their out-of-office alternate, or Super Admin
+  // (checked per request in decideShift).
+  decideShift: protectedAdminProcedure
     .input(z.object({ id, approve: z.boolean(), reason: z.string().trim().max(500).nullish() }))
     .mutation(({ ctx, input }) => decideShift(ctx.cpUser, input.id, input.approve, input.reason)),
 
-  approveAllFirst: headOnly.mutation(({ ctx }) => approveAllFirst(ctx.cpUser)),
+  approveAllFirst: protectedAdminProcedure.mutation(({ ctx }) => approveAllFirst(ctx.cpUser)),
 
   // ---- Shortlist follow-ups board ----
 
