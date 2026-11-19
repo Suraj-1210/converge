@@ -645,6 +645,9 @@ export const InactiveReason = {
   DROPPED_PLANS: "dropped_plans",
   OTHER_PROVIDER: "other_provider",
   OTHER: "other",
+  // Set by the shortlist follow-up's "Close case" (19 Nov 2026), not chosen
+  // by hand; reopening the case reactivates the student.
+  SHORTLIST_CLOSED: "shortlist_closed",
 } as const;
 export type InactiveReason = (typeof InactiveReason)[keyof typeof InactiveReason];
 
@@ -653,8 +656,12 @@ export const InactiveReasonLabel: Record<InactiveReason, string> = {
   dropped_plans: "Dropped plans",
   other_provider: "Chose another provider",
   other: "Other",
+  shortlist_closed: "Closed – Shortlisting",
 };
-export const INACTIVE_REASON_CODES = Object.values(InactiveReason) as InactiveReason[];
+// The reasons a counsellor picks when marking a student Inactive by hand.
+export const INACTIVE_REASON_CODES = (Object.values(InactiveReason) as InactiveReason[]).filter(
+  (r) => r !== InactiveReason.SHORTLIST_CLOSED,
+);
 
 // ---------------------------------------------------------------------------
 // Shortlist approval (university assignment, Phase 3B)

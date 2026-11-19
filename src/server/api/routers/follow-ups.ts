@@ -23,10 +23,19 @@ import {
   scheduleFollowUp,
   setDecisionWeeks,
 } from "~/server/follow-ups";
+import { markLinkedTasksDirty } from "~/server/tasks";
 
 // Application follow-ups (src/server/follow-ups.ts). The Application tab
 // actions are open to any staff user who can see the application, like the
 // stage changes beside them; the overdue list lives on TAT Management.
+
+// A follow-up is also a My Tasks task (src/server/tasks.ts): sync it on the
+// next read.
+async function afterChange<T>(p: Promise<T>): Promise<T> {
+  const r = await p;
+  markLinkedTasksDirty();
+  return r;
+}
 
 const dateKey = z.string().refine(isDateKey, { message: "Invalid date" });
 const id = z.number().int().positive();
@@ -66,10 +75,10 @@ export const followUpsRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await requireStaffApplication(ctx.cpUser, input.applicationId);
-      return scheduleFollowUp(ctx.cpUser.id, input.applicationId, input.kind, input.dueDate, {
+      return afterChange(scheduleFollowUp(ctx.cpUser.id, input.applicationId, input.kind, input.dueDate, {
         respondWithinDays: input.respondWithinDays,
         remarks: input.remarks,
-      });
+      }));
     }),
 
   // Change an open follow-up's date (and a visa one's response days / remarks).
@@ -77,17 +86,17 @@ export const followUpsRouter = createTRPCRouter({
     .input(z.object({ followUpId: id, dueDate: dateKey, respondWithinDays, remarks }))
     .mutation(async ({ ctx, input }) => {
       await requireFollowUp(ctx.cpUser, input.followUpId);
-      return rescheduleFollowUp(ctx.cpUser.id, input.followUpId, input.dueDate, {
+      return afterChange(rescheduleFollowUp(ctx.cpUser.id, input.followUpId, input.dueDate, {
         respondWithinDays: input.respondWithinDays,
         remarks: input.remarks,
-      });
+      }));
     }),
 
   complete: protectedAdminProcedure
     .input(z.object({ followUpId: id }))
     .mutation(async ({ ctx, input }) => {
       await requireFollowUp(ctx.cpUser, input.followUpId);
-      return completeFollowUp(ctx.cpUser.id, input.followUpId);
+      return afterChange(completeFollowUp(ctx.cpUser.id, input.followUpId));
     }),
 
   setDecisionWeeks: protectedAdminProcedure

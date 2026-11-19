@@ -26,6 +26,7 @@ import { PartnerEditsBanner } from "./partner-edits-banner";
 import { ProfileTab } from "./profile-tab";
 import { SummaryTab } from "./summary-tab";
 import { TasksNotesTab } from "./tasks-notes-tab";
+import { FollowUpHistoryTab } from "./shortlist-follow-up";
 
 const TABS = [
   { id: "profile", label: "Profile" },
@@ -37,6 +38,9 @@ const TABS = [
   // Student WhatsApp (Periskope): hidden, see SHOW_WHATSAPP_TAB.
   { id: "chat", label: "WhatsApp" },
   { id: "summary", label: "Document Summary" },
+  // Shortlist follow-ups, shortlisting TAT milestones and the student's
+  // tasks (19 Nov 2026).
+  { id: "follow-ups", label: "Follow-up History" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -209,6 +213,9 @@ export default function StudentProfilePage() {
                 <ChatTab studentId={Number(student.id)} onToast={showToast} />
               )}
               {tab === "summary" && <SummaryTab student={student} />}
+              {tab === "follow-ups" && (
+                <FollowUpHistoryTab studentId={student.id} studentName={studentName(student)} onToast={showToast} />
+              )}
               </motion.div>
             </AnimatePresence>
           ) : (

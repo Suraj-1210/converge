@@ -52,6 +52,7 @@ export type AdminSection =
   | "counsellorApprovals"
   | "partnerChat"
   | "tat"
+  | "tasks"
   | "uniAssist"
   | "notes"
   | "bdm"
@@ -115,6 +116,9 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   counsellorApprovals: ABOVE_COUNSELLOR,
   partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
   tat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
+  // My Tasks (19 Nov 2026): the counselling team's task list, carry-forward
+  // approvals (Counsellor Lead = Head Counsellor) and ageing.
+  tasks: [SUPER_ADMIN, COUNSELLOR_LEAD, COUNSELLOR],
   uniAssist: EVERYONE,
   notes: ABOVE_COUNSELLOR,
   bdm: [SUPER_ADMIN, BDM],
@@ -144,6 +148,7 @@ export const SWITCHABLE_SECTIONS: { section: AdminSection; label: string; group:
   { section: "counsellorApprovals", label: "Counselor Approvals", group: "Operations" },
   { section: "partnerChat", label: "Partner Chat", group: "Operations" },
   { section: "tat", label: "TAT Management", group: "Operations" },
+  { section: "tasks", label: "My Tasks", group: "Operations" },
   { section: "uniAssist", label: "Uni Assist", group: "Operations" },
   { section: "bdm", label: "BDM Performance", group: "Business Dev" },
   { section: "commissionRates", label: "Commission Rates", group: "Finance" },
@@ -176,6 +181,8 @@ export function isSwitchableSection(value: string): value is AdminSection {
 //                  event rewrites it
 const GRANTABLE_ROLES: Partial<Record<AdminSection, number[]>> = {
   partnerChat: [SUPER_ADMIN, COUNSELLOR_LEAD, OPERATIONS_LEAD, COUNSELLOR],
+  // Tasks are assigned to counselling users and scoped by their team.
+  tasks: [SUPER_ADMIN, COUNSELLOR_LEAD, COUNSELLOR],
   bdm: [SUPER_ADMIN, BDM],
   commissionRates: FINANCE,
   universityBilling: FINANCE,
@@ -248,6 +255,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/notes-reminders", "notes"],
   ["/admin/partner-chat", "partnerChat"],
   ["/admin/tat-management", "tat"],
+  ["/admin/tasks", "tasks"],
   ["/admin/bdm-performance", "bdm"],
   ["/admin/commission-rates", "commissionRates"],
   ["/admin/university-billing", "universityBilling"],
@@ -293,6 +301,7 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["universities.uniAssistMoney", "uniAssist"],
   ["events.", "events"],
   ["partnerChat.staff*", "partnerChat"],
+  ["tasks.", "tasks"],
   ["bdm.overview", "bdm"],
   ["bdmCrm.", "bdm"],
   // Bonus Schemes is a Commission Rates page; its Volume bonus due board and

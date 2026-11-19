@@ -57,6 +57,7 @@ import {
   type PendingDocPick,
 } from "./pipeline-panels";
 import { FollowUpsPanel } from "./follow-ups-panel";
+import { ShortlistFollowUpPanel } from "./shortlist-follow-up";
 import {
   StageMark,
   stageDotStyle,
@@ -364,6 +365,9 @@ export function ApplicationTab({
 
       {/* Lead pipeline (pre-application journey) */}
       <LeadPipeline student={student} onToast={onToast} />
+
+      {/* Partner confirmation follow-up (19 Nov 2026) */}
+      <ShortlistFollowUpPanel studentId={student.id} studentName={`${student.firstName} ${student.lastName}`.trim()} onToast={onToast} />
 
       {/* Shortlisted schools */}
       <div className="mb-6 rounded-[14px] border border-[#E4E7EC] bg-white px-6 py-5">

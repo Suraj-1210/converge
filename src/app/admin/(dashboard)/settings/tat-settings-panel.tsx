@@ -136,7 +136,7 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
         <div className="border-b border-[#E4E7EC] px-5 py-4">
           <h3 className="text-[15px] font-semibold text-[#101828]">Action targets</h3>
           <p className="mt-0.5 text-xs text-[#667085]">
-            Warning from the given percentage of the target; Breached once past it. Chat Response: Collegepond replying to a partner in partner chat (system messages don&apos;t count).
+            Warning from the given percentage of the target; Breached once past it. Chat Response: Collegepond replying to a partner in partner chat (system messages don&apos;t count), in business hours. Shortlisting: student added by the partner → shortlist shared, in elapsed hours with Saturday and Sunday not counted (19 Nov 2026).
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -144,7 +144,7 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
             <thead>
               <tr>
                 <th className={TH}>Action</th>
-                <th className={TH}>Target (business hours)</th>
+                <th className={TH}>Target (hours)</th>
                 <th className={TH}>Warning at</th>
                 <th className={TH}>Active</th>
                 <th className={TH}></th>
@@ -155,7 +155,12 @@ export function TatSettingsPanel({ toast }: { toast: (msg: string) => void }) {
                 const editing = edit?.key === t.key;
                 return (
                   <tr key={t.key} className="border-b border-[#F2F4F7] last:border-0">
-                    <td className={`${TD} font-semibold text-[#101828]`}>{t.label}</td>
+                    <td className={`${TD} font-semibold text-[#101828]`}>
+                      {t.label}
+                      <div className="text-[11px] font-normal text-[#98A2B3]">
+                        {t.key === "shortlisting" ? "Elapsed hours, weekends excluded" : "Business hours"}
+                      </div>
+                    </td>
                     <td className={TD}>
                       {editing ? (
                         <span className="inline-flex items-center gap-1.5">

@@ -986,6 +986,22 @@ export function counsellorFollowUpEmail(
   ]);
 }
 
+// Counsellor tasks (19 Nov 2026): a counsellor closed their day with tasks
+// incomplete (to their Head Counsellor), or the evening digest of those who
+// didn't close it. src/server/tasks.ts.
+export function dayCloseEmail(
+  r: { name: string },
+  f: { subject: string; heading: string; intro: string; lines: string[]; outro: string; link: string; button?: string },
+  appUrl: string,
+): EmailMessage {
+  return build(f.subject, f.heading, hello(r.name), [
+    { p: f.intro },
+    { list: f.lines },
+    { p: f.outro },
+    { button: { label: f.button ?? "Review requests", url: portal(appUrl, f.link) } },
+  ]);
+}
+
 // An approved adjustment on the partner's account (16 Nov 2026), with the
 // numbered Adjustment Note attached as a PDF. Only the partner-facing note is
 // shown: never the reason category, Finance's internal note or the evidence.

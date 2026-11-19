@@ -695,6 +695,9 @@ model student {
   whatsapp_message          whatsapp_message[]
   partner_update            student_partner_update[]
   partner_chat_thread       partner_chat_thread?
+  cp_task                   cp_task[]
+  shortlist_follow_up       shortlist_follow_up[]
+  shortlisting              student_shortlisting?
   organization              organization?               @relation(fields: [org_id], references: [id], map: "fk_student_organization")
   user                      user?                       @relation("student_counsellor", fields: [counsellor_id], references: [id], onUpdate: NoAction, map: "fk_student_user")
   cp_counsellor             collegepond_user?           @relation(fields: [cp_counsellor_id], references: [id], onDelete: SetNull, map: "fk_student_cp_counsellor")
@@ -840,6 +843,7 @@ model collegepond_user {
   out_of_office                                               cp_out_of_office?            @relation("cp_out_of_office_user")
   covering_out_of_office                                      cp_out_of_office[]           @relation("cp_out_of_office_alternate")
   cp_notification                                             cp_notification[]
+  cp_task_assigned                                            cp_task[]                    @relation("cp_task_assignee")
 
   @@index([department_id], map: "fk_cp_user_department_idx")
   @@map("cp_user")
@@ -2172,4 +2176,190 @@ model resource_notification {
   @@index([bell_batch], map: "idx_resource_notification_bell_batch")
   @@index([email_batch], map: "idx_resource_notification_email_batch")
   @@index([user_id], map: "fk_resource_notification_user_idx")
+}
+
+// Counsellor tasks (19 Nov 2026; src/server/tasks.ts). TSK-0001 = id. Manual
+// tasks, shortlist follow-up stage tasks, and mirrors of student Tasks & Notes
+// reminders (source "note") and application follow-ups ("follow_up"), which
+// keep their own tables and screens. original_due_date never changes;
+// due_date is the revised one. Overdue is derived from time, never stored.
+model cp_task {
+  id                      Int                     @id @default(autoincrement())
+  title                   String                  @db.VarChar(200)
+  student_id              Int
+  // TaskCategory (src/lib/tasks.ts).
+  category                Int                     @db.UnsignedTinyInt
+  pending_activity        String?                 @db.VarChar(500)
+  // 0 Low, 1 Medium, 2 High.
+  priority                Int                     @default(1) @db.UnsignedTinyInt
+  // 0 pending, 1 in progress, 2 completed, 3 cancelled.
+  status                  Int                     @default(0) @db.UnsignedTinyInt
+  assignee_cp_user_id     Int?
+  created_by_cp_user_id   Int?
+  assigned_on             DateTime                @db.Date
+  original_due_date       DateTime?               @db.Date
+  due_date                DateTime?               @db.Date
+  follow_up_date          DateTime?               @db.Date
+  remarks                 String?                 @db.VarChar(1000)
+  postponements           Int                     @default(0) @db.UnsignedSmallInt
+  completed_at            DateTime?               @db.Timestamp(0)
+  completed_by_cp_user_id Int?
+  cancelled_at            DateTime?               @db.Timestamp(0)
+  cancel_reason           String?                 @db.VarChar(255)
+  // manual | note | follow_up | shortlist
+  source                  String                  @default("manual") @db.VarChar(12)
+  source_id               Int?
+  source_key              String?                 @unique(map: "uq_cp_task_source_key") @db.VarChar(40)
+  created_at              DateTime                @default(now()) @db.Timestamp(0)
+  updated_at              DateTime                @default(now()) @updatedAt @db.Timestamp(0)
+  student                 student                 @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_cp_task_student")
+  assignee                collegepond_user?       @relation("cp_task_assignee", fields: [assignee_cp_user_id], references: [id], onDelete: SetNull, map: "fk_cp_task_assignee")
+  event                   cp_task_event[]
+  shift_request           cp_task_shift_request[]
+
+  @@index([assignee_cp_user_id, status, due_date], map: "idx_cp_task_assignee_open")
+  @@index([student_id], map: "idx_cp_task_student")
+  @@index([source, source_id], map: "idx_cp_task_source")
+  @@index([created_at], map: "idx_cp_task_created")
+  @@index([created_by_cp_user_id], map: "fk_cp_task_created_by_idx")
+  @@index([completed_by_cp_user_id], map: "fk_cp_task_completed_by_idx")
+}
+
+// A task's history: created, not completed (reason), shift requested /
+// approved / rejected, rescheduled, completed, cancelled.
+model cp_task_event {
+  id          Int       @id @default(autoincrement())
+  task_id     Int
+  kind        String    @db.VarChar(30)
+  cp_user_id  Int?
+  from_date   DateTime? @db.Date
+  to_date     DateTime? @db.Date
+  reason_code String?   @db.VarChar(20)
+  note        String?   @db.VarChar(1000)
+  created_at  DateTime  @default(now()) @db.Timestamp(0)
+  task        cp_task   @relation(fields: [task_id], references: [id], onDelete: Cascade, map: "fk_cp_task_event_task")
+
+  @@index([task_id, created_at], map: "idx_cp_task_event_task")
+  @@index([cp_user_id], map: "fk_cp_task_event_user_idx")
+}
+
+// "Close your day": one per counsellor per IST working day.
+model cp_day_close {
+  id                  Int                     @id @default(autoincrement())
+  cp_user_id          Int
+  day                 DateTime                @db.Date
+  submitted_at        DateTime?               @db.Timestamp(0)
+  emailed_at          DateTime?               @db.Timestamp(0)
+  reminder_emailed_at DateTime?               @db.Timestamp(0)
+  total_tasks         Int                     @default(0)
+  completed_tasks     Int                     @default(0)
+  created_at          DateTime                @default(now()) @db.Timestamp(0)
+  updated_at          DateTime                @default(now()) @updatedAt @db.Timestamp(0)
+  shift_request       cp_task_shift_request[]
+
+  @@unique([cp_user_id, day], map: "uq_cp_day_close_user_day")
+}
+
+// Why a task wasn't done on a day, and the optional shift to the next
+// working day the Head Counsellor approves or rejects.
+// status: 0 draft, 1 awaiting decision, 2 approved, 3 rejected, 4 reason
+// only, 5 lapsed (task done or cancelled before a decision).
+model cp_task_shift_request {
+  id                    Int          @id @default(autoincrement())
+  task_id               Int
+  day_close_id          Int
+  day                   DateTime     @db.Date
+  cp_user_id            Int?
+  reason_code           String       @db.VarChar(20)
+  details               String       @db.VarChar(500)
+  shift_requested       Int          @default(0) @db.TinyInt
+  from_due_date         DateTime?    @db.Date
+  new_due_date          DateTime?    @db.Date
+  status                Int          @default(0) @db.UnsignedTinyInt
+  approver_cp_user_id   Int?
+  decided_by_cp_user_id Int?
+  decided_at            DateTime?    @db.Timestamp(0)
+  reject_reason         String?      @db.VarChar(500)
+  created_at            DateTime     @default(now()) @db.Timestamp(0)
+  updated_at            DateTime     @default(now()) @updatedAt @db.Timestamp(0)
+  task                  cp_task      @relation(fields: [task_id], references: [id], onDelete: Cascade, map: "fk_cp_task_shift_task")
+  day_close             cp_day_close @relation(fields: [day_close_id], references: [id], onDelete: Cascade, map: "fk_cp_task_shift_day_close")
+
+  @@unique([task_id, day], map: "uq_cp_task_shift_task_day")
+  @@index([status, approver_cp_user_id], map: "idx_cp_task_shift_status")
+  @@index([day_close_id], map: "fk_cp_task_shift_day_close_idx")
+  @@index([cp_user_id], map: "fk_cp_task_shift_user_idx")
+  @@index([approver_cp_user_id], map: "fk_cp_task_shift_approver_idx")
+  @@index([decided_by_cp_user_id], map: "fk_cp_task_shift_decided_by_idx")
+}
+
+// Shortlist partner-confirmation follow-up (src/server/shortlist-follow-up.ts).
+// One case per shortlist shared; at most one open per student
+// (open_student_id). status: 0 open, 1 confirmed, 2 closed, 3 ended.
+model shortlist_follow_up {
+  id                     Int                         @id @default(autoincrement())
+  student_id             Int
+  open_student_id        Int?                        @unique(map: "uq_shortlist_follow_up_open")
+  status                 Int                         @default(0) @db.UnsignedTinyInt
+  cycle                  Int                         @default(1) @db.UnsignedTinyInt
+  shared_at              DateTime                    @db.Timestamp(0)
+  shared_by_cp_user_id   Int?
+  cycle_started_at       DateTime                    @db.Timestamp(0)
+  next_stage             Int                         @default(2) @db.UnsignedTinyInt
+  next_due_date          DateTime?                   @db.Date
+  last_recorded_at       DateTime?                   @db.Timestamp(0)
+  outcome_at             DateTime?                   @db.Timestamp(0)
+  outcome_by_cp_user_id  Int?
+  outcome_by_user_id     Int?
+  confirmed_via          String?                     @db.VarChar(20)
+  end_reason             String?                     @db.VarChar(30)
+  closure_reason         String?                     @db.VarChar(30)
+  closure_note           String?                     @db.VarChar(1000)
+  reopened_at            DateTime?                   @db.Timestamp(0)
+  reopened_by_cp_user_id Int?
+  created_at             DateTime                    @default(now()) @db.Timestamp(0)
+  updated_at             DateTime                    @default(now()) @updatedAt @db.Timestamp(0)
+  student                student                     @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_shortlist_follow_up_student")
+  event                  shortlist_follow_up_event[]
+
+  @@index([student_id], map: "idx_shortlist_follow_up_student")
+  @@index([status, next_due_date], map: "idx_shortlist_follow_up_status")
+  @@index([shared_by_cp_user_id], map: "fk_shortlist_follow_up_shared_by_idx")
+}
+
+model shortlist_follow_up_event {
+  id              Int                 @id @default(autoincrement())
+  case_id         Int
+  student_id      Int
+  kind            String              @db.VarChar(30)
+  stage           Int?                @db.UnsignedTinyInt
+  cp_user_id      Int?
+  partner_user_id Int?
+  response        String?             @db.VarChar(20)
+  channels        String?             @db.VarChar(40)
+  call_time       String?             @db.VarChar(10)
+  call_outcome    String?             @db.VarChar(30)
+  comments        String?             @db.VarChar(1000)
+  task_id         Int?
+  detail          String?             @db.VarChar(500)
+  created_at      DateTime            @default(now()) @db.Timestamp(0)
+  case            shortlist_follow_up @relation(fields: [case_id], references: [id], onDelete: Cascade, map: "fk_shortlist_follow_up_event_case")
+
+  @@index([case_id, created_at], map: "idx_shortlist_follow_up_event_case")
+  @@index([student_id, created_at], map: "idx_shortlist_follow_up_event_student")
+}
+
+// Shortlisting TAT milestones (TAT Management). First write wins.
+model student_shortlisting {
+  student_id                Int       @id
+  assigned_at               DateTime? @db.Timestamp(0)
+  review_started_at         DateTime? @db.Timestamp(0)
+  review_completed_at       DateTime? @db.Timestamp(0)
+  docs_verified_at          DateTime? @db.Timestamp(0)
+  shortlisting_started_at   DateTime? @db.Timestamp(0)
+  shortlisting_completed_at DateTime? @db.Timestamp(0)
+  shared_at                 DateTime? @db.Timestamp(0)
+  confirmed_at              DateTime? @db.Timestamp(0)
+  updated_at                DateTime  @default(now()) @updatedAt @db.Timestamp(0)
+  student                   student   @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "fk_student_shortlisting_student")
 }
