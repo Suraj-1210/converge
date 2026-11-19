@@ -2,7 +2,7 @@ import "server-only";
 import { TRPCError } from "@trpc/server";
 import { type Prisma } from "../../generated/prisma";
 import { db } from "~/server/db";
-import { AdminRole, ShortlistSource, StudentStatus } from "~/server/db/enums";
+import { AdminRole, MANDATORY_STUDENT_DOCS, ShortlistSource, StudentStatus } from "~/server/db/enums";
 import { partnerName } from "~/lib/partner-display";
 import { tatStatus } from "~/lib/tat";
 import { requireStaffStudent, staffStudentScope, type StaffUser } from "~/server/staff-access";
@@ -23,7 +23,12 @@ import { slaMinutesBetween, slaMinutesIn } from "~/server/working-days";
 //                          cp_auto_assigned_at
 //   review started         the assigned counsellor first opens the profile
 //   review completed       marked by the counsellor
-//   documents verified     marked by the counsellor
+//   documents verified     automatic: when both the passport and the CV
+//                          are on the student's profile (the later of the
+//                          two first uploads; Suraj, 19 Nov 2026). Student
+//                          profile documents have no review step, so this
+//                          is "uploaded", not "checked". Marked by hand
+//                          only when they aren't both uploaded.
 //   shortlisting started   the first university Collegepond shortlists
 //   shortlisting completed marked by the counsellor (else = shared)
 //   shared                 the shortlist follow-up case opens
@@ -96,6 +101,27 @@ export async function markMilestone(user: StaffUser, studentId: number, field: M
   return { ok: true as const };
 }
 
+// When each student had both mandatory documents (passport and CV) on their
+// profile: the later of the two first uploads. Missing = not both yet.
+export async function docsInTimes(studentIds: number[]): Promise<Map<number, Date>> {
+  const out = new Map<number, Date>();
+  if (studentIds.length === 0) return out;
+  const rows = await db.document.groupBy({
+    by: ["student_id", "doc_type"],
+    where: { student_id: { in: studentIds }, application_id: null, doc_type: { in: [...MANDATORY_STUDENT_DOCS] } },
+    _min: { created_at: true },
+  });
+  const byStudent = new Map<number, Date[]>();
+  for (const r of rows) {
+    if (r.student_id === null || !r._min.created_at) continue;
+    byStudent.set(r.student_id, [...(byStudent.get(r.student_id) ?? []), r._min.created_at]);
+  }
+  for (const [id, times] of byStudent) {
+    if (times.length >= MANDATORY_STUDENT_DOCS.length) out.set(id, new Date(Math.max(...times.map((t) => t.getTime()))));
+  }
+  return out;
+}
+
 // First assignment time per student (audit log), for those without a stamp.
 async function assignmentTimes(studentIds: number[]): Promise<Map<number, Date>> {
   const out = new Map<number, Date>();
@@ -130,11 +156,12 @@ export type Milestones = {
 // One student's milestones (Follow-up History tab).
 export async function studentMilestones(user: StaffUser, studentId: number) {
   await requireStaffStudent(user, studentId);
-  const [s, m, assigned, target] = await Promise.all([
+  const [s, m, assigned, target, docsIn] = await Promise.all([
     db.student.findUnique({ where: { id: studentId }, select: { created_at: true, cp_auto_assigned_at: true } }),
     db.student_shortlisting.findUnique({ where: { student_id: studentId } }),
     assignmentTimes([studentId]),
     getTatTarget(SHORTLISTING),
+    docsInTimes([studentId]),
   ]);
   if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "Student not found" });
   const iso = (d: Date | null | undefined) => d?.toISOString() ?? null;
@@ -143,7 +170,7 @@ export async function studentMilestones(user: StaffUser, studentId: number) {
     assigned: iso(m?.assigned_at ?? assigned.get(studentId) ?? s.cp_auto_assigned_at),
     reviewStarted: iso(m?.review_started_at),
     reviewCompleted: iso(m?.review_completed_at),
-    docsVerified: iso(m?.docs_verified_at),
+    docsVerified: iso(docsIn.get(studentId) ?? m?.docs_verified_at),
     shortlistingStarted: iso(m?.shortlisting_started_at),
     shortlistingCompleted: iso(m?.shortlisting_completed_at),
     shared: iso(m?.shared_at),
@@ -153,6 +180,8 @@ export async function studentMilestones(user: StaffUser, studentId: number) {
   const elapsed = await slaMinutesBetween(s.created_at, end);
   return {
     milestones: ms,
+    // Filled from the passport + CV uploads (no manual mark needed).
+    docsVerifiedAuto: docsIn.has(studentId),
     elapsedMinutes: elapsed,
     shared: !!m?.shared_at,
     slaMinutes: target?.thresholdMinutes ?? null,
@@ -168,7 +197,7 @@ type Seg = { key: string; label: string; from: keyof Milestones; to: keyof Miles
 const SEGMENTS: Seg[] = [
   { key: "assignment", label: "Assignment", from: "added", to: "assigned" },
   { key: "review", label: "Profile review", from: "reviewStarted", to: "reviewCompleted" },
-  { key: "docs", label: "Document verification", from: "reviewStarted", to: "docsVerified" },
+  { key: "docs", label: "Documents in (passport + CV)", from: "added", to: "docsVerified" },
   { key: "prep", label: "Shortlist preparation", from: "shortlistingStarted", to: "shortlistingCompleted" },
   { key: "sharing", label: "Sharing", from: "shortlistingCompleted", to: "shared" },
   { key: "confirmation", label: "Partner confirmation", from: "shared", to: "confirmed" },
@@ -207,7 +236,7 @@ export async function shortlistingTatReport(user: StaffUser, f: ShortlistingTatF
     take: 3000,
   });
   const ids = students.map((s) => s.id);
-  const [assigned, firstProposals] = await Promise.all([
+  const [assigned, firstProposals, docsIn] = await Promise.all([
     assignmentTimes(ids),
     // Older students without a stamp: their first Collegepond proposal.
     ids.length
@@ -217,6 +246,7 @@ export async function shortlistingTatReport(user: StaffUser, f: ShortlistingTatF
           _min: { proposed_at: true },
         })
       : [],
+    docsInTimes(ids),
   ]);
   const firstProposal = new Map(firstProposals.map((r) => [r.student_id, r._min.proposed_at]));
   const now = new Date();
@@ -230,7 +260,7 @@ export async function shortlistingTatReport(user: StaffUser, f: ShortlistingTatF
       assigned: m?.assigned_at ?? assigned.get(s.id) ?? s.cp_auto_assigned_at,
       reviewStarted: m?.review_started_at ?? null,
       reviewCompleted: m?.review_completed_at ?? null,
-      docsVerified: m?.docs_verified_at ?? null,
+      docsVerified: docsIn.get(s.id) ?? m?.docs_verified_at ?? null,
       shortlistingStarted: startedAt,
       shortlistingCompleted: m?.shortlisting_completed_at ?? sharedAt,
       shared: sharedAt,
