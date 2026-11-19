@@ -558,7 +558,7 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
         )}
       </div>
       {loan.canMessage ? (
-        <ReplyBox publicId={loan.publicId} onSent={onChanged} />
+        <ReplyBox publicId={loan.publicId} onSent={onChanged} hasDocList={loan.documents.length > 0} />
       ) : (
         <p className="border-t border-[#E4E7EC] px-5 py-3 text-[12px] text-[#98A2B3]">
           The chat opens once the loan team has received this referral.
@@ -568,7 +568,15 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
   );
 }
 
-function ReplyBox({ publicId, onSent }: { publicId: string; onSent: () => void }) {
+function ReplyBox({
+  publicId,
+  onSent,
+  hasDocList,
+}: {
+  publicId: string;
+  onSent: () => void;
+  hasDocList: boolean;
+}) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
@@ -649,6 +657,18 @@ function ReplyBox({ publicId, onSent }: { publicId: string; onSent: () => void }
         </div>
       )}
       {error && <div className="mt-2 text-xs text-[#F04438]">{error}</div>}
+      {/* Partners attached checklist documents here instead of under
+          Documents for the loan (staging test, 19 Nov 2026), where the loan
+          team can't review them. Point them to the right place. */}
+      {hasDocList && (
+        <p className="mt-2 rounded-lg bg-[#F5F9FF] px-3 py-2 text-[12px] text-[#175CD3]">
+          Sending a document from the loan team&apos;s list? Upload it under{" "}
+          <a href="#documents" className="font-semibold underline">
+            Documents for the loan
+          </a>{" "}
+          so they can review it. Use the chat for anything else.
+        </p>
+      )}
       <div className="mt-2.5 flex items-center justify-between gap-3">
         <label className="cursor-pointer text-[13px] font-medium text-[#1570EF] hover:underline">
           Attach PDF
