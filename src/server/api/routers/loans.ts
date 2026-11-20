@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { createTRPCRouter, protectedPartnerProcedure, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { COURSE_LEVEL_CODES, type CourseLevel } from "~/server/db/enums";
+import { COURSE_LEVEL_CODES, LoanCommissionStatus, UserType, type CourseLevel } from "~/server/db/enums";
 import { LoanReferralSendStatus } from "~/lib/loan-sharing";
 import {
   activeReferralForStudent,
@@ -14,7 +14,7 @@ import {
   sendPartnerMessage,
   unreadLoanChats,
 } from "~/server/loan-sharing";
-import { partnerScope, requireVisibleStudent } from "~/server/partner-access";
+import { isAgencyOwner, partnerScope, requireVisibleStudent } from "~/server/partner-access";
 
 // Education-loan referrals to Collegepond's loan team (Enrollment App) and
 // the progress mirrored back. Partner side = the Loans tab and the loan card
@@ -158,8 +158,41 @@ export const loansRouter = createTRPCRouter({
               orderBy: { created_at: "desc" },
             })
           : [];
+      // Loan commission (20 Nov 2026): money is shown only to whoever is paid
+      // it (the agency owner, or the independent who referred), as on the
+      // Commission page; agency counsellors see none.
+      const seesMoney =
+        r.org_id != null
+          ? r.org_id === user.org_id && (await isAgencyOwner(user.id))
+          : user.type === UserType.INDEPENDENT_COUNSELLOR && r.partner_user_id === user.id;
+      const commission = seesMoney
+        ? await db.loan_commission.findMany({
+            where: { referral_id: r.id },
+            orderBy: [{ tranche_no: "asc" }, { id: "asc" }],
+            select: { referral_application_id: true, tranche_no: true, partner_pct: true, partner_amount: true, status: true, lender: { select: { name: true } } },
+          })
+        : [];
       return {
         ...toListItem({ ...r, application: r.application }),
+        commission: commission.map((c) => ({
+          applicationId: c.referral_application_id,
+          lender: c.lender.name,
+          trancheNo: c.tranche_no,
+          pct: c.partner_pct == null ? null : num(c.partner_pct),
+          amount: c.partner_amount == null ? null : num(c.partner_amount),
+          state:
+            c.status === LoanCommissionStatus.CANCELLED
+              ? "Cancelled"
+              : c.status === LoanCommissionStatus.PAID
+                ? "Paid"
+                : c.status === LoanCommissionStatus.CLAIMED
+                  ? "Claimed"
+                  : c.status === LoanCommissionStatus.CLAIMABLE
+                    ? "Available to claim"
+                    : c.status === LoanCommissionStatus.NEEDS_RATE
+                      ? "Rate being set by Collegepond"
+                      : "Awaiting lender payout",
+        })),
         email: r.email,
         phone: r.phone,
         intake: r.intake,

@@ -63,6 +63,7 @@ export type AdminSection =
   | "reconciliation"
   | "bankVerifications"
   | "adjustments"
+  | "loanCommission"
   | "universities"
   | "events"
   | "reports"
@@ -129,6 +130,9 @@ export const ADMIN_SECTION_ROLES: Record<AdminSection, number[]> = {
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
   adjustments: FINANCE,
+  // Loan commission (20 Nov 2026): lender rates, partner %, lines, lender
+  // receipts. Approvals stay SA / FM (financeManagerProcedure).
+  loanCommission: FINANCE,
   universities: ABOVE_COUNSELLOR,
   events: NOT_BDM,
   reports: [SUPER_ADMIN],
@@ -158,6 +162,7 @@ export const SWITCHABLE_SECTIONS: { section: AdminSection; label: string; group:
   { section: "reconciliation", label: "Reconciliation", group: "Finance" },
   { section: "bankVerifications", label: "Bank Verifications", group: "Finance" },
   { section: "adjustments", label: "Adjustments", group: "Finance" },
+  { section: "loanCommission", label: "Loan Commission", group: "Finance" },
   { section: "universities", label: "Universities", group: "Content" },
   { section: "events", label: "Events", group: "Content" },
   { section: "resources", label: "Resources", group: "Content" },
@@ -191,6 +196,7 @@ const GRANTABLE_ROLES: Partial<Record<AdminSection, number[]>> = {
   reconciliation: FINANCE,
   bankVerifications: FINANCE,
   adjustments: FINANCE,
+  loanCommission: FINANCE,
   events: NOT_BDM,
 };
 
@@ -264,6 +270,7 @@ const PATH_SECTIONS: [prefix: string, section: AdminSection][] = [
   ["/admin/reconciliation", "reconciliation"],
   ["/admin/bank-verifications", "bankVerifications"],
   ["/admin/adjustments", "adjustments"],
+  ["/admin/loan-commission", "loanCommission"],
   ["/admin/reports", "reports"],
   ["/admin/users", "system"],
   ["/admin/settings", "system"],
@@ -324,6 +331,7 @@ const API_SECTIONS: [path: string, section: AdminSection][] = [
   ["bankVerification.list", "bankVerifications"],
   ["bankVerification.counts", "bankVerifications"],
   ["adjustments.", "adjustments"],
+  ["loanCommission.", "loanCommission"],
   ["reports.", "reports"],
   ["resources.admin*", "resources"],
 ];

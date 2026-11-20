@@ -54,7 +54,8 @@ INSERT IGNORE INTO `adjustment_reason` (`name`, `sort_order`, `is_active`) VALUE
   ('Partner fraud',                          20, 1),
   ('Overpayment',                            30, 1),
   ('Duplicate payment',                      40, 1),
-  ('Other',                                  50, 1);
+  ('Other',                                  50, 1),
+  ('Loan commission clawback',               60, 1);
 
 -- Partner Tiers master (Settings -> Partner Tiers). Same rows as the
 -- 20261014091941_partner_tiers migration seeds.

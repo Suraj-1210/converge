@@ -283,7 +283,7 @@ export default function InvoicesPayoutsPage() {
                               </span>
                             )}
                           </td>
-                          <td className={`${TD} font-mono text-[13px]`}>{inv.invoiceNumber}</td>
+                          <td className={`${TD} font-mono text-[13px]`}>{inv.invoiceNumber}{inv.kind === "loan" && <span title="Loan commission claim (education loan referrals)" className="ml-1.5 inline-block rounded-[10px] bg-[#F4F3FF] px-2 py-0.5 align-middle font-sans text-[10px] font-semibold text-[#6941C6]">Loan</span>}</td>
                           <td className={TD}>{formatDate(inv.invoiceDate)}</td>
                           <td className={TD}>{inv.students}</td>
                           <td className={`${TD} font-semibold text-[#101828]`}>

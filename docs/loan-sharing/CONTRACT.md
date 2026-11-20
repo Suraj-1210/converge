@@ -173,8 +173,15 @@ with `eventId` `stage:<leadId>:<updateTimeMillis>`, so a re-run trigger is ignor
 
 Amounts INR numbers or `null`; `roi` percent number or `null`; `disbursedAt`
 ISO or `null`. `deleted: true` removes the row from the partner's view.
-Never sent: application number, processing fee, tranches, collateral,
+Never sent: application number, processing fee, collateral,
 co-applicant, payout %, notes.
+
+Optional (loan commission, 20 Nov 2026): `"tranches": [{ "date": "<ISO>" | null,
+"amount": 1000000 | null }]`, the disbursement tranches oldest first, so
+Converge can open a commission line per tranche. Converge accepts it now; the
+Enrollment App does not send it yet. Without it Converge takes the first
+`disbursedAmount` it sees as the first tranche (normally the only one that
+earns commission).
 
 **`snapshot`** carries `lead` and `applications` (array, same shape as
 `application`, the **complete** current list — Converge removes rows not in it).
@@ -400,6 +407,10 @@ Same URL, signing and secret as the referral; body `"type": "document"`:
   **400** bad file / unknown type, **404** unknown lead (both permanent), **401**, **503**, **5xx** (retry).
 
 ## Changelog
+
+- 20 Nov 2026: optional `application.tranches` (loan commission). Converge
+  accepts it; Enrollment to send it in a later change (both copies to be
+  updated together then).
 
 - 19 Nov 2026: Phase 1. Synced after the Enrollment build (afcc9d5): duplicate
   note wording and privacy, nullable `timeline.by`, busy = 500, idempotent

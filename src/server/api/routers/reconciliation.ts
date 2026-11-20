@@ -8,6 +8,8 @@ import {
 import { db } from "~/server/db";
 import {
   AdjustmentDirection,
+  InvoiceKind,
+  LoanCommissionStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
   PayoutMethodLabel,
@@ -66,6 +68,30 @@ async function userNameMap(
   });
   return new Map(users.map((u) => [u.id, `${u.first_name} ${u.last_name}`.trim()]));
 }
+// A loan claim's lines, shown where a university claim lists its students.
+const LOAN_ITEMS_SELECT = {
+  select: {
+    line: {
+      select: {
+        partner_pct: true,
+        tranche_no: true,
+        lender: { select: { name: true } },
+        referral: { select: { student_name: true } },
+      },
+    },
+  },
+} as const;
+function loanStudents(
+  items: { line: { partner_pct: Decimalish; tranche_no: number; lender: { name: string }; referral: { student_name: string } } }[],
+) {
+  return items.map((it) => ({
+    name: it.line.referral.student_name,
+    university: `Loan · ${it.line.lender.name}`,
+    intake: `Tranche ${it.line.tranche_no}`,
+    rate: num(it.line.partner_pct),
+  }));
+}
+
 const intakeOf = (
   m: string | number | null,
   y: string | number | null,
@@ -81,6 +107,8 @@ export const reconciliationRouter = createTRPCRouter({
           select: {
             invoice_number: true,
             created_at: true,
+            kind: true,
+            loan_invoice_item: LOAN_ITEMS_SELECT,
             gstin: true,
             pan: true,
             org_id: true,
@@ -164,7 +192,9 @@ export const reconciliationRouter = createTRPCRouter({
         creditInr: netting[i]!.creditInr,
         toPayInr: netting[i]!.toPay,
       },
-      students: p.invoice.invoice_item.map((it) => ({
+      // A loan claim (20 Nov 2026): one row per loan line.
+      kind: p.invoice.kind === InvoiceKind.LOAN ? ("loan" as const) : ("university" as const),
+      students: [...loanStudents(p.invoice.loan_invoice_item), ...p.invoice.invoice_item.map((it) => ({
         name: `${it.commission.application.student.first_name} ${it.commission.application.student.last_name}`.trim(),
         university: it.commission.application.course.university.name,
         intake: intakeOf(
@@ -172,7 +202,7 @@ export const reconciliationRouter = createTRPCRouter({
           it.commission.application.course.intake_year,
         ),
         rate: num(it.commission.commision_rate),
-      })),
+      }))],
     }));
   }),
 
@@ -243,6 +273,7 @@ export const reconciliationRouter = createTRPCRouter({
           invoice: {
             include: {
               invoice_item: { select: { commission_id: true, commission_tranche_id: true } },
+              loan_invoice_item: { select: { loan_commission_id: true } },
               payee_user: {
                 select: { id: true, first_name: true, last_name: true, status: true, deleted_at: true },
               },
@@ -384,6 +415,16 @@ export const reconciliationRouter = createTRPCRouter({
           },
           data: { status: TrancheStatus.PAID, disbursed_at: now },
         });
+        // A loan claim's lines are paid (20 Nov 2026).
+        if (payout.invoice.loan_invoice_item.length > 0) {
+          await tx.loan_commission.updateMany({
+            where: {
+              id: { in: payout.invoice.loan_invoice_item.map((it) => it.loan_commission_id) },
+              status: LoanCommissionStatus.CLAIMED,
+            },
+            data: { status: LoanCommissionStatus.PAID, paid_at: now },
+          });
+        }
         // Legacy (pre-tranche) lines mark the commission paid directly.
         await tx.commission.updateMany({
           where: {
@@ -520,6 +561,8 @@ export const reconciliationRouter = createTRPCRouter({
           select: {
             invoice_number: true,
             created_at: true,
+            kind: true,
+            loan_invoice_item: LOAN_ITEMS_SELECT,
             gstin: true,
             pan: true,
             ...PAYEE_LABEL_SELECT,
@@ -593,7 +636,9 @@ export const reconciliationRouter = createTRPCRouter({
       notes: p.notes,
       gstin: p.invoice.gstin,
       pan: p.invoice.pan,
-      students: p.invoice.invoice_item.map((it) => ({
+      // A loan claim (20 Nov 2026): one row per loan line.
+      kind: p.invoice.kind === InvoiceKind.LOAN ? ("loan" as const) : ("university" as const),
+      students: [...loanStudents(p.invoice.loan_invoice_item), ...p.invoice.invoice_item.map((it) => ({
         name: `${it.commission.application.student.first_name} ${it.commission.application.student.last_name}`.trim(),
         university: it.commission.application.course.university.name,
         intake: intakeOf(
@@ -601,7 +646,7 @@ export const reconciliationRouter = createTRPCRouter({
           it.commission.application.course.intake_year,
         ),
         rate: num(it.commission.commision_rate),
-      })),
+      }))],
     }));
   }),
 

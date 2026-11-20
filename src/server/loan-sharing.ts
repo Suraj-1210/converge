@@ -10,6 +10,7 @@ import { appUrl } from "~/server/email";
 import { emailPartners, type Recipient } from "~/server/email/partners";
 import { loanChatEmail, loanMilestoneEmail } from "~/server/email/templates";
 import { readStoredFile } from "~/server/storage";
+import { onApplicationGone, onApplicationSynced } from "~/server/loan-commission";
 import {
   LOAN_STAGES,
   LoanReferralSendStatus,
@@ -804,6 +805,13 @@ const applicationState = z.object({
   roi: z.number().finite().min(0).max(100).nullable(),
   disbursedAmount: money,
   disbursedAt: isoDate.nullable(),
+  // Optional per-tranche list (loan commission, 20 Nov 2026). Without it the
+  // first disbursedAmount seen counts as the first tranche.
+  tranches: z
+    .array(z.object({ date: isoDate.nullable(), amount: money }))
+    .max(50)
+    .nullable()
+    .optional(),
   deleted: z.boolean().optional(),
 });
 
@@ -959,6 +967,11 @@ async function applyOne(ev: EnrollmentEvent): Promise<boolean> {
       for (const a of ev.applications) await applyApplication(r, at, a, null);
       if (ev.checklist) await applyChecklist(r.id, at, ev.checklist);
       const keep = ev.applications.map((a) => a.id);
+      const gone = await db.loan_referral_application.findMany({
+        where: { referral_id: r.id, external_id: { notIn: keep }, synced_at: { lt: at } },
+        select: { external_id: true },
+      });
+      for (const g of gone) await commissionHook(() => onApplicationGone(r.id, g.external_id));
       await db.loan_referral_application.deleteMany({
         where: { referral_id: r.id, external_id: { notIn: keep }, synced_at: { lt: at } },
       });
@@ -1048,7 +1061,10 @@ async function applyApplication(
   });
   if (existing && existing.synced_at >= at) return;
   if (a.deleted) {
-    if (existing) await db.loan_referral_application.delete({ where: { id: existing.id } });
+    if (existing) {
+      await commissionHook(() => onApplicationGone(r.id, a.id));
+      await db.loan_referral_application.delete({ where: { id: existing.id } });
+    }
     return;
   }
   const data = {
@@ -1061,11 +1077,11 @@ async function applyApplication(
     disbursed_at: a.disbursedAt ? new Date(a.disbursedAt) : null,
     synced_at: at,
   };
-  if (existing) {
-    await db.loan_referral_application.update({ where: { id: existing.id }, data });
-  } else {
-    await db.loan_referral_application.create({ data: { ...data, referral_id: r.id, external_id: a.id } });
-  }
+  const row = existing
+    ? await db.loan_referral_application.update({ where: { id: existing.id }, data, select: { id: true } })
+    : await db.loan_referral_application.create({ data: { ...data, referral_id: r.id, external_id: a.id }, select: { id: true } });
+  // Loan commission: a disbursement opens (or flags) its commission lines.
+  await commissionHook(() => onApplicationSynced(r, a, row.id, at));
   if (existing?.status === a.status) return;
   const title = `${a.lender}: ${existing ? loanStageLabel(a.status) : `application added (${loanStageLabel(a.status)})`}`;
   if (eventRowId !== null) {
@@ -1102,6 +1118,16 @@ async function applyApplication(
       `loan ${kind}`,
       "loan.milestone",
     );
+  }
+}
+
+// A commission bug must never block the loan sync (the event would be retried
+// forever); it is logged, and the nightly snapshot runs the hook again.
+async function commissionHook(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error("[loan-commission] sync hook failed:", e);
   }
 }
 

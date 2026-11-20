@@ -370,6 +370,27 @@ export function commissionClaimableEmail(
   );
 }
 
+// 11b. Collegepond's payout from the lender was approved: the partner's loan
+// commission on these disbursements is now ready to claim (20 Nov 2026).
+export function loanCommissionClaimableEmail(
+  p: PartnerRef,
+  c: { lines: string[] },
+  appUrl: string,
+): EmailMessage {
+  const n = c.lines.length;
+  return build(
+    n === 1 ? "Loan Commission Ready to Claim" : `${n} Loan Commissions Ready to Claim`,
+    "Loan commission is ready to claim",
+    hello(p.name),
+    [
+      { p: `Collegepond has received the lender's payout for ${n === 1 ? "this education loan" : "these education loans"}, and your loan commission is now ready to claim.` },
+      { list: c.lines.slice(0, 20) },
+      { p: "Open Loan commission on the Commission page of the Partner Portal, select the loans and submit your invoice." },
+      { button: { label: "Go to Commission", url: portal(appUrl, "/partner/commission") } },
+    ],
+  );
+}
+
 // 12. A commission claim (partner invoice) was approved, in full or in part.
 // A foreign-currency claim is approved in INR terms; the remitted amount is
 // fixed at release.

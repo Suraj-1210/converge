@@ -279,7 +279,7 @@ export default function ReconciliationPage() {
                           </span>
                         )}
                       </td>
-                      <td className={`${TD} font-mono text-[13px] text-[#1570EF]`}>{p.invoiceNumber}</td>
+                      <td className={`${TD} font-mono text-[13px] text-[#1570EF]`}>{p.invoiceNumber}{p.kind === "loan" && <span title="Loan commission claim (education loan referrals)" className="ml-1.5 inline-block rounded-[10px] bg-[#F4F3FF] px-2 py-0.5 align-middle font-sans text-[10px] font-semibold text-[#6941C6]">Loan</span>}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>
                         {inr(p.amountInr)}
                         {(p.adjustment.deductionInr > 0 || p.adjustment.creditInr > 0) && (
@@ -374,7 +374,7 @@ export default function ReconciliationPage() {
                         {p.partner}
                         <PayeeTags partnerType={p.partnerType} />
                       </td>
-                      <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}</td>
+                      <td className={`${TD} font-mono text-[13px]`}>{p.invoiceNumber}{p.kind === "loan" && <span title="Loan commission claim (education loan referrals)" className="ml-1.5 inline-block rounded-[10px] bg-[#F4F3FF] px-2 py-0.5 align-middle font-sans text-[10px] font-semibold text-[#6941C6]">Loan</span>}</td>
                       <td className={`${TD} font-semibold text-[#101828]`}>
                         {inr(p.amountInr)}
                         {p.currency !== "INR" && p.amountForeign != null && p.exchangeRate != null && (

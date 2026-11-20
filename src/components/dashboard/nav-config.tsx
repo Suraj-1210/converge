@@ -228,6 +228,14 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: <ReconciliationIcon />,
         section: "adjustments",
       },
+      // Loan commission (20 Nov 2026): lender rates, each partner's % of
+      // disbursed, lines per disbursement and Collegepond's lender receipts.
+      {
+        label: "Loan Commission",
+        href: "/admin/loan-commission",
+        icon: <CommissionIcon />,
+        section: "loanCommission",
+      },
     ],
   },
   {

@@ -943,6 +943,43 @@ export const PARTNER_INVOICE_STATUS_CODES = Object.values(
   PartnerInvoiceStatus,
 ) as PartnerInvoiceStatus[];
 
+// invoice.kind — what a partner claim is for. A loan claim's lines are in
+// loan_invoice_item; the two never share an invoice (20 Nov 2026).
+export const InvoiceKind = { UNIVERSITY: 0, LOAN: 1 } as const;
+export type InvoiceKind = (typeof InvoiceKind)[keyof typeof InvoiceKind];
+
+// loan_commission.status — one disbursement tranche's commission (20 Nov
+// 2026, Suraj): priced as % of disbursed, claimable only once Collegepond's
+// lender receipt is approved.
+export const LoanCommissionStatus = {
+  NEEDS_RATE: 0, // lender or partner % not set yet
+  AWAITING_RECEIPT: 1, // priced; waiting for the lender to pay CP
+  RECEIPT_PENDING: 2, // on a recorded lender receipt awaiting SA / FM approval
+  CLAIMABLE: 3,
+  CLAIMED: 4, // on a partner loan claim
+  PAID: 5,
+  CANCELLED: 6,
+} as const;
+export type LoanCommissionStatus = (typeof LoanCommissionStatus)[keyof typeof LoanCommissionStatus];
+
+export const LoanCommissionStatusLabel: Record<LoanCommissionStatus, string> = {
+  [LoanCommissionStatus.NEEDS_RATE]: "Needs rate",
+  [LoanCommissionStatus.AWAITING_RECEIPT]: "Awaiting lender payout",
+  [LoanCommissionStatus.RECEIPT_PENDING]: "Receipt awaiting approval",
+  [LoanCommissionStatus.CLAIMABLE]: "Claimable",
+  [LoanCommissionStatus.CLAIMED]: "Claimed",
+  [LoanCommissionStatus.PAID]: "Paid",
+  [LoanCommissionStatus.CANCELLED]: "Cancelled",
+};
+
+// loan_commission.source — how the line came to exist.
+export const LoanCommissionSource = { SYNC: 0, MANUAL_TRANCHE: 1, CREDIT: 2 } as const;
+export type LoanCommissionSource = (typeof LoanCommissionSource)[keyof typeof LoanCommissionSource];
+
+// loan_receipt.status — a lender payment to CP (maker-checker).
+export const LoanReceiptStatus = { PENDING: 0, APPROVED: 1, REJECTED: 2 } as const;
+export type LoanReceiptStatus = (typeof LoanReceiptStatus)[keyof typeof LoanReceiptStatus];
+
 // partner_payout.status — the reconciliation/release record. Ops approval lands
 // it at APPROVED (pending Finance verification); Finance ticks the 4-point
 // checklist → READY_TO_PAY → RELEASED. ON_HOLD / SENT_BACK are side-branches.

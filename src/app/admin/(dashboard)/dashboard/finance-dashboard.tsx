@@ -509,6 +509,9 @@ export function FinanceDashboard({ firstName, embedded = false }: { firstName?: 
         )}
       </DashboardCard>
 
+      {/* Loan commission: its own card, never in the university figures (20 Nov 2026) */}
+      <LoanCommissionCard linkable={linkable("/admin/loan-commission")} />
+
       {/* Direct vs third-party */}
       <DashboardCard title="Direct vs third-party vendor income" className="mb-5" bodyClassName="p-0">
         {!channelsQ.data ? (
@@ -1321,5 +1324,47 @@ function ChannelGroup({
         </tr>
       ))}
     </>
+  );
+}
+
+// Loan commission on partner-referred education loans (20 Nov 2026), kept
+// out of the university KPIs above. All-time figures, not FY-bound.
+function LoanCommissionCard({ linkable }: { linkable: boolean }) {
+  const q = api.loanCommission.summary.useQuery(undefined, { enabled: linkable, retry: false });
+  if (!linkable) return null;
+  const d = q.data;
+  const cells: [string, string, string][] = d
+    ? [
+        ["Expected from lenders", formatINR(d.expectedCp), `${d.lines} disbursements`],
+        ["Received from lenders", formatINR(d.receivedCp), d.pendingReceipts ? `${d.pendingReceipts} receipt(s) to approve` : "approved receipts"],
+        ["Owed to partners", formatINR(d.claimable.partner + d.claimed.partner), `${d.claimable.count} claimable · ${d.claimed.count} claimed`],
+        ["Paid to partners", formatINR(d.paid.partner), `${d.paid.count} lines`],
+      ]
+    : [];
+  return (
+    <DashboardCard title="Loan commission (education loans)" link="/admin/loan-commission" linkLabel="Open" className="mb-5" bodyClassName="p-0">
+      {!d ? (
+        <div className="p-5">
+          <SkeletonRows rows={2} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-px bg-[#F2F4F7] lg:grid-cols-4">
+          {cells.map(([label, value, sub]) => (
+            <div key={label} className="bg-white px-5 py-4">
+              <div className="text-[11px] font-semibold tracking-wider text-[#667085] uppercase">{label}</div>
+              <div className="mt-1 text-lg font-bold text-[#101828]">{value}</div>
+              <div className="text-xs text-[#98A2B3]">{sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {d && (d.needsRate > 0 || d.attention > 0) && (
+        <p className="border-t border-[#F2F4F7] px-5 py-2.5 text-[13px] text-[#B54708]">
+          {d.needsRate > 0 ? `${d.needsRate} line(s) need a rate` : ""}
+          {d.needsRate > 0 && d.attention > 0 ? " · " : ""}
+          {d.attention > 0 ? `${d.attention} changed upstream` : ""}
+        </p>
+      )}
+    </DashboardCard>
   );
 }

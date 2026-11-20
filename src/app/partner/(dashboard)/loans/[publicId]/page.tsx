@@ -132,6 +132,32 @@ export default function PartnerLoanPage() {
             )}
           </section>
 
+          {r.commission.length > 0 && (
+            <section className="rounded-2xl border border-[#E9D7FE] bg-[#FCFAFF] px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold text-[#101828]">Your loan commission</h2>
+                <a href="/partner/commission#loan-commission" className="text-[13px] font-semibold text-[#6941C6] hover:underline">
+                  Commission page →
+                </a>
+              </div>
+              <ul className="mt-2 space-y-1.5 text-[13px] text-[#344054]">
+                {r.commission.map((c, i) => (
+                  <li key={i} className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      {c.lender}
+                      {c.trancheNo > 1 ? ` · tranche ${c.trancheNo}` : ""}
+                      {c.pct != null ? ` · ${c.pct}% of disbursed` : ""}
+                    </span>
+                    <span>
+                      <b className="text-[#101828]">{c.amount == null ? "—" : rupees(c.amount)}</b>
+                      <span className="ml-2 text-xs text-[#667085]">{c.state}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           <LoanDocuments loan={r} onChanged={() => void q.refetch()} />
           <LoanChat loan={r} onChanged={() => void q.refetch()} />
           <LoanUpdates loan={r} />

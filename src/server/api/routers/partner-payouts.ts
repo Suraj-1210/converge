@@ -17,6 +17,8 @@ import { PAYEE_LABEL_SELECT, payeeLabel, payeeOf } from "~/server/payee";
 import { activeHolds, assertNoPayoutHold, partnerAdjustmentBalances, payeeKey } from "~/server/adjustments";
 import { TRANCHE_LINKS_SELECT, lineForTranche } from "~/server/vendor-invoice-tranches";
 import {
+  InvoiceKind,
+  LoanCommissionStatus,
   PartnerInvoiceStatus,
   PayoutStatus,
   TrancheStatus,
@@ -99,13 +101,45 @@ export const partnerPayoutsRouter = createTRPCRouter({
             },
           },
         },
+        // A loan claim's lines (invoice.kind LOAN, 20 Nov 2026).
+        loan_invoice_item: {
+          select: {
+            amount: true,
+            line: {
+              select: {
+                status: true,
+                tranche_no: true,
+                disbursed_amount: true,
+                partner_pct: true,
+                received_amount: true,
+                lender: { select: { name: true } },
+                referral: { select: { student_name: true } },
+                allocation: { select: { receipt: { select: { reference: true } } } },
+              },
+            },
+          },
+        },
       },
     });
     // Payee-level: payout hold and adjustments still to net (Finance › Adjustments).
     const [holds, adjBalances, fx] = await Promise.all([activeHolds(), partnerAdjustmentBalances(), loadInrRates()]);
 
     return invoices.map((inv) => {
-      const items = inv.invoice_item.map((it) => {
+      const loan = inv.kind === InvoiceKind.LOAN;
+      // A loan line is on a claim only once Collegepond's lender receipt for it
+      // was approved, so it is always "verified".
+      const loanItems = inv.loan_invoice_item.map((it) => ({
+        student: it.line.referral.student_name,
+        university: `Loan · ${it.line.lender.name}`,
+        program: `Tranche ${it.line.tranche_no} · ${it.line.partner_pct == null ? "—" : `${num(it.line.partner_pct)}%`} of ₹${num(it.line.disbursed_amount).toLocaleString("en-IN")}`,
+        tranche: null as string | null,
+        claimed: num(it.amount),
+        amountReceived: num(it.line.received_amount),
+        paymentStatus: null as number | null,
+        invoiceRef: it.line.allocation?.receipt.reference ?? null,
+        match: "verified" as "verified" | "partial" | "no-payment",
+      }));
+      const uniItems = inv.invoice_item.map((it) => {
         const c = it.commission;
         const claimed = num(it.amount);
         // The vendor invoice line billing this claim's tranche; a pre-tranche
@@ -155,6 +189,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           match,
         };
       });
+      const items = loan ? loanItems : uniItems;
       const verifiedCount = items.filter((i) => i.match === "verified").length;
       const partialCount = items.filter((i) => i.match === "partial").length;
       const noneCount = items.filter((i) => i.match === "no-payment").length;
@@ -168,7 +203,8 @@ export const partnerPayoutsRouter = createTRPCRouter({
         // reviews those instead of the claim being blocked.
         panReview: payee.partnerType === "independent" && !inv.pan,
         invoiceDate: inv.invoice_date,
-        students: inv.invoice_item.length,
+        kind: loan ? ("loan" as const) : ("university" as const),
+        students: items.length,
         totalAmount: num(inv.total_amount),
         netPayable: netOf(inv),
         // Amounts are INR; a non-INR claim is paid out in this currency at
@@ -219,6 +255,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
               commission_tranche: { select: { status: true } },
             },
           },
+          loan_invoice_item: { select: { line: { select: { status: true } } } },
         },
       });
       if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
@@ -231,14 +268,18 @@ export const partnerPayoutsRouter = createTRPCRouter({
       await assertNoPayoutHold(payeeOf(inv), "approve");
       // Every claimed line must be collected from the vendor: tranche-based lines
       // need their tranche RECEIVED; legacy (pre-tranche) lines need the commission's
-      // collegepond_received_at stamp.
+      // collegepond_received_at stamp. A loan claim's lines must still be
+      // CLAIMED (their lender receipt was approved before they were claimable).
       const allVerified =
-        inv.invoice_item.length > 0 &&
-        inv.invoice_item.every((it) =>
-          it.commission_tranche != null
-            ? it.commission_tranche.status === TrancheStatus.RECEIVED
-            : it.commission.collegepond_received_at != null,
-        );
+        inv.kind === InvoiceKind.LOAN
+          ? inv.loan_invoice_item.length > 0 &&
+            inv.loan_invoice_item.every((it) => it.line.status === LoanCommissionStatus.CLAIMED)
+          : inv.invoice_item.length > 0 &&
+            inv.invoice_item.every((it) =>
+              it.commission_tranche != null
+                ? it.commission_tranche.status === TrancheStatus.RECEIVED
+                : it.commission.collegepond_received_at != null,
+            );
       if (!allVerified) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -287,6 +328,9 @@ export const partnerPayoutsRouter = createTRPCRouter({
       }
       if (inv.status === PartnerInvoiceStatus.REJECTED || inv.status === PartnerInvoiceStatus.PAID) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This invoice can't be approved." });
+      }
+      if (inv.kind === InvoiceKind.LOAN) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "A loan claim is approved in full; use Approve." });
       }
       await assertNoPayoutHold(payeeOf(inv), "approve");
       const verified = inv.invoice_item.filter(
@@ -348,6 +392,7 @@ export const partnerPayoutsRouter = createTRPCRouter({
           status: true,
           partner_payout: { select: { id: true } },
           invoice_item: { select: { id: true, commission_id: true, commission_tranche_id: true, amount: true } },
+          loan_invoice_item: { select: { loan_commission_id: true, amount: true } },
         },
       });
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
@@ -368,6 +413,17 @@ export const partnerPayoutsRouter = createTRPCRouter({
           select: { org_id: true, payee_user_id: true, invoice_number: true },
         });
         await tx.invoice_item.deleteMany({ where: { invoice_id: input.invoiceId } });
+        // A loan claim's lines go back to claimable (20 Nov 2026).
+        if (existing.loan_invoice_item.length > 0) {
+          await tx.loan_invoice_item.deleteMany({ where: { invoice_id: input.invoiceId } });
+          await tx.loan_commission.updateMany({
+            where: {
+              id: { in: existing.loan_invoice_item.map((it) => it.loan_commission_id) },
+              status: LoanCommissionStatus.CLAIMED,
+            },
+            data: { status: LoanCommissionStatus.CLAIMABLE },
+          });
+        }
         // The deleted lines, for the record.
         await tx.audit_log.create({
           data: {
@@ -383,6 +439,10 @@ export const partnerPayoutsRouter = createTRPCRouter({
               releasedLines: existing.invoice_item.map((it) => ({
                 commissionId: it.commission_id,
                 trancheId: it.commission_tranche_id,
+                amount: num(it.amount),
+              })),
+              releasedLoanLines: existing.loan_invoice_item.map((it) => ({
+                loanCommissionId: it.loan_commission_id,
                 amount: num(it.amount),
               })),
             },

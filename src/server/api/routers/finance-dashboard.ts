@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, financeProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
+  InvoiceKind,
   AdjustmentDirection,
   AdjustmentSide,
   AdjustmentStatus,
@@ -360,14 +361,14 @@ export const financeDashboardRouter = createTRPCRouter({
       notYetBilled(fy),
       db.$queryRawUnsafe<{ ccy: string; amt: unknown; inr: unknown; cnt: unknown }[]>(
         `SELECT ${PAYOUT_CCY_SQL} AS ccy, SUM(${PAYOUT_AMT_SQL}) AS amt, SUM(p.amount_inr) AS inr, COUNT(*) AS cnt
-         FROM partner_payout p
-         WHERE p.status = ? AND p.fy = ?
+         FROM partner_payout p JOIN invoice i ON i.id = p.invoice_id
+         WHERE p.status = ? AND p.fy = ? AND i.kind = 0
          GROUP BY ccy`,
         PayoutStatus.RELEASED,
         fy,
       ),
       db.partner_payout.aggregate({
-        where: { status: { in: UNPAID_PAYOUT_STATES } },
+        where: { status: { in: UNPAID_PAYOUT_STATES }, invoice: { kind: InvoiceKind.UNIVERSITY } },
         _sum: { amount_inr: true },
         _count: { _all: true },
       }),
@@ -410,7 +411,8 @@ export const financeDashboardRouter = createTRPCRouter({
       db.$queryRawUnsafe<{ ym: string; ccy: string; amt: unknown; inr: unknown }[]>(
         `SELECT DATE_FORMAT(COALESCE(p.payment_date, p.released_at), '%Y-%m') AS ym, ${PAYOUT_CCY_SQL} AS ccy,
                 SUM(${PAYOUT_AMT_SQL}) AS amt, SUM(p.amount_inr) AS inr
-         FROM partner_payout p WHERE p.status = ? AND p.fy = ? GROUP BY ym, ccy`,
+         FROM partner_payout p JOIN invoice i ON i.id = p.invoice_id
+         WHERE p.status = ? AND p.fy = ? AND i.kind = 0 GROUP BY ym, ccy`,
         PayoutStatus.RELEASED,
         fy,
       ),
@@ -676,7 +678,7 @@ export const financeDashboardRouter = createTRPCRouter({
         `SELECT i.org_id, i.payee_user_id, p.fy, ${PAYOUT_CCY_SQL} AS ccy,
                 SUM(${PAYOUT_AMT_SQL}) AS amt, SUM(p.amount_inr) AS inr, COUNT(*) AS cnt
          FROM partner_payout p JOIN invoice i ON i.id = p.invoice_id
-         WHERE p.status = ? AND p.fy BETWEEN ? AND ?
+         WHERE p.status = ? AND p.fy BETWEEN ? AND ? AND i.kind = 0
          GROUP BY i.org_id, i.payee_user_id, p.fy, ccy`,
         PayoutStatus.RELEASED,
         fys[0],
@@ -686,7 +688,7 @@ export const financeDashboardRouter = createTRPCRouter({
         ? db.$queryRawUnsafe<{ org_id: number | null; payee_user_id: number | null; inr: unknown }[]>(
             `SELECT i.org_id, i.payee_user_id, SUM(p.amount_inr) AS inr
              FROM partner_payout p JOIN invoice i ON i.id = p.invoice_id
-             WHERE p.status = ? AND p.fy = ? AND COALESCE(p.payment_date, DATE(p.released_at)) <= ?
+             WHERE p.status = ? AND p.fy = ? AND i.kind = 0 AND COALESCE(p.payment_date, DATE(p.released_at)) <= ?
              GROUP BY i.org_id, i.payee_user_id`,
             PayoutStatus.RELEASED,
             fy - 1,

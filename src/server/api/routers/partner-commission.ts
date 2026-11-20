@@ -19,6 +19,8 @@ import {
   AdjustmentDirection,
   AdjustmentSide,
   AdjustmentStatus,
+  InvoiceKind,
+  LoanCommissionStatus,
   OrganizationType,
   PartnerInvoiceStatus,
   PayoutStatus,
@@ -1045,6 +1047,7 @@ export const partnerCommissionRouter = createTRPCRouter({
       orderBy: [{ invoice_date: "desc" }, { id: "desc" }],
       include: {
         invoice_item: { select: { commission_id: true } },
+        loan_invoice_item: { select: { line: { select: { referral_id: true } } } },
         partner_payout: { select: payoutSelect },
       },
     });
@@ -1052,7 +1055,12 @@ export const partnerCommissionRouter = createTRPCRouter({
       id: inv.id,
       invoiceNumber: inv.invoice_number,
       invoiceDate: inv.invoice_date,
-      students: new Set(inv.invoice_item.map((it) => it.commission_id)).size,
+      // A loan claim (20 Nov 2026) counts its students by referral.
+      kind: inv.kind === InvoiceKind.LOAN ? ("loan" as const) : ("university" as const),
+      students:
+        inv.kind === InvoiceKind.LOAN
+          ? new Set(inv.loan_invoice_item.map((it) => it.line.referral_id)).size
+          : new Set(inv.invoice_item.map((it) => it.commission_id)).size,
       totalAmount: num(inv.total_amount),
       netPayable: inv.net_payable == null ? num(inv.total_amount) : num(inv.net_payable),
       payoutCurrency: inv.payout_currency ?? "INR",
@@ -1061,4 +1069,210 @@ export const partnerCommissionRouter = createTRPCRouter({
       payout: partnerPayoutView(inv.partner_payout),
     }));
   }),
+  // ---- Loan commission (20 Nov 2026) -------------------------------------------
+  // The payee's loan commission lines, one per disbursement tranche: % of the
+  // amount disbursed (Suraj). Claimable once Collegepond's payout from the
+  // lender is approved. The lender's rate and what Collegepond received are
+  // never shown here.
+  loanLines: payeeProcedure.query(async ({ ctx }) => {
+    const payee = payeeFromSession(ctx.payee);
+    const rows = await db.loan_commission.findMany({
+      where: payeeWhere(payee),
+      orderBy: [{ disbursed_on: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        tranche_no: true,
+        disbursed_amount: true,
+        disbursed_on: true,
+        partner_pct: true,
+        partner_amount: true,
+        status: true,
+        cancel_reason: true,
+        lender: { select: { name: true } },
+        referral: { select: { public_id: true, student_name: true } },
+        invoice_item: {
+          select: {
+            invoice: {
+              select: { invoice_number: true, status: true, partner_payout: { select: { status: true, payment_date: true } } },
+            },
+          },
+        },
+      },
+    });
+    return rows.map((l) => {
+      const inv = l.invoice_item?.invoice ?? null;
+      const state =
+        l.status === LoanCommissionStatus.CANCELLED
+          ? ("cancelled" as const)
+          : l.status === LoanCommissionStatus.PAID
+            ? ("paid" as const)
+            : l.status === LoanCommissionStatus.CLAIMED
+              ? ("claimed" as const)
+              : l.status === LoanCommissionStatus.CLAIMABLE
+                ? ("claimable" as const)
+                : l.status === LoanCommissionStatus.NEEDS_RATE
+                  ? ("rate_pending" as const)
+                  : ("awaiting" as const);
+      return {
+        id: l.id,
+        referralPublicId: l.referral.public_id,
+        student: l.referral.student_name,
+        lender: l.lender.name,
+        trancheNo: l.tranche_no,
+        disbursedAmount: num(l.disbursed_amount),
+        disbursedOn: l.disbursed_on,
+        pct: l.partner_pct == null ? null : num(l.partner_pct),
+        amount: l.partner_amount == null ? null : num(l.partner_amount),
+        state,
+        cancelReason: l.status === LoanCommissionStatus.CANCELLED ? l.cancel_reason : null,
+        invoiceNumber: inv?.invoice_number ?? null,
+        paidOn: inv?.partner_payout?.status === PayoutStatus.RELEASED ? inv.partner_payout.payment_date : null,
+      };
+    });
+  }),
+
+  loanTaxPreview: payeeProcedure
+    .input(z.object({ lineIds: z.array(z.number().int().positive()).min(1), gstin: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      const payee = payeeFromSession(ctx.payee);
+      const [lines, bank] = await Promise.all([
+        db.loan_commission.findMany({
+          where: { id: { in: input.lineIds }, ...payeeWhere(payee), status: LoanCommissionStatus.CLAIMABLE },
+          select: { partner_amount: true },
+        }),
+        db.partner_bank_account.findFirst({
+          where: payeeWhere(payee),
+          orderBy: { id: "desc" },
+          select: { region: true, payout_currency: true },
+        }),
+      ]);
+      const payoutCurrency = bank ? payoutCurrencyOf(bank) : "INR";
+      const subtotal = round2(lines.reduce((s, l) => s + round2(num(l.partner_amount)), 0));
+      return {
+        subtotal,
+        ...computeTax(subtotal, orNull(input.gstin), payoutCurrency ?? "INR"),
+        payoutCurrency,
+        cpName: CP.name,
+        cpAddress: CP.address,
+        cpGstin: CP.gstin,
+        sac: CP.sac,
+      };
+    }),
+
+  // A loan claim: its own invoice (kind LOAN), only loan lines, then the same
+  // review -> approval -> release pipeline as a university claim.
+  generateLoanInvoice: payeeProcedure
+    .input(
+      z.object({
+        lineIds: z.array(z.number().int().positive()).min(1).max(200),
+        invoiceNumber: z.string().trim().min(1).max(30),
+        invoiceDate: z.string(),
+        bankDetailsConfirmed: z.literal(true, {
+          errorMap: () => ({ message: "Please confirm your bank details before submitting." }),
+        }),
+        gstin: z.string().trim().max(20).optional(),
+        pan: optionalPanSchema("institution"),
+        signatoryName: z.string().trim().min(1).max(100),
+        signatoryDesignation: z.string().trim().max(100).optional(),
+        notes: z.string().trim().max(1000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const payee = payeeFromSession(ctx.payee);
+      const bank = await db.partner_bank_account.findFirst({
+        where: payeeWhere(payee),
+        orderBy: { id: "desc" },
+        select: { id: true, account_number_last4: true, ifsc: true, swift: true, region: true, payout_currency: true, bank_name: true, proof_url: true, rejected_at: true, rejection_reason: true },
+      });
+      if (!bank?.proof_url) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Add your bank details and upload a cancelled cheque (or bank letter) before submitting a claim.",
+        });
+      }
+      if (bank.rejected_at) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Our finance team couldn't verify your bank details${bank.rejection_reason ? ` (${bank.rejection_reason})` : ""}. Update them in My Account before submitting a claim.`,
+        });
+      }
+      const payoutCurrency = payoutCurrencyOf(bank);
+      if (!payoutCurrency) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Choose the currency you're paid in (My Account → Bank Details) before submitting a claim.",
+        });
+      }
+      await refuseWrongHolderPan(payee, input.pan);
+      if (payee.userId != null && !input.pan && (await payeeProfile(payee)).panRequired) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Enter your PAN to submit a claim. It's needed for the TDS deducted on your commission.",
+        });
+      }
+      const ids = Array.from(new Set(input.lineIds));
+      const lines = await db.loan_commission.findMany({
+        where: { id: { in: ids }, ...payeeWhere(payee), status: LoanCommissionStatus.CLAIMABLE },
+        select: { id: true, partner_amount: true },
+      });
+      if (lines.length !== ids.length) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Some of these loans are no longer available to claim. Refresh and try again." });
+      }
+      const subtotal = round2(lines.reduce((s, l) => s + round2(num(l.partner_amount)), 0));
+      const partnerGstin = orNull(input.gstin);
+      const tax = computeTax(subtotal, partnerGstin, payoutCurrency);
+      const taken = await db.invoice.findUnique({ where: { invoice_number: input.invoiceNumber }, select: { id: true } });
+      if (taken) throw invoiceNumberTaken(input.invoiceNumber);
+      const created = await db
+        .$transaction(async (tx) => {
+          // Claim the lines first so two submissions can't both take them.
+          const moved = await tx.loan_commission.updateMany({
+            where: { id: { in: ids }, ...payeeWhere(payee), status: LoanCommissionStatus.CLAIMABLE },
+            data: { status: LoanCommissionStatus.CLAIMED },
+          });
+          if (moved.count !== ids.length) {
+            throw new TRPCError({ code: "CONFLICT", message: "One of these loans was just claimed on another invoice. Refresh and try again." });
+          }
+          const inv = await tx.invoice.create({
+            data: {
+              invoice_number: input.invoiceNumber,
+              invoice_date: new Date(input.invoiceDate),
+              total_amount: subtotal,
+              currency: "INR",
+              payout_currency: payoutCurrency,
+              status: PartnerInvoiceStatus.SUBMITTED,
+              kind: InvoiceKind.LOAN,
+              ...payeeData(payee),
+              gstin: partnerGstin,
+              pan: orNull(input.pan),
+              sac_code: CP.sac,
+              is_interstate: tax.isInterstate == null ? null : tax.isInterstate ? 1 : 0,
+              cgst_amount: tax.cgst,
+              sgst_amount: tax.sgst,
+              igst_amount: tax.igst,
+              tds_amount: tax.tds,
+              net_payable: tax.netPayable,
+              signed_at: new Date(),
+              signatory_name: input.signatoryName,
+              signatory_designation: orNull(input.signatoryDesignation),
+              notes: orNull(input.notes),
+              bank_account_id: bank.id,
+              bank_details: `${bank.bank_name ?? ""} ${(bank.region === 1 ? bank.swift : bank.ifsc) ?? ""} ****${bank.account_number_last4 ?? ""}`.trim(),
+            },
+          });
+          await tx.loan_invoice_item.createMany({
+            data: lines.map((l) => ({ invoice_id: inv.id, loan_commission_id: l.id, amount: round2(num(l.partner_amount)) })),
+          });
+          return inv;
+        })
+        .catch((e: unknown) => {
+          if (prismaCode(e) === "P2002") {
+            const detail = `${JSON.stringify((e as { meta?: unknown }).meta ?? null)} ${(e as Error).message}`;
+            if (detail.includes("invoice_number")) throw invoiceNumberTaken(input.invoiceNumber);
+            throw new TRPCError({ code: "CONFLICT", message: "One of these loans was just claimed on another invoice. Refresh and try again." });
+          }
+          throw e;
+        });
+      return { invoiceId: created.id, netPayable: tax.netPayable, payoutCurrency };
+    }),
 });

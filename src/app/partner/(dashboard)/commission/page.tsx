@@ -479,6 +479,8 @@ function CommissionContent() {
         )}
       </DashboardCard>
 
+      <LoanCommissionCard onSubmitted={() => showToast("Loan commission invoice submitted to CollegePond")} />
+
       <AdjustmentsCard />
 
       <DashboardCard title="Invoice History" bodyClassName="p-0">
@@ -504,7 +506,10 @@ function CommissionContent() {
               <tbody>
                 {(historyQ.data ?? []).map((h) => (
                   <tr key={h.id} className="border-b border-[#F2F4F7] last:border-0">
-                    <td className={`${TD} font-medium text-[#101828]`}>{h.invoiceNumber}</td>
+                    <td className={`${TD} font-medium text-[#101828]`}>
+                      {h.invoiceNumber}
+                      {h.kind === "loan" && <span className="ml-1.5 rounded-[10px] bg-[#F4F3FF] px-2 py-0.5 text-[10px] font-semibold text-[#6941C6]">Loan</span>}
+                    </td>
                     <td className={TD}>{formatDate(h.invoiceDate)}</td>
                     <td className={TD}>{h.students}</td>
                     <td className={TD}>{inr(h.totalAmount)}</td>
@@ -546,6 +551,134 @@ function CommissionContent() {
       )}
 
       <Toast message={toastMsg} open={toastOpen} onClose={() => setToastOpen(false)} />
+    </div>
+  );
+}
+
+// ---- Loan commission (20 Nov 2026) --------------------------------------------
+// Its own box, never mixed into the university rows: one line per loan
+// disbursement, the partner's % of the amount disbursed, claimable once
+// Collegepond has received the lender's payout. Claimed on its own invoice.
+const LOAN_STATE: Record<LoanLine["state"], { label: string; pill: string }> = {
+  rate_pending: { label: "Rate being set by Collegepond", pill: "bg-[#F2F4F7] text-[#667085]" },
+  awaiting: { label: "Awaiting lender payout", pill: "bg-[#F2F4F7] text-[#667085]" },
+  claimable: { label: "Available to Claim", pill: "bg-[#ECFDF3] text-[#067647]" },
+  claimed: { label: "Claimed", pill: "bg-[#FFF6ED] text-[#B54708]" },
+  paid: { label: "Paid", pill: "bg-[#EFF8FF] text-[#1570EF]" },
+  cancelled: { label: "Cancelled", pill: "bg-[#FEF3F2] text-[#B42318]" },
+};
+
+function LoanCommissionCard({ onSubmitted }: { onSubmitted: () => void }) {
+  const linesQ = api.partnerCommission.loanLines.useQuery();
+  const lines = useMemo(() => linesQ.data ?? [], [linesQ.data]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [wizard, setWizard] = useState(false);
+
+  const k = useMemo(() => {
+    const sum = (st: LoanLine["state"][]) => lines.filter((l) => st.includes(l.state)).reduce((s, l) => s + (l.amount ?? 0), 0);
+    return {
+      earned: sum(["awaiting", "claimable", "claimed", "paid"]),
+      claimable: sum(["claimable"]),
+      claimed: sum(["claimed"]),
+      paid: sum(["paid"]),
+    };
+  }, [lines]);
+  const claimable = lines.filter((l) => l.state === "claimable");
+  const picked = lines.filter((l) => selected.has(l.id));
+  const toggle = (id: number) =>
+    setSelected((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  return (
+    <div id="loan-commission" className="mb-6 scroll-mt-24">
+      <DashboardCard
+        title="Loan Commission (education loans you referred)"
+        bodyClassName="p-0"
+        headerRight={
+          <Button className="!h-9 !px-4 !text-[13px]" disabled={picked.length === 0} onClick={() => setWizard(true)}>
+            {picked.length > 0 ? `Claim ${picked.length} loan${picked.length === 1 ? "" : "s"}` : "Claim"}
+          </Button>
+        }
+      >
+        <div className="grid grid-cols-2 gap-px border-b border-[#F2F4F7] bg-[#F2F4F7] lg:grid-cols-4">
+          {[
+            ["Earned", k.earned, "text-[#101828]"],
+            ["Claimable now", k.claimable, "text-[#067647]"],
+            ["Claimed", k.claimed, "text-[#B54708]"],
+            ["Paid to you", k.paid, "text-[#1570EF]"],
+          ].map(([label, v, c]) => (
+            <div key={label as string} className="bg-white px-5 py-3">
+              <div className="text-[11px] font-semibold tracking-wider text-[#667085] uppercase">{label}</div>
+              <div className={`mt-0.5 text-lg font-bold ${c as string}`}>{linesQ.data ? inr(v as number) : "—"}</div>
+            </div>
+          ))}
+        </div>
+        {linesQ.isLoading ? (
+          <SkeletonTable rows={2} cols={6} />
+        ) : lines.length === 0 ? (
+          <EmptyState label="When a loan you referred is disbursed, your loan commission appears here: your % of the amount disbursed, claimable once Collegepond receives the lender's payout." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse" style={{ minWidth: 900 }}>
+              <thead>
+                <tr>
+                  <th className={`${TH} w-10`}>
+                    <input
+                      type="checkbox"
+                      disabled={claimable.length === 0}
+                      checked={claimable.length > 0 && claimable.every((l) => selected.has(l.id))}
+                      onChange={(e) => setSelected(new Set(e.target.checked ? claimable.map((l) => l.id) : []))}
+                    />
+                  </th>
+                  <th className={TH}>Student</th>
+                  <th className={TH}>Lender</th>
+                  <th className={TH}>Disbursed</th>
+                  <th className={TH}>Your rate</th>
+                  <th className={TH}>Your commission</th>
+                  <th className={TH}>Status</th>
+                  <th className={TH}>Invoice / Paid</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.id} className={`border-b border-[#F2F4F7] last:border-0 ${l.state === "paid" || l.state === "cancelled" ? "opacity-70" : ""}`}>
+                    <td className={`${TD} w-10`}>
+                      <input type="checkbox" disabled={l.state !== "claimable"} checked={selected.has(l.id)} onChange={() => toggle(l.id)} />
+                    </td>
+                    <td className={`${TD} font-medium text-[#101828]`}>
+                      <a href={`/partner/loans/${l.referralPublicId}`} className="hover:text-[#1570EF] hover:underline">{l.student}</a>
+                    </td>
+                    <td className={TD}>
+                      {l.lender}
+                      {l.trancheNo > 1 && <span className="block text-xs text-[#98A2B3]">Tranche {l.trancheNo}</span>}
+                    </td>
+                    <td className={TD}>
+                      {inr(l.disbursedAmount)}
+                      <span className="block text-xs text-[#98A2B3]">{formatDate(l.disbursedOn)}</span>
+                    </td>
+                    <td className={TD}>{l.pct == null ? "Being set" : `${l.pct}% of disbursed`}</td>
+                    <td className={`${TD} font-semibold text-[#101828]`}>{l.amount == null ? "—" : inr(l.amount)}</td>
+                    <td className={TD}>
+                      <span className={`rounded-[10px] px-2.5 py-0.5 text-[11px] font-semibold ${LOAN_STATE[l.state].pill}`}>{LOAN_STATE[l.state].label}</span>
+                      {l.cancelReason && <span className="mt-1 block max-w-[240px] text-[11px] whitespace-normal text-[#667085]">{l.cancelReason}</span>}
+                    </td>
+                    <td className={TD}>
+                      {l.invoiceNumber ?? "—"}
+                      {l.paidOn && <span className="block text-xs text-[#98A2B3]">paid {formatDate(l.paidOn)}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DashboardCard>
+      {wizard && (
+        <InvoiceWizard
+          loanLines={picked}
+          onClose={() => setWizard(false)}
+          onDone={() => { setWizard(false); setSelected(new Set()); onSubmitted(); }}
+        />
+      )}
     </div>
   );
 }
@@ -702,7 +835,42 @@ function StudentDetailModal({ claim, onClose }: { claim: Claim; onClose: () => v
 // =============================================================================
 // Invoice wizard (3 steps: review → details + signature → preview & submit)
 // =============================================================================
-function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: () => void; onDone: () => void }) {
+// A loan claim (20 Nov 2026) runs through the same wizard with loan lines:
+// its own invoice, never mixed with university students.
+type LoanLine = RO["partnerCommission"]["loanLines"][number];
+type WizardRow = { key: number; title: string; sub: string; c1: string; c2: string; pct: string; amount: number };
+
+function InvoiceWizard({
+  claims = [],
+  loanLines,
+  onClose,
+  onDone,
+}: {
+  claims?: Claim[];
+  loanLines?: LoanLine[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const loan = loanLines != null;
+  const rows: WizardRow[] = loan
+    ? loanLines.map((l) => ({
+        key: l.id,
+        title: l.student,
+        sub: `${l.lender} · tranche ${l.trancheNo}`,
+        c1: `${l.lender} · tranche ${l.trancheNo}`,
+        c2: inr(l.disbursedAmount),
+        pct: l.pct == null ? "—" : `${l.pct}%`,
+        amount: l.amount ?? 0,
+      }))
+    : claims.map((c) => ({
+        key: c.commissionId,
+        title: c.studentName,
+        sub: c.university,
+        c1: c.intake ?? "—",
+        c2: money(c.tuition, c.tuitionCurrency),
+        pct: shareText(c.partnerSharePct),
+        amount: c.claimableInr,
+      }));
   const utils = api.useUtils();
   const bankQ = api.partnerCommission.bankAccount.useQuery();
   const bank = bankQ.data;
@@ -735,10 +903,14 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   }, [gstin]);
 
   const commissionIds = claims.map((c) => c.commissionId);
-  const previewQ = api.partnerCommission.taxPreview.useQuery({ commissionIds, gstin: gstin || undefined }, { enabled: step === 3 });
+  const lineIds = (loanLines ?? []).map((l) => l.id);
+  const uniPreviewQ = api.partnerCommission.taxPreview.useQuery({ commissionIds, gstin: gstin || undefined }, { enabled: step === 3 && !loan });
+  const loanPreviewQ = api.partnerCommission.loanTaxPreview.useQuery({ lineIds, gstin: gstin || undefined }, { enabled: step === 3 && loan && lineIds.length > 0 });
+  const previewQ = loan ? loanPreviewQ : uniPreviewQ;
 
   const generate = api.partnerCommission.generateInvoice.useMutation();
-  const busy = generate.isPending;
+  const generateLoan = api.partnerCommission.generateLoanInvoice.useMutation();
+  const busy = generate.isPending || generateLoan.isPending;
   // Rejected details can't be paid into; the server refuses the claim too.
   const bankReady = Boolean(bank?.hasAccount && bank.hasProof && bank.status !== "rejected");
 
@@ -777,12 +949,14 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const submit = async () => {
     setErr("");
     try {
-      await generate.mutateAsync({
-        commissionIds, invoiceNumber: invoiceNumber.trim(), invoiceDate,
-        bankDetailsConfirmed: true,
+      const common = {
+        invoiceNumber: invoiceNumber.trim(), invoiceDate,
+        bankDetailsConfirmed: true as const,
         gstin: gstin || undefined, pan: pan || undefined,
         signatoryName: signatory.trim(), signatoryDesignation: designation || undefined, notes: notes || undefined,
-      });
+      };
+      if (loan) await generateLoan.mutateAsync({ ...common, lineIds });
+      else await generate.mutateAsync({ ...common, commissionIds });
       void utils.partnerCommission.invalidate();
       setConfirmOpen(false);
       onDone();
@@ -799,7 +973,12 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
   const downloadPdf = () => {
     const p = previewQ.data;
     if (!p) return;
-    const lines = claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${money(c.commissionAmount, c.currency)}</td><td style="text-align:right">${shareText(c.partnerSharePct)}</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
+    const lines = loan
+      ? rows.map((r) => `<tr><td>${r.title} — ${r.sub} (education loan)</td><td style="text-align:right">${r.c2}</td><td style="text-align:right">${r.pct}</td><td style="text-align:right">${inr(r.amount)}</td></tr>`).join("")
+      : claims.map((c) => `<tr><td>${c.studentName} — ${c.university}</td><td style="text-align:right">${money(c.commissionAmount, c.currency)}</td><td style="text-align:right">${shareText(c.partnerSharePct)}</td><td style="text-align:right">${inr(c.claimableInr)}</td></tr>`).join("");
+    const headCols = loan
+      ? `<th>Student / Lender</th><th style="text-align:right">Disbursed</th><th style="text-align:right">% of Disbursed</th><th style="text-align:right">Claimable (₹)</th>`
+      : `<th>Student / University</th><th style="text-align:right">Comm Amt</th><th style="text-align:right">% Share</th><th style="text-align:right">Claimable (₹)</th>`;
     const taxRows = foreignPayout
       ? `<tr><td>No GST / TDS — paid in ${p.payoutCurrency}</td><td style="text-align:right">—</td></tr>`
       : p.isInterstate === false
@@ -814,7 +993,8 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
       <p style="text-align:center;color:#667085">${invoiceNumber} · ${formatDate(invoiceDate)}</p>
       <p><b>From:</b> ${bank?.orgName ?? "Your Agency"}<br>${gstin ? "GSTIN: " + gstin : pan ? "PAN: " + pan : "Unregistered"}</p>
       <p><b>Bill To:</b> ${p.cpName}<br>${p.cpAddress}<br>GSTIN: ${p.cpGstin} · SAC: ${p.sac}</p>
-      <table><thead><tr><th>Student / University</th><th style="text-align:right">Comm Amt</th><th style="text-align:right">% Share</th><th style="text-align:right">Claimable (₹)</th></tr></thead><tbody>${lines}</tbody></table>
+      ${loan ? `<p style="font-size:12px;color:#667085">Education loan referral commission</p>` : ""}
+      <table><thead><tr>${headCols}</tr></thead><tbody>${lines}</tbody></table>
       <table style="width:300px;margin-left:auto"><tr><td>Subtotal</td><td style="text-align:right">${inr(p.subtotal)}</td></tr>${taxRows}<tr><td><b>${totalLabel}</b></td><td style="text-align:right"><b>${inr(p.netPayable)}</b></td></tr></table>
       <p style="margin-top:24px;font-size:12px;color:#667085">Authorised signatory: ${signatory} (${designation})${signedAt ? " · signed " + signedAt : ""}</p>
       ${notes ? `<p style="font-size:12px;color:#667085">Notes: ${notes}</p>` : ""}
@@ -856,7 +1036,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
 
   return (
     <>
-    <Modal open title="Generate Tax Invoice" width="w-[820px]" onClose={onClose}
+    <Modal open title={loan ? "Loan Commission: Generate Tax Invoice" : "Generate Tax Invoice"} width="w-[820px]" onClose={onClose}
       footer={
         <>
           {step > 1 && <Button variant="secondary" onClick={() => setStep((s) => s - 1)}>Back</Button>}
@@ -879,9 +1059,19 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
       {step === 1 && (
         <div className="overflow-hidden rounded-lg border border-[#E4E7EC]">
           <table className="w-full border-collapse">
-            <thead><tr><th className={TH}>Student</th><th className={TH}>Intake</th><th className={TH}>Tuition</th><th className={TH}>% Share</th><th className={`${TH} text-right`}>Claimable (₹)</th></tr></thead>
+            <thead><tr><th className={TH}>Student</th><th className={TH}>{loan ? "Lender" : "Intake"}</th><th className={TH}>{loan ? "Disbursed" : "Tuition"}</th><th className={TH}>{loan ? "% of Disbursed" : "% Share"}</th><th className={`${TH} text-right`}>Claimable (₹)</th></tr></thead>
             <tbody>
-              {claims.map((c) => (
+              {loan
+                ? rows.map((r) => (
+                    <tr key={r.key} className="border-b border-[#F2F4F7] last:border-0">
+                      <td className={`${TD} font-medium text-[#101828]`}>{r.title}</td>
+                      <td className={TD}>{r.c1}</td>
+                      <td className={TD}>{r.c2}</td>
+                      <td className={TD}>{r.pct}</td>
+                      <td className={`${TD} text-right font-semibold`}>{inr(r.amount)}</td>
+                    </tr>
+                  ))
+                : claims.map((c) => (
                 <tr key={c.commissionId} className="border-b border-[#F2F4F7] last:border-0">
                   <td className={`${TD} font-medium text-[#101828]`}>{c.studentName}<span className="block text-xs font-normal text-[#98A2B3]">{c.studentCode}</span></td>
                   <td className={TD}>{c.intake ?? "—"}</td>
@@ -890,7 +1080,7 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                   <td className={`${TD} text-right font-semibold`}>{inr(c.claimableInr)}</td>
                 </tr>
               ))}
-              <tr className="bg-[#F9FAFB]"><td className={`${TD} font-bold`} colSpan={4}>Total</td><td className={`${TD} text-right font-bold text-[#101828]`}>{inr(claims.reduce((s, c) => s + c.claimableInr, 0))}</td></tr>
+              <tr className="bg-[#F9FAFB]"><td className={`${TD} font-bold`} colSpan={4}>Total</td><td className={`${TD} text-right font-bold text-[#101828]`}>{inr(rows.reduce((s, r) => s + r.amount, 0))}</td></tr>
             </tbody>
           </table>
         </div>
@@ -983,9 +1173,17 @@ function InvoiceWizard({ claims, onClose, onDone }: { claims: Claim[]; onClose: 
                 </div>
               )}
               <table className="mb-3 w-full border-collapse">
-                <thead><tr><th className={TH}>Student / University</th><th className={`${TH} text-right`}>Comm Amt</th><th className={`${TH} text-right`}>% Share</th><th className={`${TH} text-right`}>Claimable (₹)</th></tr></thead>
+                <thead><tr><th className={TH}>{loan ? "Student / Lender" : "Student / University"}</th><th className={`${TH} text-right`}>{loan ? "Disbursed" : "Comm Amt"}</th><th className={`${TH} text-right`}>{loan ? "% of Disbursed" : "% Share"}</th><th className={`${TH} text-right`}>Claimable (₹)</th></tr></thead>
                 <tbody>
-                  {claims.map((c) => (
+                  {loan && rows.map((r) => (
+                    <tr key={r.key} className="border-b border-[#F2F4F7]">
+                      <td className={TD}>{r.title}<span className="block text-xs text-[#98A2B3]">{r.sub} · education loan</span></td>
+                      <td className={`${TD} text-right`}>{r.c2}</td>
+                      <td className={`${TD} text-right`}>{r.pct}</td>
+                      <td className={`${TD} text-right`}>{inr(r.amount)}</td>
+                    </tr>
+                  ))}
+                  {!loan && claims.map((c) => (
                     <tr key={c.commissionId} className="border-b border-[#F2F4F7]">
                       <td className={TD}>{c.studentName}<span className="block text-xs text-[#98A2B3]">{c.university}</span></td>
                       <td className={`${TD} text-right`}>{money(c.commissionAmount, c.currency)}</td>

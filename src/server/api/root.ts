@@ -10,6 +10,7 @@ import { trancheConditionsRouter } from "~/server/api/routers/tranche-conditions
 import { resourcesRouter } from "~/server/api/routers/resources";
 import { resourceCategoriesRouter } from "~/server/api/routers/resource-categories";
 import { adjustmentsRouter } from "~/server/api/routers/adjustments";
+import { loanCommissionRouter } from "~/server/api/routers/loan-commission";
 import { adjustmentReasonsRouter } from "~/server/api/routers/adjustment-reasons";
 import { partnerNoticeSettingsRouter } from "~/server/api/routers/partner-notice-settings";
 import { partnerTiersRouter } from "~/server/api/routers/partner-tiers";
@@ -69,6 +70,7 @@ export const appRouter = createTRPCRouter({
   resources: resourcesRouter,
   resourceCategories: resourceCategoriesRouter,
   adjustments: adjustmentsRouter,
+  loanCommission: loanCommissionRouter,
   adjustmentReasons: adjustmentReasonsRouter,
   partnerNoticeSettings: partnerNoticeSettingsRouter,
   partnerTiers: partnerTiersRouter,
