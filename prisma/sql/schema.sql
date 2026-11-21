@@ -3039,6 +3039,7 @@ CREATE TABLE IF NOT EXISTS `loan_doc_upload` (
   `public_id`       CHAR(36)          NOT NULL,
   `referral_id`     INT               NOT NULL,
   `item_key`        VARCHAR(80)       NOT NULL,
+  `label`           VARCHAR(160)      NULL DEFAULT NULL,
   `author_user_id`  INT               NULL DEFAULT NULL,
   `author_name`     VARCHAR(150)      NOT NULL,
   `source`          VARCHAR(20)       NOT NULL DEFAULT 'upload',

@@ -14,6 +14,8 @@ import {
   PHONE_LEN,
 } from "~/app/partner/(dashboard)/students/add-student-modal";
 import {
+  ADDITIONAL_DOC_KEY,
+  ADDITIONAL_DOC_LABEL_MAX,
   LOAN_CONSENT_TEXT,
   LOAN_TRACK,
   LoanReferralSendStatus,
@@ -413,6 +415,13 @@ export function StudentLoanRow({
 
 type LoanDetail = RouterOutputs["loans"]["partnerGet"];
 
+// Where a loan file opens: the partner's own routes, or the Super Admin's
+// read-only view (/admin/loan-referrals/[publicId]).
+function loanFileHref(kind: "doc" | "chat", id: number, readOnly: boolean) {
+  if (readOnly) return `/api/admin/loan-file/${id}?kind=${kind}`;
+  return kind === "doc" ? `/api/partner/loan-doc-file/${id}` : `/api/partner/loan-file/${id}`;
+}
+
 const when = (d: Date | string) =>
   new Date(d).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -463,7 +472,16 @@ export function LoanUpdates({ loan }: { loan: LoanDetail }) {
 // The chat with the loan counsellor (contract 4): both sides, oldest first,
 // the composer underneath once the loan team has the lead. Opening it (and
 // each new message while it's open) marks it read for this partner user.
-export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () => void }) {
+export function LoanChat({
+  loan,
+  onChanged,
+  readOnly = false,
+}: {
+  loan: LoanDetail;
+  onChanged: () => void;
+  /** Super Admin view: no composer, no retry, nothing marked read. */
+  readOnly?: boolean;
+}) {
   const retry = api.loans.partnerRetryMessage.useMutation();
   const markRead = api.loans.partnerMarkChatRead.useMutation();
   const utils = api.useUtils();
@@ -474,11 +492,12 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
   const { mutate } = markRead;
 
   useEffect(() => {
+    if (readOnly) return;
     mutate(
       { publicId: loan.publicId },
       { onSuccess: () => void Promise.all([utils.loans.partnerUnreadCount.invalidate(), utils.loans.partnerList.invalidate()]) },
     );
-  }, [loan.publicId, lastStaff, mutate, utils]);
+  }, [loan.publicId, lastStaff, mutate, utils, readOnly]);
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -518,7 +537,7 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
                         {m.files.map((f) => (
                           <a
                             key={f.id}
-                            href={`/api/partner/loan-file/${f.id}`}
+                            href={loanFileHref("chat", f.id, readOnly)}
                             target="_blank"
                             rel="noreferrer"
                             className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[12px] font-medium ${
@@ -540,6 +559,7 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
                     {!staff && m.sendStatus === LoanReferralSendStatus.FAILED && (
                       <>
                         <span className="text-[#B42318]"> · Not delivered</span>{" "}
+                        {!readOnly && (
                         <button
                           type="button"
                           disabled={retry.isPending}
@@ -548,6 +568,7 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
                         >
                           Retry
                         </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -557,7 +578,11 @@ export function LoanChat({ loan, onChanged }: { loan: LoanDetail; onChanged: () 
           </div>
         )}
       </div>
-      {loan.canMessage ? (
+      {readOnly ? (
+        <p className="border-t border-[#E4E7EC] px-5 py-3 text-[12px] text-[#98A2B3]">
+          Read-only: the partner and the loan counsellor write here.
+        </p>
+      ) : loan.canMessage ? (
         <ReplyBox publicId={loan.publicId} onSent={onChanged} hasDocList={loan.documents.length > 0} />
       ) : (
         <p className="border-t border-[#E4E7EC] px-5 py-3 text-[12px] text-[#98A2B3]">
@@ -698,11 +723,12 @@ const DOC_GROUPS: { key: "student" | "coapplicant" | "collateral"; label: string
 ];
 
 type DocItem = LoanDetail["documents"][number];
+type DocUpload = DocItem["uploads"][number];
 
-// Where one item stands, from its newest upload.
-function docState(item: DocItem): { label: string; tone: keyof typeof TONES } {
-  const u = item.uploads[0];
-  if (!u) return item.required ? { label: "Needed", tone: "amber" } : { label: "Not sent", tone: "gray" };
+// Where one upload stands. Nothing is mandatory (21 Nov 2026): an item with
+// no upload shows no badge at all.
+function uploadState(u: DocUpload | undefined): { label: string; tone: keyof typeof TONES } | null {
+  if (!u) return null;
   if (u.sendStatus === LoanReferralSendStatus.FAILED) return { label: "Not delivered", tone: "red" };
   if (u.sendStatus === LoanReferralSendStatus.SENDING) return { label: "Waiting to be delivered", tone: "amber" };
   if (u.reviewStatus === "accepted") return { label: "Accepted", tone: "green" };
@@ -710,12 +736,54 @@ function docState(item: DocItem): { label: string; tone: keyof typeof TONES } {
   return { label: "With the loan team", tone: "blue" };
 }
 
+function StateBadge({ u }: { u: DocUpload | undefined }) {
+  const state = uploadState(u);
+  if (!state) return null;
+  const tone = TONES[state.tone];
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+      style={{ color: tone.color, background: tone.bg }}
+    >
+      {state.label}
+    </span>
+  );
+}
+
+// PDF / JPG / PNG, 1–5 files, 10 MB each: the checks the upload route repeats.
+function checkDocFiles(files: File[]): string | null {
+  if (files.length === 0) return "Choose a file to upload.";
+  if (files.length > 5) return "Up to 5 files at a time.";
+  const bad = files.find((f) => !/\.(pdf|jpe?g|png)$/i.test(f.name));
+  if (bad) return `${bad.name} isn't a PDF, JPG or PNG.`;
+  const big = files.find((f) => f.size > 10 * 1024 * 1024);
+  if (big) return `${big.name} is over 10 MB.`;
+  return null;
+}
+
+async function postLoanDoc(fd: FormData): Promise<void> {
+  const res = await fetch("/api/partner/loan-doc", { method: "POST", body: fd });
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(body.error ?? "Could not send the document.");
+}
+
 // The loan team's document list for this lead (contract 5): upload per item
 // (PDF / JPG / PNG), or send the one already on the student's profile; each
-// upload shows the counsellor's review.
-export function LoanDocuments({ loan, onChanged }: { loan: LoanDetail; onChanged: () => void }) {
+// upload shows the counsellor's review. Below it, Additional documents: any
+// other document the counsellor asks for, under the partner's own label.
+// Nothing on the list is mandatory. readOnly: the Super Admin's view (no
+// uploads, no retries).
+export function LoanDocuments({
+  loan,
+  onChanged,
+  readOnly = false,
+}: {
+  loan: LoanDetail;
+  onChanged: () => void;
+  readOnly?: boolean;
+}) {
   const items = loan.documents;
-  if (!loan.canMessage) return null;
+  if (!readOnly && !loan.canMessage) return null;
   const sent = items.filter((i) => i.uploads.length > 0).length;
   const accepted = items.filter((i) => i.uploads[0]?.reviewStatus === "accepted").length;
   const again = items.filter((i) => i.uploads[0]?.reviewStatus === "reupload").length;
@@ -726,7 +794,9 @@ export function LoanDocuments({ loan, onChanged }: { loan: LoanDetail; onChanged
         <p className="mt-0.5 text-[12px] text-[#667085]">
           {items.length === 0
             ? "The loan team's document list will appear here shortly."
-            : `${sent} of ${items.length} sent · ${accepted} accepted${again ? ` · ${again} to upload again` : ""}. PDF, JPG or PNG, up to 10 MB each.`}
+            : `${sent} of ${items.length} sent · ${accepted} accepted${again ? ` · ${again} to upload again` : ""}. ${
+                readOnly ? "" : "Send what you have; "
+              }PDF, JPG or PNG, up to 10 MB each.`}
         </p>
       </div>
       {DOC_GROUPS.map((g) => {
@@ -739,25 +809,117 @@ export function LoanDocuments({ loan, onChanged }: { loan: LoanDetail; onChanged
             </div>
             <ul>
               {rows.map((i) => (
-                <DocRow key={i.key} item={i} publicId={loan.publicId} onChanged={onChanged} />
+                <DocRow key={i.key} item={i} publicId={loan.publicId} onChanged={onChanged} readOnly={readOnly} />
               ))}
             </ul>
           </div>
         );
       })}
+      <AdditionalDocs loan={loan} onChanged={onChanged} readOnly={readOnly} />
     </section>
   );
 }
 
-function DocRow({ item, publicId, onChanged }: { item: DocItem; publicId: string; onChanged: () => void }) {
+function UploadFiles({
+  uploads,
+  latest,
+  readOnly,
+}: {
+  uploads: DocUpload[];
+  latest: DocUpload | undefined;
+  readOnly: boolean;
+}) {
+  if (uploads.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5">
+      {uploads.flatMap((u) =>
+        u.files.map((f) => (
+          <a
+            key={f.id}
+            href={loanFileHref("doc", f.id, readOnly)}
+            target="_blank"
+            rel="noreferrer"
+            className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-[12px] ${
+              u === latest ? "border-[#E4E7EC] text-[#175CD3]" : "border-[#F2F4F7] text-[#98A2B3] line-through"
+            }`}
+            title={`${u.authorName} · ${when(u.at)}${u.source === "converge_profile" ? " · from the student's profile" : ""}`}
+          >
+            {f.name}
+          </a>
+        )),
+      )}
+    </div>
+  );
+}
+
+function ReviewNote({ u }: { u: DocUpload | undefined }) {
+  if (u?.reviewStatus !== "reupload" || !u.reviewReason) return null;
+  return (
+    <div className="mt-1 text-[12px] text-[#B42318]">
+      {u.reviewedBy ? `${u.reviewedBy}: ` : ""}
+      {u.reviewReason}
+    </div>
+  );
+}
+
+function RetryUpload({ u, onChanged, readOnly }: { u: DocUpload | undefined; onChanged: () => void; readOnly: boolean }) {
+  const retry = api.loans.partnerRetryDocument.useMutation();
+  if (readOnly || u?.sendStatus !== LoanReferralSendStatus.FAILED) return null;
+  return (
+    <button
+      type="button"
+      disabled={retry.isPending}
+      onClick={() => void retry.mutateAsync({ publicId: u.publicId }).then(onChanged, onChanged)}
+      className="mt-1 cursor-pointer text-[12px] font-semibold text-[#1570EF] hover:underline disabled:opacity-50"
+    >
+      Retry sending
+    </button>
+  );
+}
+
+function UploadButton({ busy, label, onFiles }: { busy: boolean; label: string; onFiles: (files: File[]) => void }) {
+  const [inputKey, setInputKey] = useState(0);
+  return (
+    <label
+      className={`inline-flex h-8 cursor-pointer items-center rounded-lg px-3 text-[12px] font-semibold whitespace-nowrap ${
+        busy ? "bg-[#F2F4F7] text-[#98A2B3]" : "bg-[#1570EF] text-white hover:bg-[#1260d4]"
+      }`}
+    >
+      {busy ? "Sending…" : label}
+      <input
+        key={inputKey}
+        type="file"
+        accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
+        multiple
+        className="hidden"
+        disabled={busy}
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          setInputKey((k) => k + 1);
+          if (files.length > 0) onFiles(files);
+        }}
+      />
+    </label>
+  );
+}
+
+function DocRow({
+  item,
+  publicId,
+  onChanged,
+  readOnly,
+}: {
+  item: DocItem;
+  publicId: string;
+  onChanged: () => void;
+  readOnly: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [inputKey, setInputKey] = useState(0);
-  const retry = api.loans.partnerRetryDocument.useMutation();
-  const state = docState(item);
-  const tone = TONES[state.tone];
   const latest = item.uploads[0];
-  const unusedOnFile = item.onFile.filter((f) => !item.uploads.some((u) => u.source === "converge_profile" && u.files.some((x) => x.name === f.name)));
+  const unusedOnFile = item.onFile.filter(
+    (f) => !item.uploads.some((u) => u.source === "converge_profile" && u.files.some((x) => x.name === f.name)),
+  );
 
   const send = async (fd: FormData) => {
     setBusy(true);
@@ -765,32 +927,18 @@ function DocRow({ item, publicId, onChanged }: { item: DocItem; publicId: string
     try {
       fd.set("publicId", publicId);
       fd.set("typeKey", item.key);
-      const res = await fetch("/api/partner/loan-doc", { method: "POST", body: fd });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) throw new Error(body.error ?? "Could not send the document.");
+      await postLoanDoc(fd);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not send the document.");
     } finally {
       setBusy(false);
-      setInputKey((k) => k + 1);
     }
   };
-  const upload = (list: FileList | null) => {
-    const files = Array.from(list ?? []);
-    if (files.length === 0) return;
-    if (files.length > 5) {
-      setError("Up to 5 files at a time.");
-      return;
-    }
-    const bad = files.find((f) => !/\.(pdf|jpe?g|png)$/i.test(f.name));
-    if (bad) {
-      setError(`${bad.name} isn't a PDF, JPG or PNG.`);
-      return;
-    }
-    const big = files.find((f) => f.size > 10 * 1024 * 1024);
-    if (big) {
-      setError(`${big.name} is over 10 MB.`);
+  const upload = (files: File[]) => {
+    const problem = checkDocFiles(files);
+    if (problem) {
+      setError(problem);
       return;
     }
     const fd = new FormData();
@@ -808,53 +956,14 @@ function DocRow({ item, publicId, onChanged }: { item: DocItem; publicId: string
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2 text-[13px] font-semibold text-[#101828]">
           {item.label}
-          {item.required && <span className="text-[11px] font-medium text-[#B54708]">Required</span>}
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold"
-            style={{ color: tone.color, background: tone.bg }}
-          >
-            {state.label}
-          </span>
+          <StateBadge u={latest} />
         </div>
-        {latest?.reviewStatus === "reupload" && latest.reviewReason && (
-          <div className="mt-1 text-[12px] text-[#B42318]">
-            {latest.reviewedBy ? `${latest.reviewedBy}: ` : ""}
-            {latest.reviewReason}
-          </div>
-        )}
-        {item.uploads.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {item.uploads.flatMap((u) =>
-              u.files.map((f) => (
-                <a
-                  key={f.id}
-                  href={`/api/partner/loan-doc-file/${f.id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-[12px] ${
-                    u === latest ? "border-[#E4E7EC] text-[#175CD3]" : "border-[#F2F4F7] text-[#98A2B3] line-through"
-                  }`}
-                  title={`${u.authorName} · ${when(u.at)}${u.source === "converge_profile" ? " · from the student's profile" : ""}`}
-                >
-                  {f.name}
-                </a>
-              )),
-            )}
-          </div>
-        )}
-        {latest?.sendStatus === LoanReferralSendStatus.FAILED && (
-          <button
-            type="button"
-            disabled={retry.isPending}
-            onClick={() => void retry.mutateAsync({ publicId: latest.publicId }).then(onChanged, onChanged)}
-            className="mt-1 cursor-pointer text-[12px] font-semibold text-[#1570EF] hover:underline disabled:opacity-50"
-          >
-            Retry sending
-          </button>
-        )}
+        <ReviewNote u={latest} />
+        <UploadFiles uploads={item.uploads} latest={latest} readOnly={readOnly} />
+        <RetryUpload u={latest} onChanged={onChanged} readOnly={readOnly} />
         {error && <div className="mt-1 text-[12px] text-[#F04438]">{error}</div>}
       </div>
-      {latest?.reviewStatus !== "accepted" && (
+      {!readOnly && latest?.reviewStatus !== "accepted" && (
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           {unusedOnFile.length > 0 && (
             <button
@@ -867,24 +976,103 @@ function DocRow({ item, publicId, onChanged }: { item: DocItem; publicId: string
               Use the one on file
             </button>
           )}
-          <label
-            className={`inline-flex h-8 cursor-pointer items-center rounded-lg px-3 text-[12px] font-semibold whitespace-nowrap ${
-              busy ? "bg-[#F2F4F7] text-[#98A2B3]" : "bg-[#1570EF] text-white hover:bg-[#1260d4]"
-            }`}
-          >
-            {busy ? "Sending…" : latest ? "Upload again" : "Upload"}
-            <input
-              key={inputKey}
-              type="file"
-              accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
-              multiple
-              className="hidden"
-              disabled={busy}
-              onChange={(e) => upload(e.target.files)}
-            />
-          </label>
+          <UploadButton busy={busy} label={latest ? "Upload again" : "Upload"} onFiles={upload} />
         </div>
       )}
     </li>
+  );
+}
+
+// Additional documents (contract 5c): anything outside the list that the
+// counsellor asks for on this case, each under a label the partner types.
+// Each upload is its own row with its own review; "Upload again" on one the
+// counsellor sent back sends a new copy under the same label.
+function AdditionalDocs({ loan, onChanged, readOnly }: { loan: LoanDetail; onChanged: () => void; readOnly: boolean }) {
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const rows = loan.additional;
+  const canUpload = !readOnly && loan.canMessage;
+  if (!canUpload && rows.length === 0) return null;
+
+  const send = async (name: string, files: File[], key: string) => {
+    setError(null);
+    const clean = name.replace(/\s+/g, " ").trim();
+    if (clean.length < 2) {
+      setError("Name the document first, for example: Father's bank statement (Apr–Sep).");
+      return;
+    }
+    const problem = checkDocFiles(files);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setBusy(key);
+    try {
+      const fd = new FormData();
+      fd.set("publicId", loan.publicId);
+      fd.set("typeKey", ADDITIONAL_DOC_KEY);
+      fd.set("label", clean);
+      for (const f of files) fd.append("files", f);
+      await postLoanDoc(fd);
+      if (key === "new") setLabel("");
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the document.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="border-t border-[#F2F4F7]">
+      <div className="bg-[#F9FAFB] px-5 py-2 text-[11px] font-semibold tracking-wide text-[#667085] uppercase">
+        Additional documents
+      </div>
+      {rows.length > 0 && (
+        <ul>
+          {rows.map((u) => (
+            <li key={u.publicId} className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2 text-[13px] font-semibold text-[#101828]">
+                  {u.label ?? "Additional document"}
+                  <StateBadge u={u} />
+                </div>
+                <ReviewNote u={u} />
+                <UploadFiles uploads={[u]} latest={u} readOnly={readOnly} />
+                <RetryUpload u={u} onChanged={onChanged} readOnly={readOnly} />
+              </div>
+              {canUpload && u.reviewStatus === "reupload" && (
+                <div className="shrink-0">
+                  <UploadButton
+                    busy={busy === u.publicId}
+                    label="Upload again"
+                    onFiles={(files) => void send(u.label ?? "", files, u.publicId)}
+                  />
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {canUpload && (
+        <div className="px-5 py-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              maxLength={ADDITIONAL_DOC_LABEL_MAX}
+              placeholder="Name the document, e.g. Father's bank statement (Apr–Sep)"
+              className="h-8 min-w-0 flex-1 rounded-lg border border-[#D0D5DD] px-3 text-[13px] text-[#101828] outline-none placeholder:text-[#98A2B3] focus:border-[#84ADFF] focus:ring-2 focus:ring-[#D1E0FF]"
+            />
+            <UploadButton busy={busy === "new"} label="Choose files and send" onFiles={(files) => void send(label, files, "new")} />
+          </div>
+          <p className="mt-1.5 text-[12px] text-[#98A2B3]">
+            Anything the loan team asks for that isn&apos;t on the list above. Add as many as you need.
+          </p>
+        </div>
+      )}
+      {error && <div className="px-5 pb-3 text-[12px] text-[#F04438]">{error}</div>}
+    </div>
   );
 }

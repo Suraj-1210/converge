@@ -2548,6 +2548,7 @@ model loan_doc_upload {
   public_id       String          @unique(map: "uq_loan_doc_upload_public_id") @db.Char(36)
   referral_id     Int
   item_key        String          @db.VarChar(80)
+  label           String?         @db.VarChar(160)
   author_user_id  Int?
   author_name     String          @db.VarChar(150)
   source          String          @default("upload") @db.VarChar(20)

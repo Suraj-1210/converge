@@ -580,7 +580,7 @@ async function applyDocReview(
     });
     await createNotifications(await referralAudience(r), {
       type: "loan_doc",
-      title: `${r.student_name}: please upload ${item?.label ?? "a document"} again`,
+      title: `${r.student_name}: please upload ${item?.label ?? upload.label ?? "a document"} again`,
       body: review.reason ?? "The loan team asked for this document again.",
       link: `${leadLink(r.public_id)}#documents`,
       tone: "orange",
@@ -622,6 +622,8 @@ export async function sendLoanDocument(id: number): Promise<void> {
         referralId: d.referral.public_id,
         loanLeadId: d.referral.loan_lead_id,
         typeKey: d.item_key,
+        // Additional documents (typeKey "additional") carry the partner's label.
+        ...(d.label ? { label: d.label } : {}),
         author: { userId: d.author_user_id ?? d.referral.partner_user_id, name: d.author_name },
         source: d.source,
         files,

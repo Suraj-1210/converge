@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { api } from "~/trpc/react";
 import { SkeletonTable } from "~/components/dashboard/widgets";
@@ -11,7 +12,8 @@ import { LoanReferralSendStatus, LoanReferralSendStatusLabel } from "~/lib/loan-
 // Super Admin support view of partner education-loan referrals to the
 // Enrollment App (~/server/loan-sharing): whether each one reached the loan
 // team, the last hand-over error, and a Retry. Loan work itself happens in the
-// Enrollment App; this page is for when the hand-over doesn't land.
+// Enrollment App. A student's name opens the referral's loan page as the
+// partner sees it, read-only ([publicId]/page.tsx).
 
 const TH = "border-b border-[#E4E7EC] bg-[#F9FAFB] px-3.5 py-2.5 text-left text-[11px] font-semibold tracking-wider text-[#667085] uppercase";
 const TD = "px-3.5 py-3 text-[13px] text-[#344054] align-top";
@@ -52,7 +54,8 @@ export default function LoanReferralsPage() {
         <h1 className="text-2xl font-bold text-[#101828]">Loan Referrals</h1>
         <p className="mt-1 text-sm text-[#667085]">
           Education-loan leads partners referred to the loan team in the Enrollment App, and whether each one arrived.
-          Loan counsellors work the leads in the Enrollment App.
+          Open a student to see the loan&apos;s progress as the partner sees it. Loan counsellors work the leads in the
+          Enrollment App.
         </p>
       </div>
 
@@ -116,7 +119,12 @@ export default function LoanReferralsPage() {
                       return (
                         <tr key={r.id} className="border-b border-[#F2F4F7] last:border-b-0">
                           <td className={TD}>
-                            <div className="font-semibold text-[#101828]">{r.studentName}</div>
+                            <Link
+                              href={`/admin/loan-referrals/${r.publicId}`}
+                              className="font-semibold text-[#1570EF] hover:underline"
+                            >
+                              {r.studentName}
+                            </Link>
                             <div className="text-[11px] text-[#98A2B3]">
                               {r.loanOnly ? "Loan only" : "Converge student"} · {formatDate(r.referredAt)}
                             </div>
@@ -144,7 +152,13 @@ export default function LoanReferralsPage() {
                             )}
                           </td>
                           <td className={`${TD} font-mono text-[12px]`}>{r.loanLeadId ?? "—"}</td>
-                          <td className={`${TD} text-right`}>
+                          <td className={`${TD} text-right whitespace-nowrap`}>
+                            <Link
+                              href={`/admin/loan-referrals/${r.publicId}`}
+                              className="mr-2 inline-flex h-8 items-center rounded-lg border border-[#D0D5DD] bg-white px-3 text-[12px] font-semibold text-[#344054] hover:bg-[#F9FAFB]"
+                            >
+                              View
+                            </Link>
                             {waiting && (
                               <button
                                 type="button"

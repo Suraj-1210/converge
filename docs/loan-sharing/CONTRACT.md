@@ -333,7 +333,7 @@ Master list `loanDocTypes/{key}` (admins edit it in Loan → Settings):
 | `key` | stable slug, e.g. `student_pan`, `coapp_itr` (never reused) |
 | `label` | what the partner reads, e.g. "Co-applicant ITR (last 2 years)" |
 | `group` | `student` · `coapplicant` · `collateral` |
-| `required` | shown as required to the partner |
+| `required` | kept for older data; nothing is mandatory and no screen shows it (21 Nov 2026) |
 | `active` | inactive items leave every lead's list |
 | `order` | sort within the group |
 | `convergeDocType` | optional Converge student document type this can be filled from: one of `passport`, `national_id`, `marksheet_10th`, `marksheet_12th`, `transcript_bachelors`, `transcript_masters`, `degree_certificate`, `english_test`, `aptitude_test`, `offer_letter` |
@@ -345,8 +345,13 @@ Admission / offer letter (`offer_letter`), Test score reports
 (`english_test`), Student bank statement (6 months); co-applicant — PAN card,
 Aadhaar, ITR (last 2 years), Salary slips (last 3 months) / Form 16, Bank
 statement (6 months), Address proof; collateral — Property papers, Valuation
-report. Required: student PAN, Aadhaar, passport, admission letter;
-co-applicant PAN, Aadhaar, ITR, bank statement.
+report. No document is mandatory (Suraj, 21 Nov 2026): partners send what
+they have and the counsellor asks for more.
+
+Additional documents (21 Nov 2026): besides the list, a partner may upload
+any number of other documents for case-specific requests, each under a label
+they type. These use the reserved `typeKey` **`additional`** (never a list
+key: list keys start with their group) and carry `label` (5c).
 
 Per lead, `loanLeads/{leadId}/docRequests/{key}` adjusts the list:
 `{ state: "not_needed" }` hides a master item for this lead;
@@ -355,7 +360,7 @@ Per lead, `loanLeads/{leadId}/docRequests/{key}` adjusts the list:
 A lead's list = active master items, minus `not_needed`, plus `extra`.
 
 Uploads: `loanLeads/{leadId}/partnerDocs/{docId}`:
-`{ typeKey, files: [{ name, path, size, contentType }], source: "upload" | "converge_profile",
+`{ typeKey, typeLabel, files: [{ name, path, size, contentType }], source: "upload" | "converge_profile",
 status: "received" | "accepted" | "reupload", reason, uploadedAt, reviewedBy, reviewedByName, reviewedAt }`.
 Files at `loanLeads/{leadId}/partnerDocs/{docId}/{n}-{safe name}` (same
 Storage read rule as partner chat files). Only counsellors who may work the
@@ -398,7 +403,10 @@ Same URL, signing and secret as the referral; body `"type": "document"`:
 
 - `files`: 1–5, each `application/pdf` (`%PDF`), `image/jpeg` (`FF D8 FF`) or
   `image/png` (`89 50 4E 47`), ≤ 10 MB decoded, ≤ 20 MB total.
-- `typeKey` must be on the lead's current list (else **400**).
+- `typeKey` must be on the lead's current list (else **400**), or be
+  `additional`, which then needs `label`: 2–160 characters, the partner's
+  name for the document, stored as the upload's `typeLabel`. Only
+  `"source": "upload"` for additional documents.
 - Enrollment stores it as `partnerDocs/pd_{documentId}`, status `received`
   (a newer upload for the same `typeKey` does not delete older ones; each is
   reviewed on its own), increments the lead's `partnerDocsPending`, and
@@ -407,6 +415,9 @@ Same URL, signing and secret as the referral; body `"type": "document"`:
   **400** bad file / unknown type, **404** unknown lead (both permanent), **401**, **503**, **5xx** (retry).
 
 ## Changelog
+
+- 21 Nov 2026: Additional documents (`typeKey: "additional"` + `label`, 5a/5c);
+  no document is mandatory (`required` no longer shown).
 
 - 20 Nov 2026: optional `application.tranches` (loan commission). Converge
   accepts it; Enrollment to send it in a later change (both copies to be

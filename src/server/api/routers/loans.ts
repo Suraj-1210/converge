@@ -3,7 +3,8 @@ import { z } from "zod";
 import { createTRPCRouter, protectedPartnerProcedure, superAdminProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { COURSE_LEVEL_CODES, LoanCommissionStatus, UserType, type CourseLevel } from "~/server/db/enums";
-import { LoanReferralSendStatus } from "~/lib/loan-sharing";
+import { ADDITIONAL_DOC_KEY, LoanReferralSendStatus } from "~/lib/loan-sharing";
+import { type Prisma } from "../../../../generated/prisma";
 import {
   activeReferralForStudent,
   createLoanReferral,
@@ -81,6 +82,146 @@ async function auditPartner(userId: number, orgId: number | null, action: string
   });
 }
 
+const detailInclude = {
+  ...listInclude,
+  application: { orderBy: { id: "asc" as const } },
+  event: {
+    where: { visible: 1 },
+    orderBy: [{ occurred_at: "desc" as const }, { id: "desc" as const }],
+    take: 200,
+  },
+  message: {
+    include: { file: { orderBy: { id: "asc" as const } } },
+    orderBy: { created_at: "desc" as const },
+    take: 200,
+  },
+  doc_item: { orderBy: { sort: "asc" as const } },
+  // Newest first; id breaks ties (created_at is to the second).
+  doc_upload: {
+    include: { file: { orderBy: { id: "asc" as const } } },
+    orderBy: [{ created_at: "desc" as const }, { id: "desc" as const }],
+  },
+} satisfies Prisma.loan_referralInclude;
+
+type DetailRow = Prisma.loan_referralGetPayload<{ include: typeof detailInclude }>;
+
+function toUpload(u: DetailRow["doc_upload"][number]) {
+  return {
+    publicId: u.public_id,
+    label: u.label,
+    authorName: u.author_name,
+    source: u.source,
+    sendStatus: u.send_status,
+    reviewStatus: u.review_status as "received" | "accepted" | "reupload",
+    reviewReason: u.review_reason,
+    reviewedBy: u.reviewed_by,
+    at: u.created_at,
+    files: u.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size, contentType: f.content_type })),
+  };
+}
+
+// One referral as its loan page shows it: the partner's page (partnerGet) and
+// the Super Admin's read-only view of the same page (adminGet).
+//   viewer.userId     the partner user looking (marks "You" in the chat); null for staff
+//   viewer.seesMoney  whether the loan commission card is included
+async function loanDetail(r: DetailRow, viewer: { userId: number | null; seesMoney: boolean }) {
+  // Documents already on the student's Converge profile, for the items
+  // that can be filled from one ("Use the one on file").
+  const profileTypes = [...new Set(r.doc_item.map((i) => i.converge_doc_type).filter((t): t is string => !!t))];
+  const profileDocs =
+    r.student_id !== null && profileTypes.length > 0
+      ? await db.document.findMany({
+          where: { student_id: r.student_id, doc_type: { in: profileTypes } },
+          select: { id: true, file_name: true, doc_type: true, created_at: true },
+          orderBy: { created_at: "desc" },
+        })
+      : [];
+  const commission = viewer.seesMoney
+    ? await db.loan_commission.findMany({
+        where: { referral_id: r.id },
+        orderBy: [{ tranche_no: "asc" }, { id: "asc" }],
+        select: { referral_application_id: true, tranche_no: true, partner_pct: true, partner_amount: true, status: true, lender: { select: { name: true } } },
+      })
+    : [];
+  return {
+    ...toListItem({ ...r, application: r.application }),
+    commission: commission.map((c) => ({
+      applicationId: c.referral_application_id,
+      lender: c.lender.name,
+      trancheNo: c.tranche_no,
+      pct: c.partner_pct == null ? null : num(c.partner_pct),
+      amount: c.partner_amount == null ? null : num(c.partner_amount),
+      state:
+        c.status === LoanCommissionStatus.CANCELLED
+          ? "Cancelled"
+          : c.status === LoanCommissionStatus.PAID
+            ? "Paid"
+            : c.status === LoanCommissionStatus.CLAIMED
+              ? "Claimed"
+              : c.status === LoanCommissionStatus.CLAIMABLE
+                ? "Available to claim"
+                : c.status === LoanCommissionStatus.NEEDS_RATE
+                  ? "Rate being set by Collegepond"
+                  : "Awaiting lender payout",
+    })),
+    email: r.email,
+    phone: r.phone,
+    intake: r.intake,
+    university: r.university,
+    loanAmount: num(r.loan_amount),
+    note: r.note,
+    closureReason: r.closure_reason,
+    consentAt: r.consent_at,
+    applications: r.application.map((a) => ({
+      id: a.id,
+      lender: a.lender,
+      status: a.status,
+      loanAmount: num(a.loan_amount),
+      sanctionedAmount: num(a.sanctioned_amount),
+      roi: num(a.roi),
+      disbursedAmount: num(a.disbursed_amount),
+      disbursedAt: a.disbursed_at,
+    })),
+    // The partner's replies (Phase 2); the page merges them into the timeline.
+    // The chat with the loan team, both sides (contract 4).
+    messages: r.message.map((m) => ({
+      publicId: m.public_id,
+      side: m.side === "staff" ? ("staff" as const) : ("partner" as const),
+      authorName: m.author_name,
+      mine: m.side !== "staff" && viewer.userId !== null && m.author_user_id === viewer.userId,
+      body: m.body,
+      sendStatus: m.send_status,
+      at: m.created_at,
+      files: m.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size })),
+    })),
+    canMessage: r.send_status === LoanReferralSendStatus.RECEIVED,
+    // The loan team's document list for this lead (contract 5), each item
+    // with what the partner sent and the counsellor's review.
+    documents: r.doc_item.map((i) => ({
+      key: i.item_key,
+      label: i.label,
+      group: i.grp as "student" | "coapplicant" | "collateral",
+      onFile: i.converge_doc_type
+        ? profileDocs
+            .filter((d) => d.doc_type === i.converge_doc_type)
+            .map((d) => ({ id: d.id, name: d.file_name, at: d.created_at }))
+        : [],
+      uploads: r.doc_upload.filter((u) => u.item_key === i.item_key).map(toUpload),
+    })),
+    // Additional documents (contract 5c): the partner's own labelled uploads,
+    // outside the list, newest first.
+    additional: r.doc_upload.filter((u) => u.item_key === ADDITIONAL_DOC_KEY).map(toUpload),
+    timeline: r.event.map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      title: e.title ?? "",
+      body: e.body,
+      actorName: e.actor_name,
+      at: e.occurred_at,
+    })),
+  };
+}
+
 export const loansRouter = createTRPCRouter({
   // ── Partner: Loans tab ──────────────────────────────────────────────────────
   partnerList: protectedPartnerProcedure.query(async ({ ctx }) => {
@@ -132,32 +273,10 @@ export const loansRouter = createTRPCRouter({
       const { user } = await partnerScope(ctx.cpPartner.id);
       const r = await db.loan_referral.findFirst({
         where: { AND: [{ public_id: input.publicId }, referralScopeFor(user)] },
-        include: {
-          ...listInclude,
-          application: { orderBy: { id: "asc" } },
-          event: { where: { visible: 1 }, orderBy: [{ occurred_at: "desc" }, { id: "desc" }], take: 200 },
-          message: {
-            include: { file: { orderBy: { id: "asc" } } },
-            orderBy: { created_at: "desc" },
-            take: 200,
-          },
-          doc_item: { orderBy: { sort: "asc" } },
-          doc_upload: { include: { file: { orderBy: { id: "asc" } } }, orderBy: { created_at: "desc" } },
-        },
+        include: detailInclude,
       });
       // Another agency's referral looks exactly like a missing one.
       if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "Loan referral not found" });
-      // Documents already on the student's Converge profile, for the items
-      // that can be filled from one ("Use the one on file").
-      const profileTypes = [...new Set(r.doc_item.map((i) => i.converge_doc_type).filter((t): t is string => !!t))];
-      const profileDocs =
-        r.student_id !== null && profileTypes.length > 0
-          ? await db.document.findMany({
-              where: { student_id: r.student_id, doc_type: { in: profileTypes } },
-              select: { id: true, file_name: true, doc_type: true, created_at: true },
-              orderBy: { created_at: "desc" },
-            })
-          : [];
       // Loan commission (20 Nov 2026): money is shown only to whoever is paid
       // it (the agency owner, or the independent who referred), as on the
       // Commission page; agency counsellors see none.
@@ -165,100 +284,7 @@ export const loansRouter = createTRPCRouter({
         r.org_id != null
           ? r.org_id === user.org_id && (await isAgencyOwner(user.id))
           : user.type === UserType.INDEPENDENT_COUNSELLOR && r.partner_user_id === user.id;
-      const commission = seesMoney
-        ? await db.loan_commission.findMany({
-            where: { referral_id: r.id },
-            orderBy: [{ tranche_no: "asc" }, { id: "asc" }],
-            select: { referral_application_id: true, tranche_no: true, partner_pct: true, partner_amount: true, status: true, lender: { select: { name: true } } },
-          })
-        : [];
-      return {
-        ...toListItem({ ...r, application: r.application }),
-        commission: commission.map((c) => ({
-          applicationId: c.referral_application_id,
-          lender: c.lender.name,
-          trancheNo: c.tranche_no,
-          pct: c.partner_pct == null ? null : num(c.partner_pct),
-          amount: c.partner_amount == null ? null : num(c.partner_amount),
-          state:
-            c.status === LoanCommissionStatus.CANCELLED
-              ? "Cancelled"
-              : c.status === LoanCommissionStatus.PAID
-                ? "Paid"
-                : c.status === LoanCommissionStatus.CLAIMED
-                  ? "Claimed"
-                  : c.status === LoanCommissionStatus.CLAIMABLE
-                    ? "Available to claim"
-                    : c.status === LoanCommissionStatus.NEEDS_RATE
-                      ? "Rate being set by Collegepond"
-                      : "Awaiting lender payout",
-        })),
-        email: r.email,
-        phone: r.phone,
-        intake: r.intake,
-        university: r.university,
-        loanAmount: num(r.loan_amount),
-        note: r.note,
-        closureReason: r.closure_reason,
-        consentAt: r.consent_at,
-        applications: r.application.map((a) => ({
-          id: a.id,
-          lender: a.lender,
-          status: a.status,
-          loanAmount: num(a.loan_amount),
-          sanctionedAmount: num(a.sanctioned_amount),
-          roi: num(a.roi),
-          disbursedAmount: num(a.disbursed_amount),
-          disbursedAt: a.disbursed_at,
-        })),
-        // The partner's replies (Phase 2); the page merges them into the timeline.
-        // The chat with the loan team, both sides (contract 4).
-        messages: r.message.map((m) => ({
-          publicId: m.public_id,
-          side: m.side === "staff" ? ("staff" as const) : ("partner" as const),
-          authorName: m.author_name,
-          mine: m.side !== "staff" && m.author_user_id === ctx.cpPartner.id,
-          body: m.body,
-          sendStatus: m.send_status,
-          at: m.created_at,
-          files: m.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size })),
-        })),
-        canMessage: r.send_status === LoanReferralSendStatus.RECEIVED,
-        // The loan team's document list for this lead (contract 5), each item
-        // with what the partner sent and the counsellor's review.
-        documents: r.doc_item.map((i) => ({
-          key: i.item_key,
-          label: i.label,
-          group: i.grp as "student" | "coapplicant" | "collateral",
-          required: i.required === 1,
-          onFile: i.converge_doc_type
-            ? profileDocs
-                .filter((d) => d.doc_type === i.converge_doc_type)
-                .map((d) => ({ id: d.id, name: d.file_name, at: d.created_at }))
-            : [],
-          uploads: r.doc_upload
-            .filter((u) => u.item_key === i.item_key)
-            .map((u) => ({
-              publicId: u.public_id,
-              authorName: u.author_name,
-              source: u.source,
-              sendStatus: u.send_status,
-              reviewStatus: u.review_status as "received" | "accepted" | "reupload",
-              reviewReason: u.review_reason,
-              reviewedBy: u.reviewed_by,
-              at: u.created_at,
-              files: u.file.map((f) => ({ id: f.id, name: f.file_name, size: f.size, contentType: f.content_type })),
-            })),
-        })),
-        timeline: r.event.map((e) => ({
-          id: e.id,
-          kind: e.kind,
-          title: e.title ?? "",
-          body: e.body,
-          actorName: e.actor_name,
-          at: e.occurred_at,
-        })),
-      };
+      return loanDetail(r, { userId: ctx.cpPartner.id, seesMoney });
     }),
 
   // The loan card on a student's profile: their latest referral, if any.
@@ -374,6 +400,24 @@ export const loansRouter = createTRPCRouter({
     }),
 
   // ── Super Admin: Loan Referrals support page ────────────────────────────────
+  // One referral's loan page, as the partner sees it, read-only (21 Nov 2026):
+  // progress, lenders, documents, the chat and the shared updates.
+  adminGet: superAdminProcedure
+    .input(z.object({ publicId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const r = await db.loan_referral.findUnique({
+        where: { public_id: input.publicId },
+        include: { ...detailInclude, organization: { select: { name: true } } },
+      });
+      if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "Loan referral not found" });
+      return {
+        ...(await loanDetail(r, { userId: null, seesMoney: true })),
+        partner: r.organization?.name ?? `${r.partner_user.first_name} ${r.partner_user.last_name}`.trim(),
+        loanLeadId: r.loan_lead_id,
+        lastError: r.last_error,
+      };
+    }),
+
   adminList: superAdminProcedure
     .input(z.object({ status: z.number().int().min(0).max(3).nullish() }).optional())
     .query(async ({ input }) => {

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { db } from "~/server/db";
-import { LoanReferralSendStatus } from "~/lib/loan-sharing";
+import { ADDITIONAL_DOC_KEY, ADDITIONAL_DOC_LABEL_MAX, LoanReferralSendStatus } from "~/lib/loan-sharing";
 import {
   DOC_MAX_FILES,
   DOC_MAX_FILE_BYTES,
@@ -22,6 +22,8 @@ export const maxDuration = 90;
 // and either files (1–5 PDF / JPG / PNG, 10 MB each, 20 MB total) or
 // profileDocIds: documents already on the student's Converge profile for the
 // item's matching type, sent as they are ("Use the one on file").
+// typeKey "additional" is an Additional document: any document outside the
+// list, with the partner's own label (field: label, 2–160 characters); files only.
 // Saved here first, then sent to the Enrollment App, where the loan counsellor
 // reviews it; a send that doesn't land retries from /api/cron/loan-referrals.
 export async function POST(req: Request) {
@@ -57,9 +59,20 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const item = await db.loan_doc_item.findUnique({
-    where: { referral_id_item_key: { referral_id: referral.id, item_key: typeKey } },
-  });
+  const additional = typeKey === ADDITIONAL_DOC_KEY;
+  const label = field("label").replace(/\s+/g, " ").trim();
+  if (additional && (label.length < 2 || label.length > ADDITIONAL_DOC_LABEL_MAX)) {
+    return NextResponse.json({ error: "Name the document (2 to 160 characters)." }, { status: 400 });
+  }
+  if (additional && profileDocIds.length > 0) {
+    return NextResponse.json({ error: "Upload the file for an additional document." }, { status: 400 });
+  }
+  const item = additional
+    ? { item_key: ADDITIONAL_DOC_KEY, converge_doc_type: null }
+    : await db.loan_doc_item.findUnique({
+        where: { referral_id_item_key: { referral_id: referral.id, item_key: typeKey } },
+        select: { item_key: true, converge_doc_type: true },
+      });
   if (!item) return NextResponse.json({ error: "That document isn't on this loan's list." }, { status: 400 });
 
   const uploadId = crypto.randomUUID();
@@ -134,6 +147,7 @@ export async function POST(req: Request) {
       public_id: uploadId,
       referral_id: referral.id,
       item_key: item.item_key,
+      label: additional ? label : null,
       author_user_id: who.user.id,
       author_name: `${who.user.first_name} ${who.user.last_name}`.trim(),
       source,
@@ -153,6 +167,7 @@ export async function POST(req: Request) {
         ...(who.impersonatorId ? { impersonatorId: who.impersonatorId } : {}),
         uploadId,
         typeKey: item.item_key,
+        ...(additional ? { label } : {}),
         source,
         files: rows.length,
       },

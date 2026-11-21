@@ -127,5 +127,11 @@ export function loanReferralStatusLabel(sendStatus: number, stage: string | null
   return LoanReferralSendStatusLabel[sendStatus as LoanReferralSendStatus] ?? "Unknown";
 }
 
+// Loan documents (contract 5c): the type key of an "Additional document", one
+// the partner uploads outside the loan team's list under a label they choose
+// (21 Nov 2026). Never a key on the list (those start with their group).
+export const ADDITIONAL_DOC_KEY = "additional";
+export const ADDITIONAL_DOC_LABEL_MAX = 160;
+
 export const LOAN_CONSENT_TEXT =
   "The student has agreed to be contacted by Collegepond's loan team about an education loan.";
